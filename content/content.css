@@ -33,8 +33,9 @@
 
 .bt-fab-wrap {
   position: fixed;
-  right: 20px;
-  bottom: 90px;
+  right: 24px;
+  top: clamp(48px, 16vh, 120px);
+  bottom: auto;
   width: 32px;
   height: 32px;
   z-index: 2147483647;

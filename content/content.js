@@ -547,9 +547,10 @@ function init() {
 
     chrome.storage.sync.get(["fabPos"], (cfg) => {
       const pos = cfg.fabPos;
-      if (pos && typeof pos.left === "number" && typeof pos.top === "number") {
-        fabWrap.style.left = pos.left + "px";
-        fabWrap.style.top = pos.top + "px";
+      // 旧版位置不再恢复，使本次更新采用上方默认位置；之后继续记住用户拖动位置。
+      if (pos && pos.layoutVersion === 2 && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
+        fabWrap.style.left = Math.max(8, Math.min(pos.left, window.innerWidth - 40)) + "px";
+        fabWrap.style.top = Math.max(48, Math.min(pos.top, window.innerHeight - 40)) + "px";
         fabWrap.style.right = "auto";
         fabWrap.style.bottom = "auto";
       }
@@ -585,8 +586,8 @@ function init() {
       const dx = e.clientX - sx;
       const dy = e.clientY - sy;
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
-      fabWrap.style.left = ox + dx + "px";
-      fabWrap.style.top = oy + dy + "px";
+      fabWrap.style.left = Math.max(8, Math.min(ox + dx, window.innerWidth - 40)) + "px";
+      fabWrap.style.top = Math.max(48, Math.min(oy + dy, window.innerHeight - 40)) + "px";
       if (thumbEl) positionThumbNearFab();
     };
 
@@ -596,7 +597,7 @@ function init() {
       fabEl.classList.remove("bt-dragging");
       if (moved) {
         const rect = fabWrap.getBoundingClientRect();
-        chrome.storage.sync.set({ fabPos: { left: rect.left, top: rect.top } });
+        chrome.storage.sync.set({ fabPos: { left: rect.left, top: rect.top, layoutVersion: 2 } });
       } else {
         toggleTranslation();
       }
