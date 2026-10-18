@@ -1,0 +1,27 @@
+# 本机依赖、缓存和测试输出
+node_modules/
+playwright-report/
+test-results/
+*.log
+tests/
+
+# 密钥及个人环境配置
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.aws/
+.codex/
+.agents/
+
+# 编辑器和系统临时文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.tmp
+
+# 本机打包文件
+*.zip
+*.crx

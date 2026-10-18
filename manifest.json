@@ -1,0 +1,79 @@
+{
+  "manifest_version": 3,
+  "name": "页知译 · 网页双语翻译",
+  "version": "0.9.0",
+  "description": "在网页段落下方显示翻译，支持 Google / 百度 / AI 多引擎，带悬浮球 + 控制面板 + 完整设置页。",
+  "permissions": [
+    "contextMenus",
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://translate.googleapis.com/*",
+    "https://fanyi-api.baidu.com/*",
+    "https://api.mymemory.translated.net/*",
+    "https://api.openai.com/*",
+    "https://api.deepseek.com/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://open.bigmodel.cn/*",
+    "https://api.moonshot.cn/*",
+    "https://ark.cn-beijing.volces.com/*",
+    "https://api.minimax.chat/*",
+    "https://api.stepfun.com/*",
+    "https://api.siliconflow.cn/*",
+    "https://qianfan.baidubce.com/*",
+    "https://api-inference.modelscope.cn/*",
+    "https://api.longcat.chat/*",
+    "http://localhost:11434/*",
+    "http://127.0.0.1:11434/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_title": "页知译 · 网页双语翻译"
+  },
+  "commands": {
+    "toggle-translation": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "翻译 / 取消翻译当前页面"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "core/constants.js",
+        "core/providers.js",
+        "content/content.js"
+      ],
+      "css": [
+        "content/content.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "settings/settings.html",
+        "settings/settings.css",
+        "settings/settings.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}
