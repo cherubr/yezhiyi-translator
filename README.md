@@ -68,6 +68,8 @@ npm run package
 
 以 manifest.json 为版本来源，设置页自动读取；package.json 与测试检查版本一致性。变更见 [CHANGELOG.md](CHANGELOG.md)。
 
+后续版本开发、Git 分支、测试、打包与商店更新步骤见 [版本开发与发布操作手册](docs/VERSION-WORKFLOW.md)。
+
 默认源语言为自动检测，目标语言跟随浏览器界面语言；可在设置页或页面面板手动覆盖，也可重新选择“跟随浏览器”。已有手动语言配置保留。浏览器语言不在支持列表时回退为英语。
 
 运行日志默认关闭。如需排查翻译进度，可将 core/constants.js 中的 DEBUG 改为 true，重新加载扩展并刷新网页。翻译失败原因仍在页面面板显示，配置同步异常保留控制台警告。调试完成后请恢复为 false。
