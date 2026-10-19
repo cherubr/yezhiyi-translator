@@ -137,10 +137,23 @@ function init() {
     if (!STATE.to.startsWith("zh")) return false;
     const letters = text.match(/\p{L}/gu) || [];
     const han = text.match(/\p{Script=Han}/gu) || [];
-    return letters.length > 0 && han.length / letters.length > 0.8;
+    // 日文、韩文也可能包含汉字，不能仅凭汉字比例当作中文跳过。
+    if (/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text)) return false;
+    if (!letters.length) return false;
+    const ratio = han.length / letters.length;
+    const words = text.match(/[A-Za-z]+/g) || [];
+    // 中文短标题允许夹带 Chrome、Pro 等少量产品名；长句仍按中文占比判断。
+    return ratio > 0.8 || (han.length >= 2 && ratio >= 0.6) ||
+      (text.length <= 40 && han.length >= 2 && ratio >= 0.3 && words.length <= 2);
   }
 
   // 保存原文节点与译文的对应关系，用于切换显示模式、失效检查和取消还原。
+  // 记住原文未变化的文字节点，避免动态补翻反复请求相同内容。
+  let unchangedTextNodes = new WeakMap();
+  function sameTranslation(source, translation) {
+    const normalize = value => value.normalize("NFKC").replace(/\s+/gu, "").trim();
+    return normalize(source) === normalize(translation);
+  }
   const translatedElements = new Map();
   const BLOCK_SELECTOR = "p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, figcaption";
   const FORM_SELECTOR = "label, legend, button, [role='button'], [role='alert'], form small, form .help-text, form .form-text";
@@ -170,6 +183,8 @@ function init() {
       for (const node of el.childNodes || []) {
         if (node.nodeType !== 3) continue;
         const text = node.textContent.trim();
+        const skipped = unchangedTextNodes.get(node);
+        if (skipped && skipped.text === text && skipped.to === STATE.to) continue;
         if (text.length >= 2 && /\p{L}/u.test(text) && !isMostlyChinese(text)) fragments.push({ el, text, node });
       }
       // 含控件或下级文字块的容器不整体翻译，保护输入值并避免重复处理。
@@ -321,6 +336,12 @@ function init() {
         pendingViewport = true;
         return false;
       }
+      // 返回内容与原文相同时，不再叠加一份文字。
+      if (sameTranslation(text, translation)) {
+        if (node) unchangedTextNodes.set(node, { text, to: config.to });
+        else el.setAttribute(STATE.processedAttr, "unchanged");
+        return false;
+      }
       if (node) {
         const fragment = document.createElement("span");
         fragment.className = "bt-text-fragment";
@@ -431,6 +452,7 @@ function init() {
       }
     }
     translatedElements.clear();
+    unchangedTextNodes = new WeakMap();
     document.querySelectorAll(".bt-translation-text").forEach((n) => n.remove());
     document.querySelectorAll(`[${STATE.processedAttr}]`).forEach((n) => n.removeAttribute(STATE.processedAttr));
     document.querySelectorAll("[data-bt-hidden]").forEach((n) => {
@@ -501,6 +523,10 @@ function init() {
         // 取消前发出的悬停请求即使稍后成功，也不能重新插入译文。
         if (STATE.pagePaused || cancelVersion !== STATE.cancelVersion) return;
         if (!translation || !translation.trim()) return;
+        if (sameTranslation(text, translation)) {
+          el.setAttribute(STATE.processedAttr, "unchanged");
+          return;
+        }
         insertTranslation(el, translation.trim(), true);
         el.setAttribute(STATE.processedAttr, "hover");
       } catch (err) {
