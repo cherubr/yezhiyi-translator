@@ -59,6 +59,21 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    await settings.goto('chrome-extension://'+id+'/settings/settings.html');
    await settings.waitForFunction(expected=>document.querySelector('#version')?.textContent==='v'+expected,version);
    assert.equal(await settings.locator('#aboutVersion').textContent(),version);
+   assert.equal(await settings.locator('#from option').count(),49);
+   assert.equal(await settings.locator('#to option').count(),48);
+   assert.equal(await settings.locator('#to option[value="ms"]').textContent(),'马来语');
+   assert.equal(await settings.locator('#from option[value="my"]').textContent(),'缅甸语');
+   await settings.locator('#to').selectOption('fr');
+   await settings.waitForTimeout(300);
+   assert.equal(await worker.evaluate(async()=>(await chrome.storage.sync.get('to')).to),'fr');
+   await send('OPEN_PANEL');
+   assert.equal(await page.locator('#btModalFrom option').count(),49);
+   assert.equal(await page.locator('#btModalTo option').count(),48);
+   await page.waitForFunction(()=>document.querySelector('#btModalTo')?.value==='fr');
+   await page.locator('#btModalTo').selectOption('uk');
+   await settings.bringToFront();
+   await settings.waitForFunction(()=>document.querySelector('#to')?.value==='uk');
+
    assert.ok(await settings.locator('text=隐私与数据').count());
    const errors=await worker.evaluate(async()=>{
      const stored=await chrome.storage.sync.get(['aiKeys','baiduKey']);

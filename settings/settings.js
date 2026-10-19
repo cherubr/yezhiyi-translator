@@ -239,8 +239,8 @@ async function init() {
 // ---------- 渲染 ----------
 function renderAll() {
   renderEngineSelect();
-  setValue("from", cfg.from);
-  setValue("to", cfg.to);
+  window.BT_CONST.fillLanguageSelect(document.getElementById("from"),"from",cfg.from);
+  window.BT_CONST.fillLanguageSelect(document.getElementById("to"),"to",cfg.to);
   setValue("concurrency", cfg.concurrency);
   setSegment("mode-seg", cfg.mode);
   setSwitch("autoTranslate", cfg.autoTranslate);
@@ -936,6 +936,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
       needRender = true;
     }
   }
+  if (changes.from) window.BT_CONST.fillLanguageSelect(document.getElementById("from"),"from",cfg.from);
+  if (changes.to) window.BT_CONST.fillLanguageSelect(document.getElementById("to"),"to",cfg.to);
   if (needRender && currentService === null) {
     renderEngineSelect();
     renderServiceList();

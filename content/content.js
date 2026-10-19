@@ -845,28 +845,11 @@ function init() {
             <div class="bt-modal-field-row">
               <div class="bt-modal-field">
                 <label>源语言</label>
-                <select id="btModalFrom">
-                  <option value="auto">自动检测</option>
-                <option value="zh-CN">简体中文</option>
-                <option value="zh-TW">繁体中文</option>
-                  <option value="en">英语</option>
-                  <option value="ja">日语</option>
-                  <option value="ko">韩语</option>
-                  <option value="fr">法语</option>
-                  <option value="de">德语</option>
-                  <option value="es">西班牙语</option>
-                  <option value="ru">俄语</option>
-                </select>
+                <select id="btModalFrom"></select>
               </div>
               <div class="bt-modal-field">
                 <label>目标语言</label>
-                <select id="btModalTo">
-                  <option value="zh-CN">简体中文</option>
-                  <option value="zh-TW">繁体中文</option>
-                  <option value="en">英语</option>
-                  <option value="ja">日语</option>
-                  <option value="ko">韩语</option>
-                </select>
+                <select id="btModalTo"></select>
               </div>
             </div>
           </div>
@@ -1079,8 +1062,8 @@ function init() {
     const errorEl = $("#btModalError");
     if (errorEl) errorEl.textContent = STATE.lastError ? "有内容翻译失败：" + STATE.lastError : "";
     renderEngineOptions();
-    $("#btModalFrom").value = STATE.from;
-    $("#btModalTo").value = STATE.to;
+    window.BT_CONST.fillLanguageSelect($("#btModalFrom"),"from",STATE.from);
+    window.BT_CONST.fillLanguageSelect($("#btModalTo"),"to",STATE.to);
     updateModalModeButtons(STATE.mode);
     $("#btModalAuto").classList.toggle("on", STATE.autoTranslate);
     $("#btModalHover").classList.toggle("on", STATE.hoverPanel);

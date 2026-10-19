@@ -1,7 +1,7 @@
 // 各引擎的语言标识独立转换，覆盖设置页提供的全部语种。
 (function(global) {
   "use strict";
-  const baidu={auto:"auto","zh-CN":"zh","zh-TW":"cht",en:"en",ja:"jp",ko:"kor",fr:"fra",es:"spa",ru:"ru",de:"de"};
+  const baidu=Object.fromEntries(global.BT_CONST.LANGUAGES.from.map(item=>[item.value,item.baidu]));
   function mapLanguage(engine,code) {
     if(engine==="baidu") {
       if(!baidu[code])throw new Error("百度翻译暂不支持该语言选项："+code);
