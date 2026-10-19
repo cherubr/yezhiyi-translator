@@ -1,8 +1,9 @@
+// 内容脚本回归：在模拟页面与扩展消息环境中检查采集、分块、插入、还原及取消行为。
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const root = require('node:path').resolve(__dirname, '..');
-const context = { window: { addEventListener() {} }, self: {}, console, TextEncoder, setTimeout, clearTimeout,
+const context = { window: { addEventListener() {}, getComputedStyle:()=>({display:'block'}) }, self: {}, console, TextEncoder, setTimeout, clearTimeout,
   chrome: { runtime: { onMessage: { addListener() {} } }, storage: { onChanged: { addListener() {} } } } };
 context.self = context.window;
 vm.createContext(context);
@@ -162,7 +163,7 @@ assert.equal(scheduled,beforeManual+1,'manual start remains enabled even before 
 
 (async()=>{
  const byteRequests=[];
- context.chrome.runtime.sendMessage=(request,cb)=>{byteRequests.push(request.text);cb({ok:true,data:'译文'});};
+ context.chrome.runtime.sendMessage=(request,cb)=>{if(request.action==="CANCEL_TRANSLATION_REQUESTS"){cb?.({ok:true});return;}byteRequests.push(request.text);cb({ok:true,data:'译文'});};
  await t.requestTranslate('Unicode 🙂 内容 '.repeat(140),{engine:'mymemory',from:'en',to:'zh-CN'});
  assert.ok(byteRequests.length>1);
  assert.ok(byteRequests.every(text=>new TextEncoder().encode(text).length<=480));
@@ -197,7 +198,7 @@ assert.equal(scheduled,beforeManual+1,'manual start remains enabled even before 
  // 悬停请求在取消后返回时应丢弃结果，取消后也不应发送新的悬停请求。
  let hoverListener,reply,requests=0;
  context.document.addEventListener=(type,fn)=>{if(type==='mouseover')hoverListener=fn;};
- context.chrome.runtime.sendMessage=(request,cb)=>{requests++;reply=cb;};
+ context.chrome.runtime.sendMessage=(request,cb)=>{if(request.action==="CANCEL_TRANSLATION_REQUESTS"){cb?.({ok:true});return;}requests++;reply=cb;};
  t.bindHoverTranslate();
  const hoverEl=new Element('p');
  hoverEl.textContent='Hover paragraph';hoverEl.hasAttribute=()=>false;

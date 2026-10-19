@@ -1,3 +1,4 @@
+// 存储回归：检查旧密钥迁移、本机配置优先、分区写入及迁移失败时保留旧数据。
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');

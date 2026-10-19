@@ -9,8 +9,18 @@ if (window.__BT_INJECTED) {
   init();
 }
 
+/**
+ * 初始化当前页面的翻译状态、消息监听、悬浮球和动态内容观察器。
+ */
 function init() {
   const { MSG } = window.BT_CONST;
+  // 调试日志不参与翻译状态处理；失败原因始终由页面面板展示。
+  /**
+   * 仅在共享 DEBUG 开关开启时输出调试信息；不改变翻译状态。
+   */
+  function debugLog(...args) {
+    if (window.BT_CONST.DEBUG) console.debug(...args);
+  }
   const AI_PROVIDER_NAMES = window.AI_PROVIDER_NAMES;
 
   // 页面级运行状态：取消只暂停当前页面，不修改用户的全局自动翻译偏好。
@@ -27,7 +37,7 @@ function init() {
     engine: "google",
     aiProvider: "openai",
     from: window.BT_CONST.DEFAULTS.from,
-    to: "zh-CN",
+    to: window.BT_CONST.DEFAULTS.to,
     concurrency: 4,
     processedAttr: "data-bt-processed",
     mode: "bilingual",
@@ -42,6 +52,43 @@ function init() {
     baiduKey: "",
     aiKeys: {}
   };
+
+  let requestToken = "page-" + Date.now() + "-" + Math.random();
+  const pendingMessages = new Set();
+  const pendingPreferenceWrites = new Map();
+  let resumeAfterSettingsChange = false;
+  /**
+   * 创建 AbortError，供请求链区分主动取消与真正的接口失败。
+   */
+  function cancelledError() {const error=new Error("翻译已取消");error.name="AbortError";return error;}
+  /**
+   * 在配置变化前取消旧批次，记录是否需要恢复翻译及当前任务版本。
+   */
+  function interruptForConfigChange() {
+    const wasPaused=STATE.pagePaused;
+    const resume = resumeAfterSettingsChange || (!STATE.pagePaused && (STATE.translating || STATE.translated || STATE.pageStarted || STATE.autoTranslate));
+    cancelTranslation();
+    resumeAfterSettingsChange=resume;
+    return {resume,wasPaused,version:STATE.cancelVersion};
+  }
+  /**
+   * 保存单个引擎或语言选项；通过版本号避免连续切换时旧任务覆盖新选择。
+   */
+  async function changeTranslationSetting(key,value) {
+    if(STATE[key]===value)return;
+    const previous=STATE[key],interrupted=interruptForConfigChange(),entry={value};
+    pendingPreferenceWrites.set(key,entry);STATE[key]=value;
+    try {await saveField(key,value);}
+    catch(error) {
+      if(interrupted.version===STATE.cancelVersion){STATE[key]=previous;STATE.lastError="保存设置失败："+error.message;refreshPanelModal();}
+      return;
+    } finally {if(pendingPreferenceWrites.get(key)===entry)pendingPreferenceWrites.delete(key);}
+    if(interrupted.version!==STATE.cancelVersion)return;
+    resumeAfterSettingsChange=false;
+    if(interrupted.resume)await translatePage();
+    else if(!interrupted.wasPaused)STATE.pagePaused=false;
+    if(panelModalEl)refreshPanelModal();
+  }
 
   // ---------- 接收消息 ----------
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -61,13 +108,28 @@ function init() {
   // 同时监听同步偏好和本机密钥变化，使网页、设置页与控制面板保持一致。
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "sync" && area !== "local") return;
+    // 本页连续选择设置时，忽略尚在落盘的旧值事件，防止把最新选择当成外部改动取消。
+    changes=Object.fromEntries(Object.entries(changes).filter(([key])=>!pendingPreferenceWrites.has(key)));
+    if(!Object.keys(changes).length)return;
     const relevant = ["engine", "aiProvider", "aiKeys", "from", "to", "mode", "autoTranslate", "hoverPanel", "concurrency", "baiduAppId", "baiduKey", "hoverTranslate", "hoverRequireShift", "shortcutTranslate", "shortcutKey"];
     if (!relevant.some((key) => Object.prototype.hasOwnProperty.call(changes, key))) return;
-    reloadConfig().then(() => {
+    const affecting = ["engine","aiProvider","aiKeys","from","to","baiduAppId","baiduKey"];
+    const changed = affecting.some(key => Object.prototype.hasOwnProperty.call(changes,key) &&
+      JSON.stringify(changes[key].newValue) !== JSON.stringify(STATE[key]));
+    const interrupted = changed ? interruptForConfigChange() : null;
+    reloadConfig().then(async () => {
+      if(interrupted && interrupted.version===STATE.cancelVersion) {
+        resumeAfterSettingsChange=false;
+        if(interrupted.resume)await translatePage();
+        else if(!interrupted.wasPaused)STATE.pagePaused=false;
+      }
       if (panelModalEl) refreshPanelModal();
     }).catch((err) => console.warn("[双语翻译] 配置同步失败：", err));
   });
 
+  /**
+   * 合并同步区与本机配置，并以尚未完成的本页写入为准更新 STATE。
+   */
   async function reloadConfig() {
     const cfg = await window.BT_STORAGE.get([
       "engine", "aiProvider", "aiKeys", "from", "to", "mode",
@@ -75,6 +137,7 @@ function init() {
       "baiduAppId", "baiduKey",
       "hoverTranslate", "hoverRequireShift", "shortcutTranslate", "shortcutKey"
     ]);
+    for(const [key,entry] of pendingPreferenceWrites)cfg[key]=entry.value;
     if (cfg.engine) STATE.engine = cfg.engine;
     if (cfg.aiProvider) STATE.aiProvider = cfg.aiProvider;
     if (cfg.aiKeys) STATE.aiKeys = cfg.aiKeys;
@@ -97,9 +160,15 @@ function init() {
     if (modeChanged) applyMode();
   }
 
+  /**
+   * 等待配置刷新完成，确保发起翻译时使用最新的语言和服务配置。
+   */
   async function loadConfig() { await reloadConfig(); }
 
   // ---------- 引擎配置状态 ----------
+  /**
+   * 检查当前引擎所需凭据是否齐全；此检查不代表网络或密钥一定有效。
+   */
   function isEngineConfigured(id) {
     if (id === "google" || id === "mymemory") return true;
     if (id === "baidu") return !!(STATE.baiduAppId && STATE.baiduKey);
@@ -111,6 +180,9 @@ function init() {
     return false;
   }
 
+  /**
+   * 将内部引擎标识转换为面板使用的服务名称。
+   */
   function getEngineLabel(id) {
     if (id === "google") return "Google（免费）";
     if (id === "mymemory") return "MyMemory（免费）";
@@ -123,30 +195,61 @@ function init() {
   }
 
   // ---------- 请求翻译 ----------
+  /**
+   * 向后台申请翻译，携带批次标识；MyMemory 长文本按 UTF-8 字节拆分，取消后忽略迟到响应。
+   *
+   * @param {string} text 待翻译的原文。
+   * @param {Object} config 本轮配置快照，包含引擎、语言和任务版本。
+   * @returns {Promise<string>} 译文；取消或失败时拒绝。
+   */
   function requestTranslate(text, config = STATE) {
+    const generation=config.cancelVersion ?? STATE.cancelVersion;
+    const token=config.runToken || requestToken;
+    if(generation!==STATE.cancelVersion || token!==requestToken)return Promise.reject(cancelledError());
     if (config.engine === "mymemory" && new TextEncoder().encode(text).length > 480) {
-      const snapshot = { ...config };
+      const snapshot = {...config,cancelVersion:generation,runToken:token};
       return splitText(text,480,480).reduce(
         (pending,part) => pending.then(async parts => [...parts,await requestTranslate(part,snapshot)]),
         Promise.resolve([])
       ).then(parts => parts.join(" "));
     }
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(
-        { action: "TRANSLATE", engine: config.engine, aiProvider: config.aiProvider, aiConfig: config.aiConfig, retryManual: config.retryManual === true, retryToken: config.retryToken, text, from: config.from, to: config.to },
-        (res) => {
-          if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-          if (!res || !res.ok) return reject(new Error((res && res.error) || "翻译失败"));
-          resolve(res.data);
-        }
-      );
+    return new Promise((resolve,reject)=>{
+      let settled=false;
+      const task={reject:error=>finish(error)};
+      /**
+       * 结束当前消息请求并移除待处理记录，避免同一个 Promise 被重复结算。
+       */
+      function finish(error,data) {
+        if(settled)return;settled=true;pendingMessages.delete(task);
+        error?reject(error):resolve(data);
+      }
+      pendingMessages.add(task);
+      try {
+        chrome.runtime.sendMessage(
+          {action:"TRANSLATE",runToken:token,engine:config.engine,aiProvider:config.aiProvider,aiConfig:config.aiConfig,
+            retryManual:config.retryManual===true,retryToken:config.retryToken,text,from:config.from,to:window.BT_CONST.resolveTargetLanguage(config.to)},
+          res=>{
+            const runtimeError=chrome.runtime.lastError;
+            if(settled)return;
+            if(generation!==STATE.cancelVersion || token!==requestToken || res?.cancelled)return finish(cancelledError());
+            if(runtimeError) {
+              const error=new Error("翻译连接中断，请刷新页面或重试");error.code="CONNECTION_INTERRUPTED";return finish(error);
+            }
+            if(!res||!res.ok){const error=new Error(res?.error||"翻译失败");error.code=res?.code;return finish(error);}
+            finish(null,res.data);
+          });
+      }catch(_){const error=new Error("扩展连接已失效，请刷新页面后重试");error.code="CONNECTION_INTERRUPTED";finish(error);}
     });
   }
 
+  /**
+   * 针对中文目标筛掉已是中文的内容，同时保留中日混合及简繁转换的处理机会。
+   */
   function isMostlyChinese(text) {
-    if (!STATE.to.startsWith("zh")) return false;
+    const target = window.BT_CONST.resolveTargetLanguage(STATE.to);
+    if (!target.startsWith("zh")) return false;
     // 显式选择不同中文源语种时，保留简繁转换机会。
-    if (STATE.from.startsWith("zh") && STATE.from !== STATE.to) return false;
+    if (STATE.from.startsWith("zh") && STATE.from !== target) return false;
     if (/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text)) return false;
     const letters = text.match(/\p{L}/gu) || [], han = text.match(/\p{Script=Han}/gu) || [];
     if (!letters.length || !han.length) return false;
@@ -161,18 +264,27 @@ function init() {
   // 记住原文未变化的文字节点，避免动态补翻反复请求相同内容。
   let unchangedTextNodes = new WeakMap();
   let unchangedElements = new WeakMap();
+  /**
+   * 规范化字符与空白后比较原译文，避免插入没有实际变化的译文。
+   */
   function sameTranslation(source, translation) {
     const normalize = value => value.normalize("NFKC").replace(/\s+/gu, "").trim();
     return normalize(source) === normalize(translation);
   }
   const translatedElements = new Map();
   let failureRecords = new WeakMap();
-  const pendingRecords = new WeakSet();
+  let pendingRecords = new WeakSet();
   let wholePageScan = true;
   const dirtyRoots = new Set();
+  /**
+   * 生成包含服务配置和语言的比较标识，使失败记录只作用于同一套翻译配置。
+   */
   function requestScope(config = STATE) {
     return JSON.stringify([config.engine,config.engine === "ai" ? config.aiProvider : null,config.engine === "ai" ? (config.aiConfig || (config.aiKeys || {})[config.aiProvider] || {}) : null,config.from,config.to]);
   }
+  /**
+   * 检查节点是否正在请求或处于失败冷却期；手动翻译允许绕过自动重试限制。
+   */
   function eligibleForRequest(item, automatic) {
     const target = item.node || item.el, record = failureRecords.get(target);
     if (pendingRecords.has(target)) return false;
@@ -187,6 +299,9 @@ function init() {
   const EXCLUDED_SELECTOR = ".bt-translation-text, .bt-original-text, .bt-text-fragment, .bt-modal, .bt-popup, .bt-fab-wrap, .bt-thumb, pre, code, script, style, noscript, svg, math, canvas, textarea, input, select, [translate='no'], .notranslate, [contenteditable]:not([contenteditable='false'])";
 
   // 只采集已显示的内容；视口优先开启时，屏幕外内容等待滚动后补翻。
+  /**
+   * 排除隐藏和无尺寸元素；视口优先模式下只接受当前屏幕内的内容。
+   */
   function isVisibleBlock(el) {
     if (el.closest("[hidden], [aria-hidden='true']")) return false;
     const style = window.getComputedStyle(el);
@@ -197,6 +312,12 @@ function init() {
   }
 
   // 优先采集完整文字区域；混合容器则单独采集直接文字节点。
+  /**
+   * 从指定变动区域或整页收集待翻译文字；混合控件容器只提取直接文本以保护控件。
+   *
+   * @param {Iterable<Element>} [roots] 仅扫描这些变动区域；省略时扫描整页候选。
+   * @returns {Array<Object>} 候选记录，包含元素、原文及可选的直接文字节点。
+   */
   function collectBlocks(roots) {
     const selector = BLOCK_SELECTOR + ", " + FORM_SELECTOR + ", " + TEXT_SELECTOR;
     const candidates = new Set();
@@ -249,6 +370,9 @@ function init() {
       ...fragments.filter(({ el }) => !selected.has(el) && !hasSelectedAncestor(el))];
   }
 
+  /**
+   * 按元素与视口的关系排列候选内容，优先处理用户当前能看到的区域。
+   */
   function sortByViewport(blocks) {
     if (!STATE.viewportFirst) return blocks;
     const vh = window.innerHeight;
@@ -265,6 +389,13 @@ function init() {
   }
 
   // ---------- 主流程 ----------
+  /**
+   * 启动一轮翻译：读取配置、收集候选、并发处理并汇总状态；每个异步阶段均校验任务版本。
+   *
+   * @param {boolean} force 是否强制重新翻译。
+   * @param {boolean} automatic 是否由动态补翻触发，用于应用自动重试限制。
+   * @returns {Promise<void>} 本轮调度完成后结束。
+   */
   async function translatePage(force = false, automatic = false) {
     // 自动任务不能解除用户暂停；只有手动翻译入口可以恢复当前页面。
     if (automatic && (STATE.pagePaused || STATE.cancelRequested)) return;
@@ -280,12 +411,14 @@ function init() {
       STATE.lastError = ""; STATE.failedCount = 0;
       wholePageScan = true;
     }
+    const generation = STATE.cancelVersion;
     STATE.translating = true;
     STATE.cancelRequested = false;
     STATE.activeWorkers = 0;
     setFabBusy(true);
 
     try { await loadConfig(); } catch (error) {
+      if(generation!==STATE.cancelVersion)return;
       STATE.translating = false;
       STATE.lastError = "读取配置失败：" + error.message;
       setFabBusy(false);
@@ -293,6 +426,7 @@ function init() {
       refreshPanelModal();
       return;
     }
+    if(generation!==STATE.cancelVersion)return;
     // 读取配置期间也可能点击取消，此时不再采集文字或发起请求。
     if (STATE.cancelRequested || STATE.pagePaused) {
       STATE.translating = false;
@@ -301,6 +435,7 @@ function init() {
     }
     // 固定本轮配置，防止请求过程中更改设置导致同一批次混用服务或语言。
     const runConfig = { engine: STATE.engine, from: STATE.from, to: STATE.to,
+      cancelVersion:generation,runToken:requestToken,
       retryManual: !automatic,
       retryToken: automatic ? undefined : String(Date.now()) + ":" + Math.random(),
       aiProvider: STATE.aiProvider,
@@ -310,7 +445,7 @@ function init() {
     wholePageScan = false; dirtyRoots.clear();
     const rawBlocks = collectBlocks(roots).filter(item => eligibleForRequest(item, automatic));
     if (rawBlocks.length === 0) {
-      console.log("[双语翻译] 未找到可翻译内容");
+      debugLog("[双语翻译] 未找到可翻译内容");
       STATE.translating = false;
       setFabBusy(false);
       return;
@@ -320,16 +455,19 @@ function init() {
     const total = blocks.length;
     const workerCount = Math.min(10, Math.max(1, Number(STATE.concurrency) || 4));
 
-    console.log(`[双语翻译] 开始：共 ${total} 段，并发 ${workerCount}`);
+    debugLog(`[双语翻译] 开始：共 ${total} 段，并发 ${workerCount}`);
 
     let done = 0, succeeded = 0, failed = 0, skipped = 0;
     const queue = [...blocks];
     const workers = Array.from({ length: workerCount }, () => worker());
 
+    /**
+     * 消费本轮共享待翻译列表；取消或任务版本变化时停止领取后续内容。
+     */
     async function worker() {
       STATE.activeWorkers++;
       while (queue.length) {
-        if (STATE.cancelRequested) break;
+        if (STATE.cancelRequested || generation!==STATE.cancelVersion) break;
         const item = queue.shift();
         if (!item) break;
         const result = await handleBlock(item, runConfig);
@@ -338,13 +476,14 @@ function init() {
         else if (!STATE.cancelRequested) failed++;
         done++;
         if (done % 5 === 0 || done === total) {
-          console.log(`[双语翻译] 进度 ${done}/${total}`);
+          debugLog(`[双语翻译] 进度 ${done}/${total}`);
         }
       }
-      STATE.activeWorkers--;
+      if(generation===STATE.cancelVersion)STATE.activeWorkers--;
     }
 
     await Promise.all(workers);
+    if(generation!==STATE.cancelVersion)return;
 
     STATE.translating = false;
     STATE.translated = translatedElements.size > 0 && !STATE.cancelRequested;
@@ -352,14 +491,15 @@ function init() {
     setFabTranslated(STATE.translated);
 
     if (STATE.cancelRequested) {
-      console.log(`[双语翻译] 已取消`);
+      debugLog(`[双语翻译] 已取消`);
     } else {
-      console.log(`[双语翻译] 完成：成功 ${succeeded} 段，跳过 ${skipped} 段，失败 ${failed} 段`);
+      debugLog(`[双语翻译] 完成：成功 ${succeeded} 段，跳过 ${skipped} 段，失败 ${failed} 段`);
     }
-    if (failed && !STATE.cancelRequested) {
+    if (failed && !automatic && !STATE.pagePaused) {
       if (!panelModalEl) openControlPanel();
-      showPanelToast("部分内容翻译失败，已限制自动重试；请检查网络或配置后手动重试", "warn");
+      showPanelToast("部分内容未完成，请查看原因并调整语言或引擎后重试", "warn");
     }
+    if(failed)debugLog("[页知译] 本轮部分内容未完成：",STATE.lastError);
     if (panelModalEl) refreshPanelModal();
     if (pendingViewport) {
       pendingViewport = false;
@@ -368,20 +508,26 @@ function init() {
   }
 
   // ---------- 单段处理 ----------
+  /**
+   * 处理单个文字块，分段请求并插入结果；记录失败冷却且不将主动取消计为失败。
+   */
   async function handleBlock({ el, text, node }, config) {
-    if (STATE.cancelRequested) return false;
+    const generation=config.cancelVersion ?? STATE.cancelVersion;
+    if (STATE.cancelRequested || generation!==STATE.cancelVersion) return "skipped";
 
     const target = node || el;
-    if (pendingRecords.has(target)) return "skipped";
-    pendingRecords.add(target);
+    const pendingSet=pendingRecords;
+    if (pendingSet.has(target)) return "skipped";
+    pendingSet.add(target);
     if (!node) el.setAttribute(STATE.processedAttr, "1");
     const chunks = splitText(text, 480, config.engine === "mymemory" ? 480 : Infinity);
     try {
       const parts = [];
       for (const c of chunks) {
-        if (STATE.cancelRequested) return false;
+        if (STATE.cancelRequested || generation!==STATE.cancelVersion) return "skipped";
         parts.push(await requestTranslate(c, config));
       }
+      if(generation!==STATE.cancelVersion)return "skipped";
       if (STATE.cancelRequested) { el.removeAttribute(STATE.processedAttr); return false; }
 
       const translation = parts.join(" ");
@@ -414,22 +560,26 @@ function init() {
       } else insertTranslation(el, translation);
       return true;
     } catch (e) {
+      if(e.name==="AbortError" || generation!==STATE.cancelVersion)return "skipped";
       if (!STATE.cancelRequested) {
         const old = failureRecords.get(target);
         const same = old && old.text === text && old.scope === requestScope(config);
         const attempts = same ? old.attempts + 1 : 1;
-        failureRecords.set(target,{text,scope:requestScope(config),attempts,next:Date.now()+30000*Math.pow(2,attempts-1)});
+        failureRecords.set(target,{text,scope:requestScope(config),attempts,next:e.code==="NEED_SOURCE_LANGUAGE"?Infinity:Date.now()+30000*Math.pow(2,attempts-1)});
         STATE.lastError = e.message;
         STATE.failedCount++;
-        console.warn("[双语翻译] 请求失败，已限制自动重试：", e.message);
+        setFabTranslated(STATE.translated);
       }
       el.removeAttribute(STATE.processedAttr);
       return false;
     } finally {
-      pendingRecords.delete(target);
+      pendingSet.delete(target);
     }
   }
 
+  /**
+   * 在原文附近挂载译文并保存还原记录；导航等紧凑区域使用行内样式。
+   */
   function insertTranslation(el, translation, isHover = false) {
     if (STATE.cancelRequested && !isHover) return;
     if (!el.isConnected) return;
@@ -443,6 +593,9 @@ function init() {
     wrapper.className = "bt-translation-text" + (isHover ? " bt-hover-translation" : "");
     wrapper.textContent = translation;
     wrapper.setAttribute("translate", "no");
+    const display=window.getComputedStyle(el).display;
+    if(display==="inline" || el.classList.contains("bt-text-fragment") ||
+       el.closest("nav, [role='navigation'], aside, [role='menu']"))wrapper.classList.add("bt-translation-inline");
     const compact = el.matches && (el.matches(FORM_SELECTOR + ", td, th") || !!el.closest("form, " + DIALOG_SELECTOR));
     if (compact) wrapper.classList.add("bt-translation-compact");
     // 继承所在区域的文字颜色，兼容同一页面上的浅色和深色卡片。
@@ -457,11 +610,17 @@ function init() {
     applyEntryMode(translatedElements.get(el));
   }
 
+  /**
+   * 根据双语或仅译文模式切换单条记录的原文显示状态。
+   */
   function applyEntryMode(entry) {
     const hide = STATE.mode === "translation-only" && !entry.wrapper.classList.contains("bt-hover-translation");
     entry.original.style.display = hide ? "none" : "contents";
   }
 
+  /**
+   * 将当前显示模式应用到所有已经插入的翻译记录。
+   */
   function applyMode() {
     for (const [el, entry] of translatedElements) {
       if (!entry.wrapper.isConnected) continue;
@@ -470,6 +629,14 @@ function init() {
   }
 
   // 按接口长度限制分块，优先在词句边界截断，并避免拆开表情等字符的代理对。
+  /**
+   * 按字符数及可选 UTF-8 字节上限拆分文本，避免切断 Unicode 字符。
+   *
+   * @param {string} text 待拆分文本。
+   * @param {number} maxLen 单段字符长度上限。
+   * @param {number} maxBytes 单段 UTF-8 字节上限，默认不限制。
+   * @returns {string[]} 按原顺序排列的文本分段。
+   */
   function splitText(text, maxLen, maxBytes = Infinity) {
     const chunks = [];
     let rest = text;
@@ -497,19 +664,27 @@ function init() {
     return chunks;
   }
 
+  /**
+   * 翻译用户选中的文字，在选区附近展示结果；取消后不显示迟到的弹层。
+   */
   async function translateSelection(text) {
     if (!text || !text.trim()) return;
+    const generation=STATE.cancelVersion;
     // 网络请求期间选区可能消失，提前保存位置以便在原选区旁展示结果。
     const anchorRect = getSelectionAnchorRect();
     await loadConfig();
+    if(generation!==STATE.cancelVersion)return;
     try {
       const res = await requestTranslate(text.trim());
       showPopup(text.trim(), res, anchorRect);
     } catch (e) {
-      showPopup(text.trim(), "翻译失败：" + e.message, anchorRect);
+      if(e.name!=="AbortError")showPopup(text.trim(), "翻译失败：" + e.message, anchorRect);
     }
   }
 
+  /**
+   * 获取当前选区的位置矩形，用于定位选中翻译结果。
+   */
   function getSelectionAnchorRect() {
     try {
       const selection = window.getSelection();
@@ -525,6 +700,9 @@ function init() {
   }
 
   // 解包保存的原始节点，保留链接事件和控件状态；文字片段的临时容器也一并移除。
+  /**
+   * 移除所有译文并还原原始节点，清理处理标记和相关翻译记录。
+   */
   function clearTranslations() {
     for (const [el, entry] of translatedElements) {
       const original = entry.original;
@@ -550,6 +728,9 @@ function init() {
     STATE.translated = false;
   }
 
+  /**
+   * 按当前翻译状态在开始翻译与取消还原之间切换。
+   */
   function toggleTranslation() {
     if (STATE.translating) {
       if (!STATE.cancelRequested) cancelTranslation();
@@ -559,31 +740,27 @@ function init() {
     else translatePage();
   }
 
+  /**
+   * 暂停本页、递增任务版本并取消后台旧批次；立即还原页面，不等待网络返回。
+   */
   function cancelTranslation() {
-    STATE.pagePaused = true;
-    STATE.cancelVersion++;
-    // 先清理任务再还原页面，防止还原产生的变动或旧定时回调重新启动翻译。
-    clearTimeout(visibleTranslateTimer);
-    clearTimeout(initialTranslateTimer);
-    visibleTranslateTimer = null;
-    initialTranslateTimer = null;
-    pendingViewport = false;
-    dirtyRoots.clear(); wholePageScan = true;
-    STATE.lastError = ""; STATE.failedCount = 0;
-    hoveredEl = null;
-    if (STATE.translating) {
-      STATE.cancelRequested = true;
-      clearTranslations();
-      setFabTranslated(false);
-      console.log("[双语翻译] 已请求取消，等待当前请求结束…");
-      if (panelModalEl) refreshPanelModal();
-      return;
+    const oldToken=requestToken;
+    STATE.pagePaused=true;STATE.cancelVersion++;
+    resumeAfterSettingsChange=false;
+    requestToken="page-"+Date.now()+"-"+Math.random();
+    // 本地先立即结束等待，再通知后台移除队列、中止只属于本页的请求。
+    for(const task of [...pendingMessages])task.reject(cancelledError());
+    if(typeof chrome.runtime.sendMessage==="function") {
+      try {chrome.runtime.sendMessage({action:MSG.CANCEL_TRANSLATION_REQUESTS,runToken:oldToken},()=>{void chrome.runtime.lastError;});}catch(_){}
     }
-    STATE.cancelRequested = false;
-    clearTranslations();
-    setFabTranslated(false);
-    console.log("[双语翻译] 已取消翻译");
-    if (panelModalEl) refreshPanelModal();
+    clearTimeout(visibleTranslateTimer);clearTimeout(initialTranslateTimer);
+    visibleTranslateTimer=null;initialTranslateTimer=null;
+    pendingViewport=false;dirtyRoots.clear();wholePageScan=true;
+    pendingRecords=new WeakSet();hoveredEl=null;
+    STATE.cancelRequested=false;STATE.translating=false;STATE.activeWorkers=0;
+    STATE.lastError="";STATE.failedCount=0;
+    clearTranslations();setFabBusy(false);setFabTranslated(false);
+    if(panelModalEl)refreshPanelModal();
   }
 
   // ============================================================
@@ -591,6 +768,9 @@ function init() {
   // ============================================================
   let hoveredEl = null;
 
+  /**
+   * 绑定悬停翻译事件，遵循 Shift 偏好、页面暂停和任务版本限制。
+   */
   function bindHoverTranslate() {
     document.addEventListener("mouseover", async (e) => {
       if (!STATE.hoverTranslate || STATE.pagePaused || STATE.cancelRequested) return;
@@ -622,7 +802,7 @@ function init() {
         insertTranslation(el, translation.trim(), true);
         el.setAttribute(STATE.processedAttr, "hover");
       } catch (err) {
-        console.warn("[双语翻译] 悬停翻译失败：", err.message);
+        if(err.name!=="AbortError"){STATE.lastError=err.message;setFabTranslated(STATE.translated);}
       }
     });
   }
@@ -642,6 +822,9 @@ function init() {
 
   const ICON_CHECK_BADGE = `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 12.5l4.5 4.5L19 7.5" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
+  /**
+   * 创建翻译悬浮球，恢复符合当前布局版本的保存位置并限制在视口内。
+   */
   function createFab() {
     if (fabWrap) return;
     const mount = getMountNode();
@@ -677,15 +860,23 @@ function init() {
     bindFabEvents();
   }
 
+  /**
+   * 返回插件界面的挂载节点，兼容页面处于全屏的情况。
+   */
   function getMountNode() {
     if (document.body) return document.body;
     if (document.documentElement) return document.documentElement;
     return null;
   }
 
+  /**
+   * 绑定悬浮球的点击、拖动和悬停行为，并保存拖动后的有效位置。
+   */
   function bindFabEvents() {
     let dragging = false, moved = false;
     let sx = 0, sy = 0, ox = 0, oy = 0;
+
+    // 记录按下位置和拖动起点，为当前组件启动拖动交互。
 
     const onDown = (e) => {
       if (e.button !== 0) return;
@@ -699,6 +890,8 @@ function init() {
       e.preventDefault();
     };
 
+    // 在拖动过程中更新组件坐标，并按当前视口约束位置。
+
     const onMove = (e) => {
       if (!dragging) return;
       const dx = e.clientX - sx;
@@ -708,6 +901,8 @@ function init() {
       fabWrap.style.top = Math.max(48, Math.min(oy + dy, window.innerHeight - 40)) + "px";
       if (thumbEl) positionThumbNearFab();
     };
+
+    // 结束当前组件的拖动；是否持久化位置由所在组件的实现决定。
 
     const onUp = () => {
       if (!dragging) return;
@@ -747,6 +942,9 @@ function init() {
     document.addEventListener("touchend", () => { if (!dragging) return; onUp(); });
   }
 
+  /**
+   * 展示悬浮球附近的快捷操作卡片并刷新其显示状态。
+   */
   function showThumbnail() {
     if (thumbEl) return;
     const mount = getMountNode();
@@ -770,6 +968,9 @@ function init() {
     thumbEl.addEventListener("mouseleave", () => scheduleHideThumb());
   }
 
+  /**
+   * 根据悬浮球位置和视口边界定位快捷卡片，减少超出屏幕的情况。
+   */
   function positionThumbNearFab() {
     if (!thumbEl || !fabWrap) return;
     const fr = fabWrap.getBoundingClientRect();
@@ -790,11 +991,17 @@ function init() {
     thumbEl.style.bottom = "auto";
   }
 
+  /**
+   * 延迟隐藏快捷卡片，让指针能从悬浮球移到卡片上。
+   */
   function scheduleHideThumb() {
     if (hideTimer) clearTimeout(hideTimer);
     hideTimer = setTimeout(() => hideThumbNow(), 260);
   }
 
+  /**
+   * 取消隐藏计时并立即收起快捷卡片。
+   */
   function hideThumbNow() {
     if (thumbEl) { thumbEl.remove(); thumbEl = null; }
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
@@ -803,6 +1010,9 @@ function init() {
   // ============================================================
   // 控制面板
   // ============================================================
+  /**
+   * 创建或显示页面控制面板，随后绑定交互并刷新当前配置。
+   */
   function openControlPanel() {
     if (panelModalEl) return;
     const mount = getMountNode();
@@ -895,6 +1105,9 @@ function init() {
     refreshPanelModal();
   }
 
+  /**
+   * 根据服务配置生成引擎选项，标明尚未配置的服务。
+   */
   function renderEngineOptions() {
     const sel = panelModalEl.querySelector("#btModalEngine");
     if (!sel) return;
@@ -920,6 +1133,9 @@ function init() {
     if (!sel.value && configured.length > 0) sel.value = configured[0];
   }
 
+  /**
+   * 绑定面板的引擎、语言、模式及行为设置，并处理重新翻译和取消操作。
+   */
   function bindPanelModal() {
     const $ = (sel) => panelModalEl.querySelector(sel);
 
@@ -941,12 +1157,11 @@ function init() {
         renderEngineOptions();
         return;
       }
-      STATE.engine = v;
-      saveField("engine", v);
+      changeTranslationSetting("engine",v);
     };
 
-    $("#btModalFrom").onchange = (e) => { STATE.from = e.target.value; saveField("from", STATE.from); };
-    $("#btModalTo").onchange = (e) => { STATE.to = e.target.value; saveField("to", STATE.to); };
+    $("#btModalFrom").onchange = (e) => { changeTranslationSetting("from",e.target.value); };
+    $("#btModalTo").onchange = (e) => { changeTranslationSetting("to",e.target.value); };
 
     $("#btModalModeSeg").querySelectorAll(".bt-modal-seg-btn").forEach((btn) => {
       btn.onclick = () => {
@@ -973,6 +1188,9 @@ function init() {
     };
   }
 
+  /**
+   * 在控制面板内短暂展示操作结果或错误提示。
+   */
   function showPanelToast(msg, type = "info") {
     if (!panelModalEl) return;
     let toast = panelModalEl.querySelector(".bt-panel-toast");
@@ -984,6 +1202,9 @@ function init() {
     setTimeout(() => toast.remove(), 2600);
   }
 
+  /**
+   * 为控制面板标题栏绑定拖动事件，避免干扰面板内的表单交互。
+   */
   function makeModalDraggable() {
     if (!panelModalEl) return;
     const header = panelModalEl.querySelector("#btModalDrag");
@@ -991,6 +1212,8 @@ function init() {
     if (!header || !panel) return;
 
     let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+
+    // 记录按下位置和拖动起点，为当前组件启动拖动交互。
 
     const onDown = (e) => {
       if (e.target.closest(".bt-modal-close")) return;
@@ -1005,6 +1228,8 @@ function init() {
       e.preventDefault();
     };
 
+    // 在拖动过程中更新组件坐标，并按当前视口约束位置。
+
     const onMove = (e) => {
       if (!dragging) return;
       const dx = e.clientX - sx, dy = e.clientY - sy;
@@ -1015,6 +1240,8 @@ function init() {
       panelModalEl.style.left = nl + "px";
       panelModalEl.style.top = nt + "px";
     };
+
+    // 结束当前组件的拖动；是否持久化位置由所在组件的实现决定。
 
     const onUp = () => { dragging = false; };
 
@@ -1028,6 +1255,9 @@ function init() {
     };
   }
 
+  /**
+   * 将当前翻译状态、失败提示和用户配置同步到面板控件。
+   */
   function refreshPanelModal() {
     if (!panelModalEl) return;
     const $ = (sel) => panelModalEl.querySelector(sel);
@@ -1060,7 +1290,7 @@ function init() {
     }
 
     const errorEl = $("#btModalError");
-    if (errorEl) errorEl.textContent = STATE.lastError ? "有内容翻译失败：" + STATE.lastError : "";
+    if (errorEl) {errorEl.textContent = STATE.lastError ? "部分内容未完成：" + STATE.lastError : "";errorEl.title=errorEl.textContent;}
     renderEngineOptions();
     window.BT_CONST.fillLanguageSelect($("#btModalFrom"),"from",STATE.from);
     window.BT_CONST.fillLanguageSelect($("#btModalTo"),"to",STATE.to);
@@ -1069,6 +1299,9 @@ function init() {
     $("#btModalHover").classList.toggle("on", STATE.hoverPanel);
   }
 
+  /**
+   * 更新双语与仅译文按钮的选中样式。
+   */
   function updateModalModeButtons(mode) {
     if (!panelModalEl) return;
     panelModalEl.querySelectorAll(".bt-modal-seg-btn").forEach((btn) => {
@@ -1076,6 +1309,9 @@ function init() {
     });
   }
 
+  /**
+   * 关闭控制面板；关闭面板本身不等同于取消翻译。
+   */
   function closeControlPanel() {
     if (panelModalEl) {
       if (panelModalEl.__btCleanup) panelModalEl.__btCleanup();
@@ -1084,10 +1320,16 @@ function init() {
     }
   }
 
+  /**
+   * 通过共享存储层保存单项配置，返回写入 Promise 供调用方处理失败。
+   */
   function saveField(key, value) {
-    chrome.storage.sync.set({ [key]: value });
+    return chrome.storage.sync.set({ [key]: value });
   }
 
+  /**
+   * 切换悬浮球的翻译中视觉状态。
+   */
   function setFabBusy(busy) {
     if (!fabEl) return;
     fabEl.classList.toggle("bt-busy", busy);
@@ -1098,7 +1340,12 @@ function init() {
     if (panelModalEl) refreshPanelModal();
   }
 
+  /**
+   * 更新悬浮球完成标记及失败提醒，使状态与当前页面一致。
+   */
   function setFabTranslated(translated) {
+    if(fabWrap)fabWrap.classList.toggle("bt-has-error",!!STATE.lastError&&!STATE.pagePaused);
+    if(fabEl)fabEl.title=STATE.lastError&&!STATE.pagePaused?"部分内容未完成，打开面板查看原因":"点击翻译 / 取消翻译";
     if (!fabWrap) return;
     fabWrap.classList.toggle("bt-translated", translated && !STATE.translating && !STATE.cancelRequested);
     if (fabEl) fabEl.title = translated ? "点击取消翻译" : "点击翻译";
@@ -1108,6 +1355,9 @@ function init() {
   // 划词弹窗
   // ============================================================
   let popupEl = null;
+  /**
+   * 创建选中或悬停翻译结果弹层，按锚点定位并绑定关闭事件。
+   */
   function showPopup(original, translation, anchorRect = null) {
     if (popupEl) { popupEl.remove(); popupEl = null; }
     const mount = getMountNode();
@@ -1134,6 +1384,7 @@ function init() {
     popupEl.style.right = "auto";
     popupEl.style.bottom = "auto";
 
+    // 点击结果弹层以外的区域时关闭，并移除对应的事件监听。
     const close = (e) => {
       if (!popupEl || !popupEl.contains(e.target)) {
         if (popupEl) popupEl.remove();
@@ -1144,6 +1395,9 @@ function init() {
     setTimeout(() => document.addEventListener("click", close), 0);
   }
 
+  /**
+   * 转义插入 HTML 模板的文字，避免网页文本被当作标签解析。
+   */
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
@@ -1156,6 +1410,9 @@ function init() {
   let visibleTranslateTimer = null;
   let initialTranslateTimer = null;
   let pendingViewport = false;
+  /**
+   * 合并频繁的页面变化触发，仅在页面允许继续翻译时安排补翻。
+   */
   function scheduleVisibleTranslation() {
     // 已取消的页面不自动重启；将连续触发的事件合并为一次可见区域扫描。
     if ((!STATE.autoTranslate && !STATE.pageStarted && !STATE.translated && !STATE.translating) || STATE.cancelRequested || STATE.pagePaused) return;
@@ -1171,6 +1428,9 @@ function init() {
   window.addEventListener("scroll", () => { wholePageScan = true; scheduleVisibleTranslation(); }, { passive: true, capture: true });
   window.addEventListener("resize", () => { wholePageScan = true; scheduleVisibleTranslation(); }, { passive: true });
 
+  /**
+   * 还原一条译文对应的原始内容，并移除该条翻译的处理记录。
+   */
   function restoreEntry(el, entry) {
     if (entry.original.parentNode === el) {
       while (entry.original.firstChild) el.insertBefore(entry.original.firstChild,entry.original);
@@ -1185,6 +1445,9 @@ function init() {
     el.removeAttribute(STATE.processedAttr);
     translatedElements.delete(el);
   }
+  /**
+   * 观察新增、替换和文字变化；忽略插件自身节点，只对受影响区域安排补翻。
+   */
   function observeDynamicContent() {
     const uiSelector = ".bt-translation-text, .bt-modal, .bt-popup, .bt-fab-wrap, .bt-thumb";
     const observer = new MutationObserver(records => {
@@ -1238,11 +1501,15 @@ function init() {
     for (const event of ["toggle","transitionend","animationend"]) document.addEventListener(event,scheduleVisibleTranslation,true);
   }
 
+  /**
+   * 加载初始配置并安装界面和事件监听，按自动翻译偏好决定是否开始翻译。
+   */
   async function bootstrap() {
     try { await loadConfig(); } catch (error) {
       STATE.autoTranslate = false;
       STATE.lastError = "读取配置失败，请打开设置检查：" + error.message;
     }
+    // 页面已有可挂载节点后再初始化悬浮球、观察器及自动翻译。
     const start = () => {
       createFab();
       bindHoverTranslate();

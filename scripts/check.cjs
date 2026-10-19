@@ -1,6 +1,12 @@
 const fs=require('node:fs'),path=require('node:path'),{spawnSync}=require('node:child_process');
 const root=path.resolve(__dirname,'..'),manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.json')));
+/**
+ * 调用当前 Node 的语法检查；任一文件不通过就以失败状态退出。
+ */
 function check(file){const r=spawnSync(process.execPath,['--check',file],{stdio:'inherit'});if(r.status!==0)process.exit(r.status||1);}
+/**
+ * 递归检查指定源码目录中的 JavaScript 文件，不遍历依赖目录。
+ */
 function walk(dir){for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,entry.name);if(entry.isDirectory())walk(p);else if(/\.(c?js)$/.test(p))check(p);}}
 for(const dir of ['background','content','core','settings','scripts','tests'])walk(path.join(root,dir));
 for(const ref of [manifest.background.service_worker,...manifest.content_scripts.flatMap(x=>[...x.js,...x.css]),...Object.values(manifest.icons),...Object.values(manifest.action.default_icon)])

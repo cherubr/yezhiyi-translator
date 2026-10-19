@@ -1,3 +1,4 @@
+// 浏览器布局回归：验证真实渲染下的排版、显示模式、节点还原及链接事件保留。
 const {chromium}=require('playwright');
 const fs=require('fs');const assert=require('assert/strict');
 (async()=>{

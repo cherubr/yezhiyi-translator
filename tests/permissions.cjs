@@ -1,3 +1,4 @@
+// 权限回归：验证接口地址解析、用户点击授权、拒绝授权阻断及后台访问检查。
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');

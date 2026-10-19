@@ -345,3 +345,26 @@
   font-size: 0.85em;
   white-space: normal;
 }
+
+/* 状态说明与按钮分行，长错误说明不能挤压按钮为竖排。 */
+.bt-modal, .bt-modal * { box-sizing: border-box; }
+.bt-modal { max-width: calc(100vw - 24px); writing-mode: horizontal-tb; }
+.bt-modal-panel { width: min(340px, calc(100vw - 24px)); }
+.bt-modal .bt-modal-hero { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.bt-modal .bt-modal-hero > div { min-width: 0; }
+.bt-modal .bt-modal-hero-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.bt-modal .bt-modal-btn { flex: 0 0 auto; white-space: nowrap; word-break: keep-all; overflow-wrap: normal; writing-mode: horizontal-tb; }
+.bt-modal #btModalError { overflow-wrap: anywhere; line-height: 1.5; }
+.bt-translation-text.bt-translation-inline {
+  display: inline; margin: 0 0 0 0.35em; padding: 0; flex: 0 1 auto;
+  font-size: 0.9em; line-height: inherit; white-space: normal;
+}
+.bt-fab-wrap.bt-has-error .bt-check-badge { opacity: 0; }
+.bt-fab-wrap.bt-has-error::after {
+  content: "!"; position: absolute; right: -3px; bottom: -3px;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #a86700; color: white; font: bold 11px/14px sans-serif;
+  text-align: center; pointer-events: none;
+}
+
+.bt-modal #btModalError { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }

@@ -1,3 +1,4 @@
+// 发布打包入口：只收录运行必需文件，拒绝覆盖同名安装包；开发依赖和测试不进入 ZIP。
 const fs=require('node:fs'),path=require('node:path'),{execFileSync}=require('node:child_process');
 const root=path.resolve(__dirname,'..'),manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.json')));
 if(!/^\d+\.\d+\.\d+$/.test(manifest.version))throw Error('无效版本');

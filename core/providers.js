@@ -22,6 +22,9 @@
   };
 
   // 统一解析请求地址和授权域名，保证设置页申请的权限与后台实际访问地址一致。
+  /**
+   * 校验并规范化接口基础地址，返回实际 base、权限匹配 origin 及提示用 host。
+   */
   function getAIEndpoint(provider, config = {}) {
     const defaults = AI_PROVIDERS[provider] || {};
     const base = (config.base || defaults.base || "https://api.openai.com/v1").trim().replace(/\/+$/, "");
@@ -33,6 +36,9 @@
     return { base, origin: url.protocol + "//" + url.host + "/*", host: url.hostname };
   }
 
+  /**
+   * 从用户点击调用链申请当前接口域名权限，返回解析后的地址；拒绝授权时抛出中文错误。
+   */
   function requestAIAccess(provider, config) {
     const endpoint = getAIEndpoint(provider, config);
     // 必须在按钮点击调用链中直接发起，不能先等待存储或网络操作，以免丢失用户手势。

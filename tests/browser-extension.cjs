@@ -1,3 +1,4 @@
+// 完整扩展回归：用独立测试配置加载扩展，并用本地模拟接口验证后台与页面协作。
 const {chromium}=require('playwright');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'..');
@@ -7,9 +8,15 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
  const server=http.createServer((req,res)=>{
    if(req.url==='/v1/chat/completions'){
      let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{
-       const data=JSON.parse(body);calls.push({authorization:req.headers.authorization,data});
-       res.writeHead(200,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*'});
-       res.end(JSON.stringify({choices:[{message:{content:'本地测试译文：'+data.messages[1].content}}]}));
+       const data=JSON.parse(body);
+       const record={authorization:req.headers.authorization,data,aborted:false};calls.push(record);
+       const respond=()=>{if(res.destroyed)return;res.writeHead(200,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*'});res.end(JSON.stringify({choices:[{message:{content:'本地测试译文：'+data.messages[1].content}}]}));};
+       if(data.messages[1].content.startsWith('Slow')) {
+         res.writeHead(200,{'Content-Type':'application/json','Access-Control-Allow-Origin':'*'});
+         res.write('{"choices":[');
+         const timer=setTimeout(()=>{if(!res.destroyed)res.end('{"message":{"content":"旧引擎迟到结果"}}]}');},3000);
+         res.on('close',()=>{if(!res.writableEnded){record.aborted=true;clearTimeout(timer);}});
+       }else respond();
      });
    }else if(req.url==='/fixture'){
      res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});
@@ -30,7 +37,13 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
      await chrome.storage.local.set({aiKeys:{custom:{key:'local-test-key',base:'https://api.deepseek.com/v1',model:'local-model'}}});
      // 仅在测试资料中拦截传输层：已授权域名的请求转至本地模拟接口，不发送到外部。
      const originalFetch=fetch;
-     globalThis.fetch=(url,options)=>originalFetch(String(url).startsWith('https://api.deepseek.com/v1/')?base+'/v1/chat/completions':url,options);
+     globalThis.fetch=(url,options)=>{
+       if(String(url).startsWith('https://translate.googleapis.com/')){
+         const text=new URL(url).searchParams.get('q');
+         return Promise.resolve(new Response(JSON.stringify([[['新引擎：'+text]]]),{headers:{'Content-Type':'application/json'}}));
+       }
+       return originalFetch(String(url).startsWith('https://api.deepseek.com/v1/')?base+'/v1/chat/completions':url,options);
+     };
      if(!await chrome.permissions.contains({origins:['http://localhost:11434/*']}))throw Error('默认本机端口权限检查失败');
    },origin);
    const page=await context.newPage();page.on('console',msg=>{if(msg.type()==='error'||msg.type()==='warn')console.log('EXTENSION:',msg.text());});page.on('pageerror',error=>console.log('PAGE:',error.message));await page.goto(origin+'/fixture');
@@ -55,12 +68,26 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    const beforeCancel=calls.length;
    await page.evaluate(()=>document.querySelector('#first').textContent='Changed after cancel');
    await page.waitForTimeout(600);assert.equal(calls.length,beforeCancel);
+   await page.evaluate(()=>{
+     document.querySelector('#first').textContent='Slow previous engine';
+     document.querySelector('#second').textContent='Slow previous engine';
+   });
+   await send('START_TRANSLATION');
+   await page.waitForFunction(()=>document.querySelector('.bt-fab').classList.contains('bt-busy'));
+   for(let i=0;i<100&&!calls.some(x=>x.data.messages[1].content==='Slow previous engine');i++)await page.waitForTimeout(20);
+   assert.ok(calls.some(x=>x.data.messages[1].content==='Slow previous engine'));
+   await send('OPEN_PANEL');
+   await page.locator('#btModalEngine').selectOption('google');
+   await page.waitForFunction(()=>document.querySelector('#first .bt-translation-text')?.textContent.startsWith('新引擎：'));
+   for(let i=0;i<50&&!calls.some(x=>x.data.messages[1].content==='Slow previous engine'&&x.aborted);i++)await page.waitForTimeout(20);
+   assert.ok(calls.some(x=>x.data.messages[1].content==='Slow previous engine'&&x.aborted),'switch aborts old network request');
+   assert.equal(await page.locator('#first .bt-translation-text').textContent(),'新引擎：Slow previous engine');
    const settings=await context.newPage();
    await settings.goto('chrome-extension://'+id+'/settings/settings.html');
    await settings.waitForFunction(expected=>document.querySelector('#version')?.textContent==='v'+expected,version);
    assert.equal(await settings.locator('#aboutVersion').textContent(),version);
    assert.equal(await settings.locator('#from option').count(),49);
-   assert.equal(await settings.locator('#to option').count(),48);
+   assert.equal(await settings.locator('#to option').count(),49);
    assert.equal(await settings.locator('#to option[value="ms"]').textContent(),'马来语');
    assert.equal(await settings.locator('#from option[value="my"]').textContent(),'缅甸语');
    await settings.locator('#to').selectOption('fr');
@@ -68,7 +95,7 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    assert.equal(await worker.evaluate(async()=>(await chrome.storage.sync.get('to')).to),'fr');
    await send('OPEN_PANEL');
    assert.equal(await page.locator('#btModalFrom option').count(),49);
-   assert.equal(await page.locator('#btModalTo option').count(),48);
+   assert.equal(await page.locator('#btModalTo option').count(),49);
    await page.waitForFunction(()=>document.querySelector('#btModalTo')?.value==='fr');
    await page.locator('#btModalTo').selectOption('uk');
    await settings.bringToFront();

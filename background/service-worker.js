@@ -63,6 +63,9 @@ chrome.commands.onCommand.addListener(async (command) => {
 });
 
 // ============ 工具 ============
+/**
+ * 向指定标签页发送消息；内容脚本不可用时静默结束。
+ */
 async function safeSendToTab(tabId, message) {
   try {
     await chrome.tabs.sendMessage(tabId, message);
@@ -71,6 +74,9 @@ async function safeSendToTab(tabId, message) {
   }
 }
 
+/**
+ * 优先激活已打开的扩展页面，没有现有标签页时再创建。
+ */
 function openExtensionPage(relativePath) {
   const url = chrome.runtime.getURL(relativePath);
   chrome.tabs.query({ url }, (tabs) => {
@@ -83,14 +89,56 @@ function openExtensionPage(relativePath) {
   });
 }
 
+// 任务按发起页面和批次隔离；取消不会影响其他标签页。
+const requestGroups = new Map();
+/**
+ * 按标签页、框架、文档和批次生成隔离键，防止取消操作跨页面生效。
+ */
+function groupKey(sender,token) {
+  return JSON.stringify([sender.tab?.id,sender.frameId,sender.documentId||sender.url,token]);
+}
+/**
+ * 构造主动取消异常，供消息响应和运行时识别取消结果。
+ */
+function cancelledError() {const error=new Error("翻译已取消");error.name="AbortError";return error;}
+/**
+ * 在异步处理前登记批次控制器，确保取消能覆盖仍在读取配置的请求。
+ */
+async function trackedTranslate(request,sender) {
+  const key=groupKey(sender,request.runToken);
+  let group=requestGroups.get(key);
+  if(!group){group={cancelled:false,controllers:new Set()};requestGroups.set(key,group);}
+  if(group.cancelled)throw cancelledError();
+  const controller=new AbortController();group.controllers.add(controller);
+  try{return await handleTranslate(request,controller.signal);}
+  finally {
+    group.controllers.delete(controller);
+    if(!group.controllers.size&&!group.cancelled)requestGroups.delete(key);
+  }
+}
+/**
+ * 取消当前页面指定批次并短暂保留取消标记，拦截尚未登记的旧消息。
+ */
+function cancelRequestGroup(request,sender) {
+  const key=groupKey(sender,request.runToken);
+  const group=requestGroups.get(key)||{controllers:new Set()};
+  group.cancelled=true;requestGroups.set(key,group);
+  for(const controller of group.controllers)controller.abort();
+  // 保留取消标记，阻止已经发出、尚未登记的旧消息重新启动。
+  setTimeout(()=>{if(requestGroups.get(key)===group)requestGroups.delete(key);},300000);
+}
+
 // ============ 消息处理 ============
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   const { action } = request;
 
+  if (action === MSG.CANCEL_TRANSLATION_REQUESTS) {
+    cancelRequestGroup(request,sender);sendResponse({ok:true});return false;
+  }
   if (action === MSG.TRANSLATE) {
-    handleTranslate(request)
+    trackedTranslate(request,sender)
       .then((data) => sendResponse({ ok: true, data }))
-      .catch((err) => sendResponse({ ok: false, error: err.message }));
+      .catch((err) => sendResponse({ ok: false, error: err.message, code:err.code, cancelled:err.name==="AbortError" }));
     return true;
   }
 
@@ -110,11 +158,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // ============ 翻译调度 ============
 const translationRuntime=self.BT_CREATE_TRANSLATION_RUNTIME(dispatchTranslation);
-async function handleTranslate(request) {
-  const {engine,text,from="auto",to="zh-CN"}=request;
+/**
+ * 校验请求、解析实际目标语言并取得配置快照，检查接口权限后交给共享运行时。
+ */
+async function handleTranslate(request, signal) {
+  if(signal?.aborted)throw cancelledError();
+  const {engine,text,from="auto"}=request;
+  const to=self.BT_CONST.resolveTargetLanguage(request.to);
   if(!["google","baidu","ai","mymemory"].includes(engine))throw new Error("不支持的翻译引擎");
   if(typeof text!=="string"||!text.trim()||text.length>10000)throw new Error("翻译文本为空或过长");
-  const normalized={engine,text,from,to,retryManual:request.retryManual===true,retryToken:request.retryToken};
+  const normalized={engine,text,from,to,retryManual:request.retryManual===true,retryToken:request.retryToken,signal};
   if(engine==="ai") {
     const stored=await self.BT_STORAGE.get(["aiProvider","aiKeys"]);
     normalized.aiProvider=request.aiProvider||stored.aiProvider||"openai";
@@ -123,22 +176,29 @@ async function handleTranslate(request) {
     if(!await chrome.permissions.contains({origins:[endpoint.origin]}))throw new Error("尚未授权访问接口域名（"+endpoint.host+"），请到设置页测试连接并允许访问");
   }
   if(engine==="baidu")normalized.baiduConfig=await self.BT_STORAGE.get(["baiduAppId","baiduKey"]);
+  if(signal?.aborted)throw cancelledError();
   return translationRuntime.run(normalized);
 }
-async function dispatchTranslation({engine,text,from,to,aiProvider,aiConfig,baiduConfig}) {
+/**
+ * 按引擎分发请求，并把同一个取消信号传递到实际网络调用。
+ */
+async function dispatchTranslation({engine,text,from,to,aiProvider,aiConfig,baiduConfig,signal}) {
   switch(engine) {
-    case "google":return translateGoogle(text,from,to);
-    case "baidu":return translateBaidu(text,from,to,baiduConfig);
-    case "ai":return translateAI(text,from,to,aiProvider,aiConfig);
-    case "mymemory":return translateMyMemory(text,from,to);
+    case "google":return translateGoogle(text,from,to,signal);
+    case "baidu":return translateBaidu(text,from,to,baiduConfig,signal);
+    case "ai":return translateAI(text,from,to,aiProvider,aiConfig,signal);
+    case "mymemory":return translateMyMemory(text,from,to,signal);
   }
 }
 
-async function translateGoogle(text, from, to) {
+/**
+ * 调用 Google 翻译端点并校验响应结构，返回合并后的译文字符串。
+ */
+async function translateGoogle(text, from, to, signal) {
   const url =
     "https://translate.googleapis.com/translate_a/single?client=gtx" +
     "&sl=" + from + "&tl=" + to + "&dt=t&q=" + encodeURIComponent(text);
-  const res = await fetchWithTimeout(url);
+  const res = await fetchWithTimeout(url,{signal});
   if (!res.ok) throw new Error("Google 翻译请求失败：" + res.status);
   const data = await res.json();
   if (!Array.isArray(data) || !Array.isArray(data[0])) {
@@ -147,11 +207,14 @@ async function translateGoogle(text, from, to) {
   return data[0].map((item) => (item && item[0]) || "").join("");
 }
 
-async function translateMyMemory(text, from, to) {
+/**
+ * 必要时先检测源语言，再调用 MyMemory；无法可靠识别时要求手动指定。
+ */
+async function translateMyMemory(text, from, to, signal) {
   if (from === "auto") from = await self.BT_LANG.detectSourceLanguage(text);
   const url = "https://api.mymemory.translated.net/get?q=" +
     encodeURIComponent(text) + "&langpair=" + from + "|" + to;
-  const res = await fetchWithTimeout(url);
+  const res = await fetchWithTimeout(url,{signal});
   if (!res.ok) throw new Error("MyMemory 翻译请求失败：" + res.status);
   const data = await res.json();
   if (data && data.responseStatus && Number(data.responseStatus) >= 400) {
@@ -164,7 +227,10 @@ async function translateMyMemory(text, from, to) {
   return translated;
 }
 
-async function translateBaidu(text, from, to, credentials) {
+/**
+ * 转换百度语言代码并生成接口签名，使用本轮凭据快照发送请求。
+ */
+async function translateBaidu(text, from, to, credentials, signal) {
   const { baiduAppId, baiduKey } = credentials || await self.BT_STORAGE.get(["baiduAppId", "baiduKey"]);
   if (!baiduAppId || !baiduKey) throw new Error("未配置百度翻译 AppID / 密钥");
 
@@ -179,7 +245,7 @@ async function translateBaidu(text, from, to, credentials) {
     salt: salt,
     sign: sign
   });
-  const res = await fetchWithTimeout("https://fanyi-api.baidu.com/api/trans/vip/translate?" + params);
+  const res = await fetchWithTimeout("https://fanyi-api.baidu.com/api/trans/vip/translate?" + params,{signal});
   if (!res.ok) throw new Error("百度翻译请求失败：" + res.status);
   const data = await res.json();
   if (data.error_code) throw new Error("百度翻译：" + data.error_msg);
@@ -187,7 +253,10 @@ async function translateBaidu(text, from, to, credentials) {
   return data.trans_result.map((r) => r.dst || "").join("\n");
 }
 
-async function translateAI(text, from, to, requestedProvider, requestedConfig) {
+/**
+ * 使用指定厂商配置调用兼容接口，构造翻译指令并校验返回的译文。
+ */
+async function translateAI(text, from, to, requestedProvider, requestedConfig, signal) {
   const { aiProvider, aiKeys } = await self.BT_STORAGE.get(["aiProvider", "aiKeys"]);
 
   const provider = requestedProvider || aiProvider || "openai";
@@ -212,6 +281,7 @@ async function translateAI(text, from, to, requestedProvider, requestedConfig) {
   if (!isOllama && keys.key) headers["Authorization"] = "Bearer " + keys.key;
 
   const res = await fetchWithTimeout(base + "/chat/completions", {
+    signal,
     method: "POST",
     headers: headers,
     body: JSON.stringify({
@@ -238,13 +308,30 @@ async function translateAI(text, from, to, requestedProvider, requestedConfig) {
 }
 
 // 为网络请求设置超时，避免服务无响应时持续占用翻译任务；结束后释放定时器。
+/**
+ * 封装网络请求的超时、主动取消与中文错误；错误信息不包含请求中的敏感查询参数。
+ *
+ * @param {string} url 请求地址。
+ * @param {Object} options fetch 配置，可包含外部取消信号。
+ * @param {number} timeoutMs 等待 fetch 返回响应的超时时间，默认 30000 毫秒。
+ * @returns {Promise<Response>} 响应对象；正文读取由调用方执行。
+ */
 async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal=options.signal;
+  let timedOut=false;
+  const abort=()=>controller.abort();
+  if(externalSignal?.aborted)controller.abort();
+  else externalSignal?.addEventListener("abort",abort,{once:true});
+  const timer = setTimeout(() => {timedOut=true;controller.abort();}, timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    // 组合信号在收到响应头后仍可取消响应体读取，避免长流式响应继续占用连接。
+    const signal = externalSignal && typeof AbortSignal !== "undefined" && AbortSignal.any
+      ? AbortSignal.any([controller.signal,externalSignal]) : controller.signal;
+    return await fetch(url, { ...options, signal });
   } catch (error) {
     if (error && error.name === "AbortError") {
+      if(!timedOut&&externalSignal?.aborted)throw cancelledError();
       throw new Error(`请求超时（${timeoutMs / 1000} 秒），请检查网络或服务配置`);
     }
     // 浏览器通常不向脚本暴露连接失败的具体原因；只显示域名，避免泄露请求参数或密钥。
@@ -256,5 +343,6 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
     throw error;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener("abort",abort);
   }
 }

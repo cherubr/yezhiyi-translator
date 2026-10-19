@@ -10,16 +10,25 @@ let currentService = null;
 let editingProvider = null;
 
 // ---------- 工具 ----------
+/**
+ * 将引擎和 AI 厂商编码为下拉选项值，例如 ai:openai。
+ */
 function engineToSelectValue(engine, provider) {
   if (engine === "ai") return `ai:${provider || "openai"}`;
   return engine;
 }
+/**
+ * 解析引擎下拉值，返回实际引擎与厂商；普通引擎保留当前 AI 厂商。
+ */
 function selectValueToEngine(v) {
   if (typeof v === "string" && v.startsWith("ai:")) {
     return { engine: "ai", aiProvider: v.slice(3) };
   }
   return { engine: v, aiProvider: cfg.aiProvider };
 }
+/**
+ * 判断服务是否具备必填配置，控制未配置服务的选择状态。
+ */
 function isEngineConfigured(id) {
   if (id === "google" || id === "mymemory") return true;
   if (id === "baidu") return !!(cfg.baiduAppId && cfg.baiduKey);
@@ -28,12 +37,18 @@ function isEngineConfigured(id) {
   if (id === "ai") return isProviderConfigured(cfg.aiProvider || "openai");
   return false;
 }
+/**
+ * 检查指定 AI 厂商的密钥是否已填写；本地 Ollama 无需密钥。
+ */
 function isProviderConfigured(pid) {
   if (pid === "ollama") return true;
   const keys = (cfg.aiKeys && cfg.aiKeys[pid]) || {};
   return !!keys.key;
 }
 
+/**
+ * 仅更新正在编辑厂商的配置字段，未传入的字段保留原值。
+ */
 function setCurrentProviderData(data) {
   const pid = editingProvider || cfg.aiProvider || "openai";
   if (!cfg.aiKeys) cfg.aiKeys = {};
@@ -44,6 +59,9 @@ function setCurrentProviderData(data) {
   };
 }
 
+/**
+ * 将所选厂商的保存配置或默认值填入表单，并兼容旧版默认模型。
+ */
 function renderProviderInputs(providerId) {
   const existing = (cfg.aiKeys && cfg.aiKeys[providerId]) || {};
   const preset = PROVIDERS[providerId] || PROVIDERS.custom;
@@ -67,6 +85,9 @@ function renderProviderInputs(providerId) {
   cfg.aiKeys[providerId] = { key, base, model };
 }
 
+/**
+ * 读取并去除服务表单字段的首尾空白，返回密钥、基础地址和模型配置。
+ */
 function readProviderInputs() {
   const keyEl = document.getElementById("openaiKey");
   const baseEl = document.getElementById("openaiBase");
@@ -78,6 +99,9 @@ function readProviderInputs() {
   };
 }
 
+/**
+ * 根据是否启用和是否配置生成单个厂商的状态徽标内容。
+ */
 function renderProviderBadge(providerId) {
   const isUsing = providerId === cfg.aiProvider && cfg.engine === "ai";
   const isConfigured = isProviderConfigured(providerId);
@@ -91,6 +115,9 @@ function renderProviderBadge(providerId) {
   return "";
 }
 
+/**
+ * 统一刷新各 AI 厂商的配置状态和当前使用标记。
+ */
 function refreshAllProviderBadges() {
   const grid = document.getElementById("providerGrid");
   if (!grid) return;
@@ -103,6 +130,9 @@ function refreshAllProviderBadges() {
   });
 }
 
+/**
+ * 更新当前启用服务的说明条，区分正在编辑与实际使用的厂商。
+ */
 function refreshCurrentUsingBar() {
   const bar = document.getElementById("currentUsingBar");
   const textEl = document.getElementById("currentUsingText");
@@ -125,12 +155,18 @@ function refreshCurrentUsingBar() {
 }
 
 // ---------- 悬停翻译模式 ----------
+/**
+ * 把悬停开关及 Shift 要求组合成界面使用的单一模式值。
+ */
 function getHoverTranslateMode() {
   if (!cfg.hoverTranslate) return "off";
   if (cfg.hoverRequireShift) return "shift";
   return "direct";
 }
 
+/**
+ * 将悬停模式还原为对应配置字段，更新提示并保存。
+ */
 function setHoverTranslateMode(mode) {
   if (mode === "off") {
     cfg.hoverTranslate = false;
@@ -145,6 +181,9 @@ function setHoverTranslateMode(mode) {
   updateHoverTranslateHint(mode);
 }
 
+/**
+ * 根据悬停模式更新行为说明文字。
+ */
 function updateHoverTranslateHint(mode) {
   const hintEl = document.getElementById("hoverTranslateHint");
   if (!hintEl) return;
@@ -158,6 +197,9 @@ function updateHoverTranslateHint(mode) {
 }
 
 // ---------- 快捷键 ----------
+/**
+ * 读取浏览器扩展快捷键，失败时保留可用的默认界面。
+ */
 async function loadAllCommands() {
   return new Promise((resolve) => {
     if (!chrome.commands || !chrome.commands.getAll) {
@@ -170,6 +212,9 @@ async function loadAllCommands() {
   });
 }
 
+/**
+ * 将浏览器返回的快捷键格式转换为设置页使用的展示格式。
+ */
 function formatShortcut(s) {
   if (!s) return "";
   return s.split("+").map((p) => {
@@ -181,6 +226,9 @@ function formatShortcut(s) {
   }).join(" + ");
 }
 
+/**
+ * 刷新浏览器命令及网页快捷键的显示状态。
+ */
 async function refreshShortcutDisplay() {
   const commands = await loadAllCommands();
   const cmd = commands.find((c) => c.name === "toggle-translation");
@@ -210,12 +258,18 @@ async function refreshShortcutDisplay() {
 }
 
 // ---------- 迁移旧数据 ----------
+/**
+ * 通过共享迁移层兼容旧版服务配置，避免要求用户重复填写密钥。
+ */
 async function migrateOldData() {
   // 使用共享迁移逻辑，先落盘本机密钥，再清理同步区旧字段。
   await window.BT_STORAGE.migrateCredentials();
 }
 
 // ---------- 初始化 ----------
+/**
+ * 读取设置、处理迁移并初始化版本展示、表单和事件绑定。
+ */
 async function init() {
   // 版本号以扩展清单为唯一来源，避免侧栏和关于页面的版本显示不一致。
   const version = chrome.runtime.getManifest().version;
@@ -237,6 +291,9 @@ async function init() {
 }
 
 // ---------- 渲染 ----------
+/**
+ * 把当前配置渲染到语言、行为和翻译服务等设置控件。
+ */
 function renderAll() {
   renderEngineSelect();
   window.BT_CONST.fillLanguageSelect(document.getElementById("from"),"from",cfg.from);
@@ -258,6 +315,9 @@ function renderAll() {
   updateBehaviorSubStates();
 }
 
+/**
+ * 生成包含 AI 厂商的引擎下拉选项，并反映当前启用状态。
+ */
 function renderEngineSelect() {
   const sel = document.getElementById("engine");
   if (!sel) return;
@@ -295,14 +355,23 @@ function renderEngineSelect() {
   }
 }
 
+/**
+ * 按元素 ID 设置表单值；元素不存在时不做处理。
+ */
 function setValue(id, val) {
   const el = document.getElementById(id);
   if (el && val !== undefined && val !== null) el.value = val;
 }
+/**
+ * 更新开关控件的启用样式。
+ */
 function setSwitch(id, on) {
   const el = document.getElementById(id);
   if (el) el.classList.toggle("on", !!on);
 }
+/**
+ * 根据配置值更新分段按钮的选中状态。
+ */
 function setSegment(segId, value) {
   const seg = document.getElementById(segId);
   if (!seg) return;
@@ -318,6 +387,9 @@ const SERVICES = [
   { id: "mymemory", name: "MyMemory",    desc: "免费，有每日额度限制",                 icon: "💾" }
 ];
 
+/**
+ * 渲染翻译服务列表及每项服务的当前配置状态。
+ */
 function renderServiceList() {
   const grid = document.getElementById("serviceGrid");
   if (!grid) return;
@@ -340,6 +412,9 @@ function renderServiceList() {
   });
 }
 
+/**
+ * 计算指定服务在列表中展示的状态说明。
+ */
 function getServiceStatus(id) {
   if (id === "google" || id === "mymemory") return { text: "已启用", cls: "badge-ok" };
   if (id === "baidu") {
@@ -354,6 +429,9 @@ function getServiceStatus(id) {
   return { text: "", cls: "" };
 }
 
+/**
+ * 进入所选翻译服务详情，生成内容并绑定相应表单事件。
+ */
 function openServiceDetail(id) {
   currentService = id;
   editingProvider = null;
@@ -370,6 +448,9 @@ function openServiceDetail(id) {
   else if (id === "google" || id === "mymemory") bindFreeDetail(id);
 }
 
+/**
+ * 退出服务详情并返回服务列表，刷新列表与引擎状态。
+ */
 function closeServiceDetail() {
   currentService = null;
   editingProvider = null;
@@ -380,6 +461,9 @@ function closeServiceDetail() {
   renderServiceList();
 }
 
+/**
+ * 根据服务类型生成详情模板，分别提供免费服务、百度及 AI 配置入口。
+ */
 function buildServiceDetailHTML(id) {
   if (id === "google") {
     return `
@@ -528,6 +612,9 @@ function buildServiceDetailHTML(id) {
   return "";
 }
 
+/**
+ * 绑定免费服务详情中的测试与启用操作。
+ */
 function bindFreeDetail(id) {
   const btnId = id === "google" ? "testGoogle" : "testMymemory";
   const resId = id === "google" ? "googleTestResult" : "mymemoryTestResult";
@@ -536,6 +623,9 @@ function bindFreeDetail(id) {
   btn.addEventListener("click", () => runTest(id, resId, btn));
 }
 
+/**
+ * 绑定百度凭据输入、接口测试和服务启用操作。
+ */
 function bindBaiduDetail() {
   setValue("baiduAppId", cfg.baiduAppId);
   setValue("baiduKey", cfg.baiduKey);
@@ -557,6 +647,9 @@ function bindBaiduDetail() {
   btn.addEventListener("click", () => runTest("baidu", "baiduTestResult", btn));
 }
 
+/**
+ * 绑定 AI 厂商编辑、域名授权、测试及启用流程，避免未授权时发送请求。
+ */
 function bindAIDetail() {
   editingProvider = cfg.aiProvider || "openai";
   renderProviderInputs(editingProvider);
@@ -678,6 +771,9 @@ function bindAIDetail() {
   if (btn) btn.addEventListener("click", () => runTest("ai", "aiTestResult", btn));
 }
 
+/**
+ * 切换正在编辑的厂商，刷新输入框和相关状态说明。
+ */
 function updateProviderUI(providerId) {
   const p = PROVIDERS[providerId] || PROVIDERS.custom;
   const keyHintEl = document.getElementById("keyHint");
@@ -694,6 +790,9 @@ function updateProviderUI(providerId) {
   }
 }
 
+/**
+ * 更新厂商选择网格中的选中状态。
+ */
 function updateProviderGrid(providerId) {
   const grid = document.getElementById("providerGrid");
   if (!grid) return;
@@ -702,6 +801,9 @@ function updateProviderGrid(providerId) {
   });
 }
 
+/**
+ * 用固定样例测试所选服务并显示结果；按钮状态在请求结束后恢复。
+ */
 async function runTest(engine, resultId, btn) {
   const resultEl = document.getElementById(resultId);
   if (!resultEl) return;
@@ -754,6 +856,9 @@ async function runTest(engine, resultId, btn) {
 }
 
 // ---------- 导航 ----------
+/**
+ * 绑定设置页导航项，切换当前可见的设置区域。
+ */
 function bindNav() {
   const navItems = document.querySelectorAll(".nav-item");
   const panels = document.querySelectorAll(".tab-panel");
@@ -768,12 +873,18 @@ function bindNav() {
   });
 }
 
+/**
+ * 绑定服务详情的返回操作。
+ */
 function bindBackButton() {
   const btn = document.getElementById("backToServices");
   if (btn) btn.addEventListener("click", closeServiceDetail);
 }
 
 // ---------- 字段绑定 ----------
+/**
+ * 绑定语言、显示方式和行为表单，使修改写入配置并保存。
+ */
 function bindFields() {
   const engineEl = document.getElementById("engine");
   if (engineEl) {
@@ -819,11 +930,17 @@ function bindFields() {
   }
 }
 
+/**
+ * 为指定下拉控件注册值变化处理函数。
+ */
 function bindSelect(id, onChange) {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener("change", () => { onChange(el.value); save(); });
 }
+/**
+ * 为指定开关注册点击处理，更新状态后调用对应配置回调。
+ */
 function bindSwitch(id, onChange) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -836,6 +953,9 @@ function bindSwitch(id, onChange) {
 }
 
 // ---------- 行为偏好：折叠 / 恢复默认 / 快捷键设置按钮 ----------
+/**
+ * 绑定悬停与快捷键等附加行为设置的交互。
+ */
 function bindBehaviorExtras() {
   const toggle = document.getElementById("guideToggle");
   const body = document.getElementById("guideBody");
@@ -883,6 +1003,9 @@ function bindBehaviorExtras() {
   });
 }
 
+/**
+ * 根据主开关状态更新相关子选项是否可用。
+ */
 function updateBehaviorSubStates() {
   const shortcutList = document.getElementById("shortcutList");
   if (shortcutList) {
@@ -896,6 +1019,9 @@ function updateBehaviorSubStates() {
 
 // ---------- 保存 ----------
 let saveTimer = null;
+/**
+ * 延迟 200 毫秒合并连续修改，使用共享存储分流配置与密钥；失败时展示保存失败。
+ */
 function save() {
   // 合并连续输入产生的保存请求；共享存储层负责将密钥和普通偏好分别保存。
   if (saveTimer) clearTimeout(saveTimer);
@@ -914,6 +1040,9 @@ function save() {
   }, 200);
 }
 
+/**
+ * 创建或更新保存结果提示，并在短暂显示后收起。
+ */
 function showSaveTip(msg) {
   let tip = document.getElementById("save-tip");
   if (!tip) {

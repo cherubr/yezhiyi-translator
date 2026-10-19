@@ -17,7 +17,7 @@
     aiProvider: "openai",
     aiKeys: {},
     from: "auto",
-    to: "zh-CN",
+    to: "browser",
     mode: "bilingual",
     concurrency: 4,
     autoTranslate: false,
@@ -30,10 +30,14 @@
     baiduKey: ""
   };
 
+  // 正式版默认关闭运行日志；本地排查时改为 true 并重新加载扩展。
+  const DEBUG = false;
+
   const ENGINES = ["google", "baidu", "ai", "mymemory"];
 
   const MSG = {
     TRANSLATE: "TRANSLATE",
+    CANCEL_TRANSLATION_REQUESTS: "CANCEL_TRANSLATION_REQUESTS",
     START_TRANSLATION: "START_TRANSLATION",
     CANCEL_TRANSLATION: "CANCEL_TRANSLATION",
     TOGGLE_PANEL: "TOGGLE_PANEL",
@@ -97,16 +101,44 @@
   ];
   const LANGUAGES = {
     from: [{value:"auto",label:"自动检测",baidu:"auto"},...LANGUAGE_OPTIONS],
-    to: LANGUAGE_OPTIONS
+    to: [{value:"browser",label:"跟随浏览器"},...LANGUAGE_OPTIONS]
   };
 
+  // 使用浏览器界面语言；地区变体归并到接口支持的语言代码。
+  /**
+   * 把跟随浏览器选项解析为受支持的目标语言；保留手动选择，未知浏览器语言回退为英语。
+   *
+   * @param {string} value 手动语言代码或 browser。
+   * @returns {string} 可交给翻译引擎的通用语言代码。
+   */
+  function resolveTargetLanguage(value) {
+    if (value && value !== "browser") return value;
+    let locale = "";
+    try { locale = global.chrome?.i18n?.getUILanguage?.() || ""; } catch (_) {}
+    locale = (locale || global.navigator?.language || "zh-CN").replace(/_/g,"-").toLowerCase();
+    if (locale === "zh" || locale.startsWith("zh-")) {
+      return /(?:tw|hk|mo|hant)/.test(locale) ? "zh-TW" : "zh-CN";
+    }
+    const base = locale.split("-")[0];
+    const aliases = {nb:"no",nn:"no",iw:"he",in:"id"};
+    const code = aliases[base] || base;
+    return LANGUAGE_OPTIONS.some(item=>item.value===code) ? code : "en";
+  }
+
+  /**
+   * 使用共享语言目录生成下拉选项，显示浏览器实际语言并保留已有的目录外配置。
+   *
+   * @param {HTMLSelectElement} select 要填充的下拉控件。
+   * @param {string} direction from 表示源语言，to 表示目标语言。
+   * @param {string} value 当前保存的选项值。
+   */
   function fillLanguageSelect(select, direction, value) {
     if (!select) return;
     const options = LANGUAGES[direction] || [];
-    const current = typeof value === "string" && value ? value : (direction === "from" ? "auto" : "zh-CN");
+    const current = typeof value === "string" && value ? value : (direction === "from" ? "auto" : "browser");
     const nodes = options.map(item => {
       const node = select.ownerDocument.createElement("option");
-      node.value = item.value;node.textContent = item.label;
+      node.value = item.value;node.textContent = item.value === "browser" ? "跟随浏览器（" + (LANGUAGE_OPTIONS.find(x=>x.value===resolveTargetLanguage("browser"))?.label || "英语") + "）" : item.label;
       return node;
     });
     // 保留已有的非目录配置，不因升级悄悄切换用户的语言。
@@ -122,13 +154,16 @@
     "Ctrl+Shift+A", "Ctrl+Shift+Z"
   ];
 
-  const BT_CONST = { STORAGE_KEYS, DEFAULTS, ENGINES, MSG, LANGUAGES, SHORTCUT_KEYS, fillLanguageSelect };
+  const BT_CONST = { DEBUG, STORAGE_KEYS, DEFAULTS, ENGINES, MSG, LANGUAGES, SHORTCUT_KEYS, fillLanguageSelect, resolveTargetLanguage };
 
   // 服务配置包含密钥，只保存在本机；语言和显示模式等普通偏好仍使用同步存储。
   const LOCAL_KEYS = ["aiKeys", "baiduAppId", "baiduKey"];
   const LEGACY_KEYS = ["openaiKey", "openaiBase", "openaiModel"];
   let migration;
   // 同一上下文共享迁移任务；失败后允许重试，避免重复初始化时重复搬运数据。
+  /**
+   * 将同步区旧密钥迁入本机；本机数据优先，写入成功后才删除同步区旧字段，失败可重试。
+   */
   function migrateCredentials() {
     if (migration) return migration;
     migration = (async () => {
@@ -155,6 +190,7 @@
   }
   const BT_STORAGE = {
     migrateCredentials,
+    /** 先完成旧密钥迁移，再按 keys 读取并合并同步偏好与本机凭据。 */
     async get(keys = STORAGE_KEYS) {
       // 调用方无需关心存储位置，迁移后合并两类配置返回。
       await migrateCredentials();
@@ -164,6 +200,7 @@
       ]);
       return { ...synced, ...local };
     },
+    /** 按字段分流写入配置；不保证跨存储区事务，任一写入失败会向调用方抛出异常。 */
     async set(config) {
       // 按字段分流写入，防止设置页保存完整配置时把密钥重新写回同步区。
       await migrateCredentials();

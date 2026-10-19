@@ -4,22 +4,46 @@
 (function (global) {
   "use strict";
 
+  /**
+   * 通过高低 16 位相加实现 32 位整数加法，避免溢出处理差异。
+   */
   function safeAdd(x, y) {
     const lsw = (x & 0xffff) + (y & 0xffff);
     const msw = (x >> 16) + (y >> 16) + (lsw >> 16);
     return (msw << 16) | (lsw & 0xffff);
   }
+  /**
+   * 对 32 位整数执行循环左移，供 MD5 轮函数使用。
+   */
   function bitRotateLeft(num, cnt) {
     return (num << cnt) | (num >>> (32 - cnt));
   }
+  /**
+   * 执行 MD5 各轮共用的加法、循环移位和状态累加。
+   */
   function md5cmn(q, a, b, x, s, t) {
     return safeAdd(bitRotateLeft(safeAdd(safeAdd(a, q), safeAdd(x, t)), s), b);
   }
+  /**
+   * 执行 MD5 第一轮使用的布尔混合操作。
+   */
   function md5ff(a, b, c, d, x, s, t) { return md5cmn((b & c) | (~b & d), a, b, x, s, t); }
+  /**
+   * 执行 MD5 第二轮使用的布尔混合操作。
+   */
   function md5gg(a, b, c, d, x, s, t) { return md5cmn((b & d) | (c & ~d), a, b, x, s, t); }
+  /**
+   * 执行 MD5 第三轮使用的异或混合操作。
+   */
   function md5hh(a, b, c, d, x, s, t) { return md5cmn(b ^ c ^ d, a, b, x, s, t); }
+  /**
+   * 执行 MD5 第四轮使用的布尔混合操作。
+   */
   function md5ii(a, b, c, d, x, s, t) { return md5cmn(c ^ (b | ~d), a, b, x, s, t); }
 
+  /**
+   * 对小端字数组进行填充并执行 MD5 分块运算；len 为原始数据位数。
+   */
   function binlMD5(x, len) {
     x[len >> 5] |= 0x80 << (len % 32);
     x[(((len + 64) >>> 9) << 4) + 14] = len;
@@ -100,6 +124,9 @@
     return [a, b, c, d];
   }
 
+  /**
+   * 将小端 32 位字数组转换为原始字节字符串。
+   */
   function binl2rstr(input) {
     let output = "";
     const length32 = input.length * 32;
@@ -108,6 +135,9 @@
     }
     return output;
   }
+  /**
+   * 将原始字节字符串装入小端 32 位字数组。
+   */
   function rstr2binl(input) {
     const output = [];
     output[(input.length >> 2) - 1] = undefined;
@@ -118,7 +148,13 @@
     }
     return output;
   }
+  /**
+   * 计算原始字节字符串的 MD5，返回原始摘要字节字符串。
+   */
   function rstrMD5(s) { return binl2rstr(binlMD5(rstr2binl(s), s.length * 8)); }
+  /**
+   * 将原始摘要字节转换为十六进制文本。
+   */
   function rstr2hex(input) {
     const hexTab = "0123456789abcdef";
     let output = "", x;
@@ -128,8 +164,17 @@
     }
     return output;
   }
+  /**
+   * 将普通 JavaScript 字符串转换为 UTF-8 字节字符串。
+   */
   function str2rstrUTF8(input) { return unescape(encodeURIComponent(input)); }
+  /**
+   * 先按 UTF-8 编码输入，再返回原始 MD5 摘要。
+   */
   function rawMD5(s) { return rstrMD5(str2rstrUTF8(s)); }
+  /**
+   * 返回输入字符串的十六进制 MD5 摘要，供百度接口签名使用。
+   */
   function hexMD5(s) { return rstr2hex(rawMD5(s)); }
 
   global.md5 = hexMD5;
