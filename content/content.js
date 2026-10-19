@@ -52,6 +52,7 @@ function init() {
     shortcutKey: "Alt+A",
     baiduAppId: "",
     baiduKey: "",
+    baiduVerification: null,
     aiKeys: {}
   };
 
@@ -59,6 +60,7 @@ function init() {
   const pendingMessages = new Set();
   const pendingPreferenceWrites = new Map();
   let resumeAfterSettingsChange = false;
+  let autoTranslateSaving = false;
   /**
    * 将语言识别限制与真正的请求失败分开记录；提示仅由控制面板呈现。
    */
@@ -123,7 +125,7 @@ function init() {
     // 本页连续选择设置时，忽略尚在落盘的旧值事件，防止把最新选择当成外部改动取消。
     changes=Object.fromEntries(Object.entries(changes).filter(([key])=>!pendingPreferenceWrites.has(key)));
     if(!Object.keys(changes).length)return;
-    const relevant = ["engine", "aiProvider", "aiKeys", "from", "to", "mode", "autoTranslate", "hoverPanel", "concurrency", "baiduAppId", "baiduKey", "hoverTranslate", "hoverRequireShift", "shortcutTranslate", "shortcutKey"];
+    const relevant = ["engine", "aiProvider", "aiKeys", "from", "to", "mode", "autoTranslate", "hoverPanel", "concurrency", "baiduAppId", "baiduKey", "baiduVerification", "hoverTranslate", "hoverRequireShift", "shortcutTranslate", "shortcutKey"];
     if (!relevant.some((key) => Object.prototype.hasOwnProperty.call(changes, key))) return;
     const affecting = ["engine","aiProvider","aiKeys","from","to","baiduAppId","baiduKey"];
     const changed = affecting.some(key => Object.prototype.hasOwnProperty.call(changes,key) &&
@@ -146,7 +148,7 @@ function init() {
     const cfg = await window.BT_STORAGE.get([
       "engine", "aiProvider", "aiKeys", "from", "to", "mode",
       "autoTranslate", "hoverPanel", "concurrency",
-      "baiduAppId", "baiduKey",
+      "baiduAppId", "baiduKey", "baiduVerification",
       "hoverTranslate", "hoverRequireShift", "shortcutTranslate", "shortcutKey"
     ]);
     for(const [key,entry] of pendingPreferenceWrites)cfg[key]=entry.value;
@@ -165,6 +167,7 @@ function init() {
     }
     STATE.baiduAppId = cfg.baiduAppId || "";
     STATE.baiduKey = cfg.baiduKey || "";
+    STATE.baiduVerification = cfg.baiduVerification || null;
     if (typeof cfg.hoverTranslate === "boolean") STATE.hoverTranslate = cfg.hoverTranslate;
     if (typeof cfg.hoverRequireShift === "boolean") STATE.hoverRequireShift = cfg.hoverRequireShift;
     if (typeof cfg.shortcutTranslate === "boolean") STATE.shortcutTranslate = cfg.shortcutTranslate;
@@ -183,7 +186,7 @@ function init() {
    */
   function isEngineConfigured(id) {
     if (id === "google" || id === "mymemory") return true;
-    if (id === "baidu") return !!(STATE.baiduAppId && STATE.baiduKey);
+    if (id === "baidu") return window.BT_CONST.hasVerifiedBaiduCredentials(STATE);
     if (id === "ai") {
       if (STATE.aiProvider === "ollama") return true;
       const keys = (STATE.aiKeys && STATE.aiKeys[STATE.aiProvider]) || {};
@@ -473,7 +476,8 @@ function init() {
       return;
     }
 
-    if (automatic && !STATE.backgroundTranslating) { setFabBusy(true); setFabTranslated(STATE.translated); }
+    // 确认有待翻译内容后才显示忙碌，后台补翻同样需要旋转；空扫描保持原状态。
+    if (automatic) setFabBusy(true);
     const blocks = sortByViewport(rawBlocks);
     const total = blocks.length;
     const workerCount = Math.min(10, Math.max(1, Number(STATE.concurrency) || 4));
@@ -1100,8 +1104,8 @@ function init() {
             <div class="bt-modal-section-title">行为偏好</div>
             <div class="bt-modal-switch-row">
               <div>
-                <div class="bt-modal-switch-title">自动翻译此页面</div>
-                <div class="bt-modal-hint">打开新页面时自动开始翻译。</div>
+                <div class="bt-modal-switch-title">自动翻译网页</div>
+                <div class="bt-modal-hint">开启后翻译当前页面，并在打开新网页时自动翻译。</div>
               </div>
               <div class="bt-modal-switch" id="btModalAuto"></div>
             </div>
@@ -1145,9 +1149,10 @@ function init() {
       html += `<option value="${id}">✓ ${getEngineLabel(id)}</option>`;
     });
     if (unconfigured.length > 0) {
-      html += `<optgroup label="未配置（请先到设置页配置）">`;
+      html += `<optgroup label="未就绪（请先配置或测试连接）">`;
       unconfigured.forEach((id) => {
-        html += `<option value="${id}" class="bt-unconfigured">${getEngineLabel(id)}（未配置）</option>`;
+        const pendingTest = id === "baidu" && STATE.baiduAppId && STATE.baiduKey;
+        html += `<option value="${id}" class="bt-unconfigured"${id === "baidu" ? " disabled" : ""}>${getEngineLabel(id)}（${pendingTest ? "待测试" : "未配置"}）</option>`;
       });
       html += `</optgroup>`;
     }
@@ -1177,7 +1182,7 @@ function init() {
     $("#btModalEngine").onchange = (e) => {
       const v = e.target.value;
       if (!isEngineConfigured(v)) {
-        showPanelToast("该引擎未配置，请先到设置页填写密钥", "warn");
+        showPanelToast(v === "baidu" ? "请先到设置页测试百度连接，成功后再选择" : "该引擎未配置，请先到设置页填写密钥", "warn");
         renderEngineOptions();
         return;
       }
@@ -1196,10 +1201,38 @@ function init() {
       };
     });
 
-    $("#btModalAuto").onclick = () => {
-      STATE.autoTranslate = !STATE.autoTranslate;
-      $("#btModalAuto").classList.toggle("on", STATE.autoTranslate);
-      saveField("autoTranslate", STATE.autoTranslate);
+    $("#btModalAuto").onclick = async () => {
+      if (autoTranslateSaving) return;
+      const previous = STATE.autoTranslate;
+      const enabled = !previous;
+      const generation = STATE.cancelVersion;
+      const entry = { value: enabled };
+      autoTranslateSaving = true;
+      pendingPreferenceWrites.set("autoTranslate", entry);
+      STATE.autoTranslate = enabled;
+      refreshPanelModal();
+      let saved = false;
+      try {
+        await saveField("autoTranslate", enabled);
+        saved = true;
+      } catch (error) {
+        STATE.autoTranslate = previous;
+        showPanelToast("保存自动翻译设置失败：" + error.message, "warn");
+      } finally {
+        autoTranslateSaving = false;
+        if (pendingPreferenceWrites.get("autoTranslate") === entry) pendingPreferenceWrites.delete("autoTranslate");
+        if (panelModalEl) refreshPanelModal();
+      }
+      if (!saved) return;
+      // 防止初始化定时器稍后重复启动；关闭开关不会撤回已有译文或中断当前任务。
+      clearTimeout(initialTranslateTimer);
+      initialTranslateTimer = null;
+      // 只响应本页的明确开启操作；保存期间若已取消或切换配置，旧回调不得重新启动。
+      if (enabled && STATE.autoTranslate && generation === STATE.cancelVersion &&
+          !STATE.translating) {
+        // 已有译文时只扫描遗漏内容，空扫描不闪烁；未翻译时立即启动当前页。
+        await translatePage(false, STATE.translated);
+      }
     };
     $("#btModalHover").onclick = () => {
       STATE.hoverPanel = !STATE.hoverPanel;
@@ -1352,6 +1385,7 @@ function init() {
     window.BT_CONST.fillLanguageSelect($("#btModalTo"),"to",STATE.to);
     updateModalModeButtons(STATE.mode);
     $("#btModalAuto").classList.toggle("on", STATE.autoTranslate);
+    $("#btModalAuto").setAttribute("aria-disabled", String(autoTranslateSaving));
     $("#btModalHover").classList.toggle("on", STATE.hoverPanel);
   }
 
@@ -1388,11 +1422,11 @@ function init() {
    */
   function setFabBusy(busy) {
     if (!fabEl) return;
-    busy = busy && !STATE.backgroundTranslating;
+    // 悬浮球反映实际工作；面板按钮是否变化仍由 backgroundTranslating 单独控制。
     fabEl.classList.toggle("bt-busy", busy);
     if (fabWrap) {
       fabWrap.classList.toggle("bt-busy", busy);
-      fabWrap.classList.toggle("bt-translated", !busy && STATE.translated && !STATE.cancelRequested);
+      setFabTranslated(STATE.translated);
     }
     if (panelModalEl) refreshPanelModal();
   }
@@ -1401,12 +1435,13 @@ function init() {
    * 更新悬浮球完成标记及失败提醒，使状态与当前页面一致。
    */
   function setFabTranslated(translated) {
-    // 感叹号只概括当前页面有未完成内容，详细原因仅在控制面板展示。
-    const incomplete = (!STATE.translating || STATE.backgroundTranslating) && !STATE.pagePaused && (!!STATE.lastError || STATE.languageNoticeCount > 0);
+    // 配置读取和空扫描也会临时设置 translating，因此以实际忙碌样式判断是否显示徽标。
+    const busy = !!fabEl && fabEl.classList.contains("bt-busy");
+    const incomplete = !busy && !STATE.pagePaused && (!!STATE.lastError || STATE.languageNoticeCount > 0);
     if (fabWrap) fabWrap.classList.toggle("bt-has-error", incomplete);
 
     if (!fabWrap) return;
-    fabWrap.classList.toggle("bt-translated", translated && (!STATE.translating || STATE.backgroundTranslating) && !STATE.cancelRequested);
+    fabWrap.classList.toggle("bt-translated", translated && !busy && !incomplete && !STATE.pagePaused && !STATE.cancelRequested);
     if (fabEl) fabEl.title = translated ? "点击取消翻译" : "点击翻译";
   }
 
@@ -1580,7 +1615,7 @@ function init() {
       observeDynamicContent();
       if (STATE.autoTranslate) initialTranslateTimer = setTimeout(() => {
         initialTranslateTimer = null;
-        translatePage(false, true);
+        if (STATE.autoTranslate && !STATE.pagePaused && !STATE.cancelRequested) translatePage(false, true);
       }, 500);
     };
     if (document.readyState === "loading") {

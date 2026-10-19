@@ -38,10 +38,22 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
      await chrome.storage.local.set({aiKeys:{custom:{key:'local-test-key',base:'https://api.deepseek.com/v1',model:'local-model'}}});
      // 仅在测试资料中拦截传输层：已授权域名的请求转至本地模拟接口，不发送到外部。
      const originalFetch=fetch;
+     globalThis.baiduCalls=[];
+     globalThis.googleCalls=[];
      globalThis.fetch=(url,options)=>{
        if(String(url).startsWith('https://translate.googleapis.com/')){
          const text=new URL(url).searchParams.get('q');
-         return Promise.resolve(new Response(JSON.stringify([[['新引擎：'+text]]]),{headers:{'Content-Type':'application/json'}}));
+         globalThis.googleCalls.push(text);
+         const result=new Response(JSON.stringify([[['新引擎：'+text]]]),{headers:{'Content-Type':'application/json'}});
+         return text.startsWith('Scroll') ? new Promise(resolve=>setTimeout(()=>resolve(result),700)) : Promise.resolve(result);
+       }
+       if(String(url).startsWith('https://fanyi-api.baidu.com/api/trans/vip/translate')){
+         const params=options?.body ? new URLSearchParams(options.body) : new URL(url).searchParams;
+         globalThis.baiduCalls.push({appId:params.get('appid'),text:params.get('q')});
+         const data=params.get('appid')==='invalid-app'
+           ? {error_code:'52003',error_msg:'UNAUTHORIZED USER'}
+           : {trans_result:[{dst:'百度测试译文：'+params.get('q')}]};
+         return Promise.resolve(new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}}));
        }
        return originalFetch(String(url).startsWith('https://api.deepseek.com/v1/')?base+'/v1/chat/completions':url,options);
      };
@@ -102,13 +114,81 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    await settings.bringToFront();
    await settings.waitForFunction(()=>document.querySelector('#to')?.value==='uk');
 
+   // 保持设置标签页打开，验证详情页配置、真实百度测试和跨页引擎同步。
+   await send('CANCEL_TRANSLATION');
+   await worker.evaluate(()=>chrome.storage.sync.set({engine:'google',from:'en',to:'zh-CN',autoTranslate:false}));
+   await settings.waitForFunction(()=>document.querySelector('#engine').value==='google');
+   await page.waitForFunction(()=>document.querySelector('#btModalTo').value==='zh-CN');
+   const openBaidu=async()=>{
+     await settings.locator('.nav-item[data-tab="service"]').click();
+     await settings.locator('.service-card').filter({hasText:'百度翻译'}).click();
+   };
+   await openBaidu();
+   await settings.locator('#baiduAppId').fill('test-app');
+   await settings.locator('#baiduKey').fill('test-key');
+   await settings.locator('.nav-item[data-tab="general"]').click();
+   await settings.waitForFunction(()=>document.querySelector('#engine option[value="baidu"]').disabled);
+   assert.match(await settings.locator('#engine option[value="baidu"]').textContent(),/待测试/);
+   assert.equal(await settings.locator('#engine').inputValue(),'google');
+   await openBaidu();
+   await settings.locator('#testBaidu').click();
+   await settings.waitForFunction(()=>document.querySelector('#baiduTestResult').classList.contains('ok'));
+   await settings.locator('.nav-item[data-tab="general"]').click();
+   await settings.waitForFunction(()=>!document.querySelector('#engine option[value="baidu"]').disabled);
+   assert.equal(await settings.locator('#engine').inputValue(),'google','测试通过不自动切换默认引擎');
+   assert.equal(await worker.evaluate(()=>baiduCalls.length),1);
+
+   // 相同凭据重测也要发真实请求，验证记录可在重新打开设置页后恢复。
+   await openBaidu();
+   await settings.locator('#testBaidu').click();
+   await settings.waitForFunction(()=>document.querySelector('#baiduTestResult').classList.contains('ok'));
+   assert.equal(await worker.evaluate(()=>baiduCalls.length),2,'重测绕过翻译缓存');
+   const reopened=await context.newPage();
+   await reopened.goto('chrome-extension://'+id+'/settings/settings.html');
+   await reopened.waitForFunction(()=>document.querySelector('#engine option[value="baidu"]')?.disabled===false);
+   await reopened.close();
+
+   // 直接返回基本设置保留详情编辑上下文，面板切换仍必须即时更新下拉。
+   await settings.locator('.nav-item[data-tab="general"]').click();
+   await settings.locator('#engine').selectOption('baidu');
+   await page.waitForFunction(()=>document.querySelector('#btModalEngine').value==='baidu');
+   await page.locator('#btModalEngine').selectOption('google');
+   await settings.waitForFunction(()=>document.querySelector('#engine').value==='google');
+
+   // 修改与失败的凭据保持禁用，不能靠旧成功记录继续使用。
+   await openBaidu();
+   await settings.locator('#baiduAppId').fill('invalid-app');
+   await settings.waitForFunction(()=>document.querySelector('#engine option[value="baidu"]').disabled);
+   await settings.locator('#testBaidu').click();
+   await settings.waitForFunction(()=>document.querySelector('#baiduTestResult').classList.contains('error'));
+   assert.equal(await worker.evaluate(async()=>Boolean((await chrome.storage.local.get('baiduVerification')).baiduVerification)),false);
+   assert.equal(await settings.locator('#engine option[value="baidu"]').evaluate(el=>el.disabled),true);
+
+   // 真实扩展中的自动开关和滚动补翻状态，在用户正在浏览的前台标签中验证动画。
+   await page.bringToFront();
+   await send('OPEN_PANEL');
+   await page.evaluate(()=>{document.querySelector('#first').textContent='Automatic current page';document.querySelector('#second').textContent='Automatic current page';});
+   await page.locator('#btModalAuto').click();
+   await page.waitForFunction(()=>document.querySelectorAll('.bt-translation-text').length===2);
+   await settings.waitForFunction(()=>document.querySelector('#autoTranslate').classList.contains('on'));
+   await page.evaluate(()=>{const p=document.createElement('p');p.id='scroll-status';p.textContent='Scroll new content';p.style.marginTop='1400px';document.body.appendChild(p);});
+   await page.waitForTimeout(300);
+   assert.equal(await page.locator('#scroll-status .bt-translation-text').count(),0,'离屏内容等待滚动');
+   await page.locator('#scroll-status').scrollIntoViewIfNeeded();
+   await page.waitForFunction(()=>document.querySelector('.bt-fab.bt-busy'),null,{polling:50,timeout:10000});
+   assert.equal(await page.locator('.bt-fab-wrap.bt-translated').count(),0);
+   assert.equal(await page.locator('.bt-fab-wrap.bt-has-error').count(),0);
+   await page.waitForFunction(()=>document.querySelector('#scroll-status .bt-translation-text') && !document.querySelector('.bt-fab.bt-busy'));
+   assert.equal(await page.locator('.bt-fab-wrap.bt-translated').count(),1);
+   assert.equal(await page.locator('#btModalTranslate').textContent(),'重新翻译');
+
    assert.ok(await settings.locator('text=隐私与数据').count());
    const errors=await worker.evaluate(async()=>{
      const stored=await chrome.storage.sync.get(['aiKeys','baiduKey']);
      return Object.keys(stored);
    });
    assert.equal(errors.length,0,'keys not written back to sync');
-   console.log('PASS Chromium extension: 实际加载、后台接口、合并重复请求、动态补翻、输入保护、取消暂停、设置页版本与隐私');
+   console.log('PASS Chromium extension: 实际加载、取消切换、百度真实验证与持久化、设置页即时同步、自动翻译和滚动状态');
  }finally{
    if(context)await context.close();
    await new Promise(resolve=>server.close(resolve));

@@ -91,6 +91,9 @@ function openExtensionPage(relativePath) {
 
 // 任务按发起页面和批次隔离；取消不会影响其他标签页。
 const requestGroups = new Map();
+// 同一份凭据仅应用最新测试结果，验证记录按顺序写入，避免多窗口相互覆盖。
+const latestBaiduTests = new Map();
+let baiduVerificationWrite = Promise.resolve();
 /**
  * 按标签页、框架、文档和批次生成隔离键，防止取消操作跨页面生效。
  */
@@ -135,8 +138,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (action === MSG.CANCEL_TRANSLATION_REQUESTS) {
     cancelRequestGroup(request,sender);sendResponse({ok:true});return false;
   }
+  if (action === MSG.TEST_BAIDU_CONNECTION) {
+    // 只有扩展设置页的测试按钮可以登记验证结果，网页翻译不能自行标记通过。
+    if (sender.url !== chrome.runtime.getURL("settings/settings.html")) {
+      sendResponse({ ok: false, error: "请从扩展设置页测试百度连接" });
+      return false;
+    }
+    trackedTranslate({ ...request, engine: "baidu", verifyBaidu: true,
+      text: "Hello world", from: "en", to: "zh-CN" }, sender)
+      .then(data => sendResponse({ ok: true, data }))
+      .catch(err => sendResponse({ ok: false, error: err.message, code: err.code }));
+    return true;
+  }
   if (action === MSG.TRANSLATE) {
-    trackedTranslate(request,sender)
+    trackedTranslate({ ...request, verifyBaidu: false },sender)
       .then((data) => sendResponse({ ok: true, data }))
       .catch((err) => sendResponse({ ok: false, error: err.message, code:err.code, cancelled:err.name==="AbortError" }));
     return true;
@@ -175,10 +190,63 @@ async function handleTranslate(request, signal) {
     const endpoint=self.BT_AI_ACCESS.getEndpoint(normalized.aiProvider,normalized.aiConfig);
     if(!await chrome.permissions.contains({origins:[endpoint.origin]}))throw new Error("尚未授权访问接口域名（"+endpoint.host+"），请到设置页测试连接并允许访问");
   }
-  if(engine==="baidu")normalized.baiduConfig=await self.BT_STORAGE.get(["baiduAppId","baiduKey"]);
+  if (engine === "baidu") {
+    const stored = await self.BT_STORAGE.get(["baiduAppId", "baiduKey", "baiduVerification"]);
+    normalized.baiduConfig = { baiduAppId: stored.baiduAppId, baiduKey: stored.baiduKey };
+    if (request.verifyBaidu) {
+      const expected = self.BT_CONST.getBaiduCredentialFingerprint(request.baiduTestCredentials);
+      if (!expected || expected !== self.BT_CONST.getBaiduCredentialFingerprint(stored)) {
+        throw new Error("百度凭据已变化，请重新测试连接");
+      }
+      normalized.bypassCache = true;
+    } else if (!self.BT_CONST.hasVerifiedBaiduCredentials(stored)) {
+      throw new Error("百度翻译尚未通过连接测试，请到设置页测试成功后再使用");
+    }
+  }
   if(signal?.aborted)throw cancelledError();
+  if (request.verifyBaidu) return testBaiduConnection(normalized);
   return translationRuntime.run(normalized);
 }
+/**
+ * 实际测试百度并登记本机验证结果；测试期间变更凭据时，旧结果不能验证新配置。
+ */
+async function testBaiduConnection(request) {
+  const fingerprint = self.BT_CONST.getBaiduCredentialFingerprint(request.baiduConfig);
+  const attempt = {};
+  latestBaiduTests.set(fingerprint, attempt);
+
+  /** 串行登记结果，并在真正写入前重新检查凭据、最新测试和取消状态。 */
+  function saveVerification(record) {
+    const write = baiduVerificationWrite.catch(() => {}).then(async () => {
+      if (latestBaiduTests.get(fingerprint) !== attempt) return false;
+      if (request.signal?.aborted) throw cancelledError();
+      const current = await self.BT_STORAGE.get(["baiduAppId", "baiduKey"]);
+      if (request.signal?.aborted) throw cancelledError();
+      if (latestBaiduTests.get(fingerprint) !== attempt ||
+          fingerprint !== self.BT_CONST.getBaiduCredentialFingerprint(current)) return false;
+      await chrome.storage.local.set({ baiduVerification: record });
+      return true;
+    });
+    baiduVerificationWrite = write;
+    return write;
+  }
+
+  try {
+    const data = await translationRuntime.run(request);
+    if (request.signal?.aborted) throw cancelledError();
+    if (!await saveVerification({ fingerprint, verifiedAt: Date.now() })) {
+      throw new Error("凭据或测试任务已变化，请查看最新测试结果");
+    }
+    return data;
+  } catch (error) {
+    // 取消不是验证失败，不撤销之前的成功记录；过期测试也不能覆盖更新的结果。
+    if (error.name !== "AbortError" && !request.signal?.aborted) await saveVerification(null);
+    throw error;
+  } finally {
+    if (latestBaiduTests.get(fingerprint) === attempt) latestBaiduTests.delete(fingerprint);
+  }
+}
+
 /**
  * 按引擎分发请求，并把同一个取消信号传递到实际网络调用。
  */

@@ -4,6 +4,8 @@
 
 const { STORAGE_KEYS: KEYS, DEFAULTS: DEFAULT } = window.BT_CONST;
 const PROVIDERS = window.AI_PROVIDERS;
+// 与共享存储的分流保持一致，避免旧同步区密钥删除事件覆盖本机有效凭据。
+const LOCAL_CONFIG_KEYS = new Set(["aiKeys", "baiduAppId", "baiduKey", "baiduVerification"]);
 
 let cfg = { ...DEFAULT };
 let currentService = null;
@@ -31,7 +33,7 @@ function selectValueToEngine(v) {
  */
 function isEngineConfigured(id) {
   if (id === "google" || id === "mymemory") return true;
-  if (id === "baidu") return !!(cfg.baiduAppId && cfg.baiduKey);
+  if (id === "baidu") return window.BT_CONST.hasVerifiedBaiduCredentials(cfg);
   // 下拉选项使用 ai:厂商标识，分别检查每家服务是否已配置。
   if (typeof id === "string" && id.startsWith("ai:")) return isProviderConfigured(id.slice(3));
   if (id === "ai") return isProviderConfigured(cfg.aiProvider || "openai");
@@ -333,8 +335,11 @@ function renderEngineSelect() {
   let html = "";
   configured.forEach((e) => { html += `<option value="${e.id}">✓ ${e.label}</option>`; });
   if (unconfigured.length) {
-    html += '<optgroup label="未配置（请先到翻译服务配置）">';
-    unconfigured.forEach((e) => { html += `<option value="${e.id}" class="bt-unconfigured">${e.label}（未配置）</option>`; });
+    html += '<optgroup label="未就绪（请先配置或测试连接）">';
+    unconfigured.forEach((e) => {
+      const pendingTest = e.id === "baidu" && cfg.baiduAppId && cfg.baiduKey;
+      html += `<option value="${e.id}" class="bt-unconfigured"${e.id === "baidu" ? " disabled" : ""}>${e.label}（${pendingTest ? "待测试" : "未配置"}）</option>`;
+    });
     html += '</optgroup>';
   }
   sel.innerHTML = html;
@@ -349,7 +354,7 @@ function renderEngineSelect() {
   const hintEl = document.getElementById("engineHint");
   if (hintEl) {
     hintEl.textContent = unconfigured.length
-      ? `⚠ 有 ${unconfigured.length} 个引擎未配置，请到“翻译服务”填写密钥后再选用。`
+      ? `⚠ 有 ${unconfigured.length} 个引擎未就绪，请到“翻译服务”配置；百度需测试连接成功后选用。`
       : "想换 AI 厂商？到「翻译服务 → AI 大模型」里切换。";
     hintEl.style.color = unconfigured.length ? "#d64545" : "#999";
   }
@@ -418,7 +423,8 @@ function renderServiceList() {
 function getServiceStatus(id) {
   if (id === "google" || id === "mymemory") return { text: "已启用", cls: "badge-ok" };
   if (id === "baidu") {
-    if (cfg.baiduAppId && cfg.baiduKey) return { text: "已配置", cls: "badge-ok" };
+    if (isEngineConfigured("baidu")) return { text: "测试通过", cls: "badge-ok" };
+    if (cfg.baiduAppId && cfg.baiduKey) return { text: "待测试", cls: "" };
     return { text: "未配置", cls: "" };
   }
   if (id === "ai") {
@@ -632,8 +638,20 @@ function bindBaiduDetail() {
 
   const appIdEl = document.getElementById("baiduAppId");
   const keyEl = document.getElementById("baiduKey");
-  appIdEl.addEventListener("input", () => { cfg.baiduAppId = appIdEl.value.trim(); save(); });
-  keyEl.addEventListener("input", () => { cfg.baiduKey = keyEl.value.trim(); save(); });
+  // 指纹与当前输入不匹配时立即恢复待测试状态，不继续沿用旧密钥的验证。
+  const updateCredentials = () => {
+    cfg.baiduAppId = appIdEl.value.trim();
+    cfg.baiduKey = keyEl.value.trim();
+    renderEngineSelect();
+    const result = document.getElementById("baiduTestResult");
+    if (result) {
+      result.textContent = isEngineConfigured("baidu") ? "此前已通过连接测试" : "请测试当前凭据，成功后可选择百度翻译";
+      result.className = "test-result";
+    }
+    save();
+  };
+  appIdEl.addEventListener("input", updateCredentials);
+  keyEl.addEventListener("input", updateCredentials);
 
   const toggle = document.querySelector(".service-detail-view .toggle-pwd");
   if (toggle) {
@@ -809,10 +827,22 @@ async function runTest(engine, resultId, btn) {
   if (!resultEl) return;
   const testPid = editingProvider || cfg.aiProvider || "openai";
   let testConfig;
+  // 成功与失败响应都要匹配当前输入，不能让旧测试提示覆盖新凭据的待测试状态。
+  const credentialsChanged = () => engine === "baidu" && testConfig &&
+    (cfg.baiduAppId !== testConfig.baiduAppId || cfg.baiduKey !== testConfig.baiduKey);
   btn.disabled = true;
   resultEl.textContent = "测试中…";
   resultEl.className = "test-result";
   try {
+    if (engine === "baidu") {
+      // 测试前先保存当前输入，避免点击过快时后台仍读取上一份凭据。
+      cfg.baiduAppId = document.getElementById("baiduAppId").value.trim();
+      cfg.baiduKey = document.getElementById("baiduKey").value.trim();
+      if (!cfg.baiduAppId || !cfg.baiduKey) throw new Error("请填写百度 AppID 和密钥");
+      testConfig = { baiduAppId: cfg.baiduAppId, baiduKey: cfg.baiduKey };
+      await window.BT_STORAGE.set(testConfig);
+      renderEngineSelect();
+    }
     if (engine === "ai") {
       const pid = testPid;
       const current = readProviderInputs();
@@ -828,7 +858,8 @@ async function runTest(engine, resultId, btn) {
 
 
     const res = await chrome.runtime.sendMessage({
-      action: "TRANSLATE",
+      action: engine === "baidu" ? window.BT_CONST.MSG.TEST_BAIDU_CONNECTION : "TRANSLATE",
+      baiduTestCredentials: engine === "baidu" ? testConfig : undefined,
       retryManual: true,
       retryToken: String(Date.now()) + ":" + Math.random(),
       engine: engine,
@@ -839,7 +870,18 @@ async function runTest(engine, resultId, btn) {
       to: "zh-CN"
     });
 
+    if (credentialsChanged()) {
+      resultEl.textContent = "凭据已修改，请重新测试连接";
+      resultEl.className = "test-result";
+      return;
+    }
     if (res && res.ok) {
+      if (engine === "baidu") {
+        const stored = await window.BT_STORAGE.get(["baiduVerification"]);
+        cfg.baiduVerification = stored.baiduVerification || null;
+        renderEngineSelect();
+        if (!isEngineConfigured("baidu")) throw new Error("当前凭据尚未验证，请重新测试");
+      }
       resultEl.textContent = `✓ 连接成功：${res.data}`;
       resultEl.className = "test-result ok";
 
@@ -848,6 +890,11 @@ async function runTest(engine, resultId, btn) {
       resultEl.className = "test-result error";
     }
   } catch (e) {
+    if (credentialsChanged()) {
+      resultEl.textContent = "凭据已修改，请重新测试连接";
+      resultEl.className = "test-result";
+      return;
+    }
     resultEl.textContent = `✗ ${e.message}`;
     resultEl.className = "test-result error";
   } finally {
@@ -891,7 +938,7 @@ function bindFields() {
     engineEl.addEventListener("change", () => {
       const v = engineEl.value;
       if (!isEngineConfigured(v)) {
-        showSaveTip("该引擎未配置，请先到翻译服务填写密钥");
+        showSaveTip(v === "baidu" ? "请先测试百度连接，成功后再选择" : "该引擎未配置，请先到翻译服务填写密钥");
         renderEngineSelect();
         return;
       }
@@ -1033,9 +1080,10 @@ function save() {
       return;
     }
     showSaveTip();
+    // 基本设置的引擎可用状态始终更新，服务详情中的输入控件不重建。
+    renderEngineSelect();
     if (currentService === null) {
       renderServiceList();
-      renderEngineSelect();
     }
   }, 200);
 }
@@ -1057,21 +1105,42 @@ function showSaveTip(msg) {
 }
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "sync") return;
-  let needRender = false;
-  for (const k of Object.keys(changes)) {
-    if (KEYS.includes(k)) {
-      cfg[k] = changes[k].newValue;
-      needRender = true;
+  if (area !== "sync" && area !== "local") return;
+  const applied = {};
+  for (const [key, change] of Object.entries(changes)) {
+    if (!KEYS.includes(key) || (area === "local") !== LOCAL_CONFIG_KEYS.has(key)) continue;
+    const nextValue = change.newValue === undefined ? DEFAULT[key] : change.newValue;
+    if (area === "local" && key !== "baiduVerification") {
+      // 延迟保存的旧通知不能覆盖此窗口中更晚输入、尚未保存的凭据草稿。
+      const current = JSON.stringify(cfg[key] === undefined ? DEFAULT[key] : cfg[key]);
+      const previous = JSON.stringify(change.oldValue === undefined ? DEFAULT[key] : change.oldValue);
+      if (current !== previous && current !== JSON.stringify(nextValue)) continue;
     }
+    cfg[key] = nextValue;
+    applied[key] = true;
   }
-  if (changes.from) window.BT_CONST.fillLanguageSelect(document.getElementById("from"),"from",cfg.from);
-  if (changes.to) window.BT_CONST.fillLanguageSelect(document.getElementById("to"),"to",cfg.to);
-  if (needRender && currentService === null) {
-    renderEngineSelect();
-    renderServiceList();
-    updateBehaviorSubStates();
+  if (!Object.keys(applied).length) return;
+
+  // 基本控件与服务详情相互独立；跨页面切换引擎时也立即反映到下拉框。
+  renderEngineSelect();
+  if (applied.from) window.BT_CONST.fillLanguageSelect(document.getElementById("from"), "from", cfg.from);
+  if (applied.to) window.BT_CONST.fillLanguageSelect(document.getElementById("to"), "to", cfg.to);
+  if (applied.concurrency) setValue("concurrency", cfg.concurrency);
+  if (applied.mode) setSegment("mode-seg", cfg.mode);
+  for (const key of ["autoTranslate", "hoverPanel", "shortcutTranslate"]) {
+    if (applied[key]) setSwitch(key, cfg[key]);
   }
+  if (applied.hoverTranslate || applied.hoverRequireShift) {
+    setValue("hoverTranslateMode", getHoverTranslateMode());
+    updateHoverTranslateHint(getHoverTranslateMode());
+  }
+  // 只更新服务状态，不覆盖正在编辑的密钥、模型和接口地址。
+  if (currentService === "ai") {
+    refreshAllProviderBadges();
+    refreshCurrentUsingBar();
+  }
+  if (currentService === null) renderServiceList();
+  updateBehaviorSubStates();
 });
 
 window.addEventListener("focus", () => {

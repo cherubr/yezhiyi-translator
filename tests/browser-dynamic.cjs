@@ -44,12 +44,16 @@ async function setup(browser,html) {
    window.responseDelay=400;
    document.body.appendChild(Object.assign(document.createElement('p'),{id:'backgroundNew',textContent:'New background paragraph'}));
  });
- await page.waitForFunction(()=>test.STATE.translating && test.STATE.backgroundTranslating);
+ await page.waitForFunction(()=>test.STATE.translating && test.STATE.backgroundTranslating && document.querySelector('.bt-fab.bt-busy'));
  assert.equal(await page.locator('#btModalTranslate').textContent(),'重新翻译');
  assert.equal(await page.locator('#btModalTranslate').isEnabled(),true);
- assert.equal(await page.locator('.bt-fab-wrap.bt-translated').count(),1,'background translation keeps completed badge');
- assert.equal(await page.locator('.bt-fab-wrap.bt-busy').count(),0,'background translation does not animate completed badge');
- await page.waitForFunction(()=>document.querySelector('#backgroundNew .bt-translation-text'));
+ assert.equal(await page.locator('.bt-fab-wrap.bt-translated').count(),0,'补翻期间隐藏完成徽标');
+ assert.equal(await page.locator('.bt-fab-wrap.bt-busy').count(),1,'补翻显示忙碌状态');
+ assert.equal(await page.locator('.bt-fab.bt-busy').count(),1);
+ assert.equal(await page.locator('.bt-fab-wrap.bt-has-error').count(),0);
+ await page.waitForFunction(()=>document.querySelector('#backgroundNew .bt-translation-text') && !test.STATE.translating);
+ assert.equal(await page.locator('.bt-fab-wrap.bt-busy').count(),0);
+ assert.equal(await page.locator('.bt-fab-wrap.bt-translated').count(),1);
  await page.evaluate(()=>{window.responseDelay=8;});
  await page.evaluate(()=>{
    window.fullScans=0;const original=document.querySelectorAll.bind(document);
@@ -90,6 +94,65 @@ async function setup(browser,html) {
  });
  assert.equal(switched.engine,'google');assert.equal(switched.paused,false);assert.equal(switched.translated,true);
  await page.close();
+
+ // 自动开关立即作用于当前页；关闭只改偏好，不中止已有请求。
+ const automatic=await setup(browser,'<p id="automatic">Automatic toggle paragraph</p>');
+ await automatic.evaluate(()=>{test.openControlPanel();window.responseDelay=800;});
+ await automatic.locator('#btModalAuto').click();
+ await automatic.waitForFunction(()=>requests.length===1 && test.STATE.translating && document.querySelector('.bt-fab.bt-busy'));
+ assert.equal(await automatic.locator('.bt-fab-wrap.bt-translated').count(),0);
+ await automatic.locator('#btModalAuto').click();
+ await automatic.waitForFunction(()=>test.STATE.autoTranslate===false);
+ assert.equal(await automatic.evaluate(()=>test.STATE.translating),true,'关闭开关不取消正在翻译的请求');
+ await automatic.waitForFunction(()=>!test.STATE.translating);
+ assert.equal(await automatic.locator('#automatic .bt-translation-text').count(),1);
+ assert.equal(await automatic.evaluate(()=>requests.length),1);
+ // 开启已有译文的空扫描不重发，也不让徽标和按钮闪烁。
+ const emptyScan=await automatic.evaluate(async()=>{
+   const classes=[];
+   const observer=new MutationObserver(records=>{
+     for(const record of records)classes.push(record.oldValue||'',record.target.className);
+   });
+   observer.observe(document.querySelector('.bt-fab-wrap'),{attributes:true,attributeFilter:['class'],attributeOldValue:true,subtree:true});
+   await document.querySelector('#btModalAuto').onclick();
+   await new Promise(resolve=>requestAnimationFrame(resolve));
+   observer.disconnect();
+   return {classes,requests:requests.length,button:document.querySelector('#btModalTranslate').textContent};
+ });
+ assert.equal(emptyScan.requests,1);
+ assert.ok(emptyScan.classes.every(value=>!value.split(' ').includes('bt-busy')),'空扫描不显示忙碌');
+ assert.equal(emptyScan.button,'重新翻译');
+ assert.equal(await automatic.locator('.bt-fab-wrap.bt-translated').count(),1);
+ await automatic.close();
+
+ // 保存未结束时取消并关闭重开面板，迟到回调不得重启页面。
+ const late=await setup(browser,'<p>Pending automatic start</p>');
+ await late.evaluate(()=>{
+   test.openControlPanel();
+   const original=chrome.storage.sync.set.bind(chrome.storage.sync);
+   chrome.storage.sync.set=async values=>{
+     await new Promise(resolve=>window.releaseAutoSave=resolve);
+     return original(values);
+   };
+   window.toggleTask=document.querySelector('#btModalAuto').onclick();
+   test.cancelTranslation();
+   document.querySelector('.bt-modal-close').click();
+   test.openControlPanel();
+ });
+ assert.equal(await late.locator('#btModalAuto').getAttribute('aria-disabled'),'true');
+ await late.evaluate(async()=>{releaseAutoSave();await toggleTask;});
+ assert.equal(await late.evaluate(()=>test.STATE.pagePaused),true);
+ assert.equal(await late.evaluate(()=>requests.length),0);
+ assert.equal(await late.locator('.bt-translation-text').count(),0);
+ assert.equal(await late.locator('#btModalAuto').getAttribute('aria-disabled'),'false');
+ await late.close();
+
+ // 别的窗口同步偏好时不主动翻译本页。
+ const synced=await setup(browser,'<p>External preference update</p>');
+ await synced.evaluate(async()=>{test.openControlPanel();await chrome.storage.sync.set({autoTranslate:true});});
+ assert.equal(await synced.evaluate(()=>test.STATE.autoTranslate),true);
+ assert.equal(await synced.evaluate(()=>requests.length),0);
+ await synced.close();
 
  const failed=await setup(browser,'<p id="failure">Failing paragraph</p>');
  assert.equal(await failed.locator('.bt-has-error').count(),0,'fresh page has no old error badge');

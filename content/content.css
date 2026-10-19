@@ -364,7 +364,7 @@
 
 /* 未完成标记覆盖成功绿勾，原因文字由控制面板单独展示。 */
 .bt-fab-wrap.bt-has-error:not(.bt-busy) .bt-check-badge { opacity: 0; }
-.bt-fab-wrap.bt-has-error::after {
+.bt-fab-wrap.bt-has-error:not(.bt-busy)::after {
   content: "!"; position: absolute; right: -3px; bottom: -3px;
   width: 14px; height: 14px; border-radius: 50%;
   background: #a86700; color: white; font: bold 11px/14px sans-serif;

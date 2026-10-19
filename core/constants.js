@@ -9,7 +9,7 @@
     "autoTranslate", "hoverPanel",
     "hoverTranslate", "hoverRequireShift",
     "shortcutTranslate", "shortcutKey",
-    "baiduAppId", "baiduKey"
+    "baiduAppId", "baiduKey", "baiduVerification"
   ];
 
   const DEFAULTS = {
@@ -27,7 +27,8 @@
     shortcutTranslate: true,
     shortcutKey: "Alt+A",
     baiduAppId: "",
-    baiduKey: ""
+    baiduKey: "",
+    baiduVerification: null
   };
 
   // 正式版默认关闭运行日志；本地排查时改为 true 并重新加载扩展。
@@ -37,6 +38,7 @@
 
   const MSG = {
     TRANSLATE: "TRANSLATE",
+    TEST_BAIDU_CONNECTION: "TEST_BAIDU_CONNECTION",
     CANCEL_TRANSLATION_REQUESTS: "CANCEL_TRANSLATION_REQUESTS",
     START_TRANSLATION: "START_TRANSLATION",
     CANCEL_TRANSLATION: "CANCEL_TRANSLATION",
@@ -154,10 +156,24 @@
     "Ctrl+Shift+A", "Ctrl+Shift+Z"
   ];
 
-  const BT_CONST = { DEBUG, STORAGE_KEYS, DEFAULTS, ENGINES, MSG, LANGUAGES, SHORTCUT_KEYS, fillLanguageSelect, resolveTargetLanguage };
+  /** 生成凭据一致性指纹，仅用于匹配测试记录，不作为安全认证或密钥加密。 */
+  function getBaiduCredentialFingerprint(config = {}) {
+    const appId = typeof config.baiduAppId === "string" ? config.baiduAppId.trim() : "";
+    const key = typeof config.baiduKey === "string" ? config.baiduKey.trim() : "";
+    if (!appId || !key || typeof global.md5 !== "function") return "";
+    return global.md5(JSON.stringify([appId, key]));
+  }
+
+  /** 只有当前这一份 AppID 和密钥通过连接测试，百度才可供选择。 */
+  function hasVerifiedBaiduCredentials(config = {}) {
+    const fingerprint = getBaiduCredentialFingerprint(config);
+    return !!fingerprint && config.baiduVerification?.fingerprint === fingerprint;
+  }
+
+  const BT_CONST = { DEBUG, STORAGE_KEYS, DEFAULTS, ENGINES, MSG, LANGUAGES, SHORTCUT_KEYS, fillLanguageSelect, resolveTargetLanguage, getBaiduCredentialFingerprint, hasVerifiedBaiduCredentials };
 
   // 服务配置包含密钥，只保存在本机；语言和显示模式等普通偏好仍使用同步存储。
-  const LOCAL_KEYS = ["aiKeys", "baiduAppId", "baiduKey"];
+  const LOCAL_KEYS = ["aiKeys", "baiduAppId", "baiduKey", "baiduVerification"];
   const LEGACY_KEYS = ["openaiKey", "openaiBase", "openaiModel"];
   let migration;
   // 同一上下文共享迁移任务；失败后允许重试，避免重复初始化时重复搬运数据。
@@ -206,8 +222,17 @@
       await migrateCredentials();
       const synced = {}, local = {};
       for (const [key, value] of Object.entries(config)) {
-        if (LEGACY_KEYS.includes(key)) continue;
+        // 验证记录只由后台实际测试写入，普通表单保存不能覆盖它。
+        if (LEGACY_KEYS.includes(key) || key === "baiduVerification") continue;
         (LOCAL_KEYS.includes(key) ? local : synced)[key] = value;
+      }
+      if (Object.prototype.hasOwnProperty.call(local, "baiduAppId") ||
+          Object.prototype.hasOwnProperty.call(local, "baiduKey")) {
+        const previous = await chrome.storage.local.get(["baiduAppId", "baiduKey"]);
+        const changed = ["baiduAppId", "baiduKey"].some(key =>
+          Object.prototype.hasOwnProperty.call(local, key) && local[key] !== previous[key]);
+        // 与新凭据在同一笔本机写入中清除旧验证，避免沿用上一份密钥的测试结果。
+        if (changed) local.baiduVerification = null;
       }
       if (Object.keys(local).length) await chrome.storage.local.set(local);
       if (Object.keys(synced).length) await chrome.storage.sync.set(synced);

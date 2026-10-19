@@ -10,6 +10,7 @@
    */
   function createTranslationRuntime(execute, options = {}) {
     const now = options.now || Date.now;
+    let connectionTestSequence = 0;
     const cache = new Map(), inflight = new Map(), gates = new Map(), circuits = new Map(), manualTokens = new Map();
     const limit = options.cacheLimit || 256, ttl = options.ttl || 600000, cooldown = options.cooldown || 30000;
     /**
@@ -114,7 +115,9 @@
      */
     function run(r) {
       if(r.signal&&r.signal.aborted)return Promise.reject(abortError());
-      const k=key(r),id=scope(r),manual=r.retryManual===true,cached=cache.get(k);
+      // 连接测试必须实际请求：使用独立标识，不读取缓存或共享已有翻译。
+      const k=r.bypassCache ? key(r)+":test:"+ ++connectionTestSequence : key(r);
+      const id=scope(r),manual=r.retryManual===true,cached=r.bypassCache ? undefined : cache.get(k);
       if(manual&&r.retryToken&&manualTokens.get(id)!==r.retryToken) {
         circuits.delete(id);manualTokens.set(id,r.retryToken);
         while(manualTokens.size>64)manualTokens.delete(manualTokens.keys().next().value);
@@ -129,20 +132,23 @@
       const request={...r,signal:entry.controller.signal};
       entry.promise=enqueue(request,async()=>{
         const circuit=circuits.get(id);
-        if(circuit&&circuit.until>now())throw new Error("翻译服务连续失败，已暂停自动请求；请检查配置后手动重试");
+        if(!r.bypassCache&&circuit&&circuit.until>now())throw new Error("翻译服务连续失败，已暂停自动请求；请检查配置后手动重试");
         try {
           const data=await execute(request);
           if(request.signal.aborted)throw abortError();
           if(typeof data!=="string"||!data.trim())throw new Error("翻译服务返回空内容");
-          circuits.delete(id);put(k,{data,until:now()+ttl});return data;
+          circuits.delete(id);
+          if (!r.bypassCache) put(k,{data,until:now()+ttl});
+          return data;
         } catch(error) {
           if(request.signal.aborted||error.name==="AbortError")throw abortError();
           // 短文字无法识别是单段限制，不应导致整个服务熔断。
-          if(error.code!=="NEED_SOURCE_LANGUAGE") {
+          if(!r.bypassCache&&error.code!=="NEED_SOURCE_LANGUAGE") {
             const failures=(circuits.get(id)?.failures||0)+1;
             circuits.set(id,{failures,until:failures>=3?now()+cooldown:0});
           }
-          put(k,{error:error.message||"翻译失败",code:error.code,until:now()+cooldown});throw error;
+          if (!r.bypassCache) put(k,{error:error.message||"翻译失败",code:error.code,until:now()+cooldown});
+          throw error;
         }
       }).finally(()=>{if(inflight.get(k)===entry)inflight.delete(k);});
       inflight.set(k,entry);

@@ -65,6 +65,7 @@
         "<all_urls>"
       ],
       "js": [
+        "core/md5.js",
         "core/constants.js",
         "core/providers.js",
         "content/content.js"

@@ -81,6 +81,8 @@ assert.ok(!source.includes('figcaption, article > div'));
 const fabWrap=new Element('div'),fab=new Element('div');
 t.mountFab(fabWrap,fab);
 t.STATE.translated=true;t.setFabTranslated(true);
+assert.equal(fabWrap.classList.contains('bt-translated'),false,'暂停页面不能显示完成徽标');
+t.STATE.pagePaused=false;t.setFabTranslated(true);
 assert.equal(fabWrap.classList.contains('bt-translated'),true);
 t.STATE.translating=true;t.setFabBusy(true);
 assert.equal(fabWrap.classList.contains('bt-translated'),false);
