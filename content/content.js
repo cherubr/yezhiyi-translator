@@ -34,6 +34,7 @@ function init() {
     activeWorkers: 0,
     lastError: "",
     failedCount: 0,
+    languageNoticeCount: 0,
     engine: "google",
     aiProvider: "openai",
     from: window.BT_CONST.DEFAULTS.from,
@@ -57,6 +58,16 @@ function init() {
   const pendingMessages = new Set();
   const pendingPreferenceWrites = new Map();
   let resumeAfterSettingsChange = false;
+  /**
+   * 将语言识别限制与真正的请求失败分开记录；提示仅由控制面板呈现。
+   */
+  function recordTranslationIssue(error) {
+    if (error.code === "NEED_SOURCE_LANGUAGE") STATE.languageNoticeCount++;
+    else { STATE.lastError = error.message; STATE.failedCount++; }
+    setFabTranslated(STATE.translated);
+    if (panelModalEl) refreshPanelModal();
+  }
+
   /**
    * 创建 AbortError，供请求链区分主动取消与真正的接口失败。
    */
@@ -296,7 +307,7 @@ function init() {
   const FORM_SELECTOR = "label, legend, button, [role='button'], [role='alert'], form small, form .help-text, form .form-text";
   const DIALOG_SELECTOR = "dialog, [role='dialog'], [role='alertdialog'], [aria-modal='true']";
   const TEXT_SELECTOR = "div, span, a, small, strong, em, b, time, dt, dd, summary, dialog, section, form, fieldset, [role='option'], [role='menuitem'], [role='tab'], [role='status'], [role='tooltip']";
-  const EXCLUDED_SELECTOR = ".bt-translation-text, .bt-original-text, .bt-text-fragment, .bt-modal, .bt-popup, .bt-fab-wrap, .bt-thumb, pre, code, script, style, noscript, svg, math, canvas, textarea, input, select, [translate='no'], .notranslate, [contenteditable]:not([contenteditable='false'])";
+  const EXCLUDED_SELECTOR = ".bt-translation-text, .bt-original-text, .bt-text-fragment, .bt-modal, .bt-popup, .bt-fab-wrap, .bt-thumb, .bt-page-notice, pre, code, script, style, noscript, svg, math, canvas, textarea, input, select, [translate='no'], .notranslate, [contenteditable]:not([contenteditable='false'])";
 
   // 只采集已显示的内容；视口优先开启时，屏幕外内容等待滚动后补翻。
   /**
@@ -408,14 +419,18 @@ function init() {
     }
     if (!automatic) {
       failureRecords = new WeakMap();
-      STATE.lastError = ""; STATE.failedCount = 0;
+      STATE.lastError = ""; STATE.failedCount = 0; STATE.languageNoticeCount = 0;
+      // 重试开始即同步清除旧错误外观，不能等到新请求完成才刷新。
+      setFabTranslated(STATE.translated);
       wholePageScan = true;
     }
     const generation = STATE.cancelVersion;
     STATE.translating = true;
     STATE.cancelRequested = false;
     STATE.activeWorkers = 0;
-    setFabBusy(true);
+    // 自动扫描确认有新内容后才更新忙碌界面，避免空扫描造成按钮闪烁。
+    if (!automatic) { setFabBusy(true); setFabTranslated(STATE.translated); hidePageNotice(); }
+    const issuesBefore = STATE.failedCount + STATE.languageNoticeCount;
 
     try { await loadConfig(); } catch (error) {
       if(generation!==STATE.cancelVersion)return;
@@ -447,10 +462,12 @@ function init() {
     if (rawBlocks.length === 0) {
       debugLog("[双语翻译] 未找到可翻译内容");
       STATE.translating = false;
-      setFabBusy(false);
+      if (!automatic) setFabBusy(false);
+      setFabTranslated(STATE.translated);
       return;
     }
 
+    if (automatic) { setFabBusy(true); setFabTranslated(STATE.translated); }
     const blocks = sortByViewport(rawBlocks);
     const total = blocks.length;
     const workerCount = Math.min(10, Math.max(1, Number(STATE.concurrency) || 4));
@@ -495,11 +512,12 @@ function init() {
     } else {
       debugLog(`[双语翻译] 完成：成功 ${succeeded} 段，跳过 ${skipped} 段，失败 ${failed} 段`);
     }
+    if (!STATE.pagePaused && STATE.failedCount + STATE.languageNoticeCount > issuesBefore) showPageNotice();
     if (failed && !automatic && !STATE.pagePaused) {
       if (!panelModalEl) openControlPanel();
-      showPanelToast("部分内容未完成，请查看原因并调整语言或引擎后重试", "warn");
+
     }
-    if(failed)debugLog("[页知译] 本轮部分内容未完成：",STATE.lastError);
+    if (!automatic && STATE.languageNoticeCount && !panelModalEl) openControlPanel();
     if (panelModalEl) refreshPanelModal();
     if (pendingViewport) {
       pendingViewport = false;
@@ -566,12 +584,11 @@ function init() {
         const same = old && old.text === text && old.scope === requestScope(config);
         const attempts = same ? old.attempts + 1 : 1;
         failureRecords.set(target,{text,scope:requestScope(config),attempts,next:e.code==="NEED_SOURCE_LANGUAGE"?Infinity:Date.now()+30000*Math.pow(2,attempts-1)});
-        STATE.lastError = e.message;
-        STATE.failedCount++;
+        recordTranslationIssue(e);
         setFabTranslated(STATE.translated);
       }
       el.removeAttribute(STATE.processedAttr);
-      return false;
+      return e.code === "NEED_SOURCE_LANGUAGE" ? "skipped" : false;
     } finally {
       pendingSet.delete(target);
     }
@@ -678,7 +695,7 @@ function init() {
       const res = await requestTranslate(text.trim());
       showPopup(text.trim(), res, anchorRect);
     } catch (e) {
-      if(e.name!=="AbortError")showPopup(text.trim(), "翻译失败：" + e.message, anchorRect);
+      if(e.name!=="AbortError"){recordTranslationIssue(e);openControlPanel();}
     }
   }
 
@@ -758,7 +775,8 @@ function init() {
     pendingViewport=false;dirtyRoots.clear();wholePageScan=true;
     pendingRecords=new WeakSet();hoveredEl=null;
     STATE.cancelRequested=false;STATE.translating=false;STATE.activeWorkers=0;
-    STATE.lastError="";STATE.failedCount=0;
+    hidePageNotice();
+    STATE.lastError="";STATE.failedCount=0;STATE.languageNoticeCount=0;
     clearTranslations();setFabBusy(false);setFabTranslated(false);
     if(panelModalEl)refreshPanelModal();
   }
@@ -802,7 +820,7 @@ function init() {
         insertTranslation(el, translation.trim(), true);
         el.setAttribute(STATE.processedAttr, "hover");
       } catch (err) {
-        if(err.name!=="AbortError"){STATE.lastError=err.message;setFabTranslated(STATE.translated);}
+        if(err.name!=="AbortError"){recordTranslationIssue(err);}
       }
     });
   }
@@ -1039,6 +1057,7 @@ function init() {
               <div class="bt-modal-hero-label">当前页面</div>
               <div class="bt-modal-hero-status" id="btModalStatus">未翻译</div>
               <div class="bt-modal-hint" id="btModalError" role="status"></div>
+              <div class="bt-modal-hint" id="btModalLanguageNotice" role="status"></div>
             </div>
             <div class="bt-modal-hero-actions">
               <button class="bt-modal-btn bt-modal-btn-primary" id="btModalTranslate">翻译此页面</button>
@@ -1202,6 +1221,35 @@ function init() {
     setTimeout(() => toast.remove(), 2600);
   }
 
+  let pageNoticeEl = null;
+  let pageNoticeTimer = null;
+  /** 清除页面级提示和关闭计时器，供重新翻译及取消时调用。 */
+  function hidePageNotice() {
+    clearTimeout(pageNoticeTimer);
+    pageNoticeTimer = null;
+    if (pageNoticeEl) pageNoticeEl.remove();
+    pageNoticeEl = null;
+  }
+  /** 本轮翻译结束后显示一条红色页面提示，点击可打开控制面板查看完整原因。 */
+  function showPageNotice() {
+    hidePageNotice();
+    pageNoticeEl = document.createElement("div");
+    pageNoticeEl.className = "bt-page-notice";
+    pageNoticeEl.setAttribute("role","status");
+    const detail = document.createElement("button");
+    detail.type = "button";
+    detail.textContent = STATE.lastError
+      ? "部分内容翻译失败：" + STATE.lastError + "（点击查看详情）"
+      : "部分内容未翻译：无法识别源语言，请指定源语言或切换引擎（点击查看详情）";
+    detail.onclick = () => { openControlPanel(); hidePageNotice(); };
+    const close = document.createElement("button");
+    close.type = "button"; close.textContent = "×"; close.setAttribute("aria-label","关闭提示");
+    close.onclick = hidePageNotice;
+    pageNoticeEl.append(detail,close);
+    getMountNode().appendChild(pageNoticeEl);
+    // 保留提示直到用户关闭、查看详情、手动重译或取消，避免动态补翻将其闪退。
+  }
+
   /**
    * 为控制面板标题栏绑定拖动事件，避免干扰面板内的表单交互。
    */
@@ -1291,6 +1339,9 @@ function init() {
 
     const errorEl = $("#btModalError");
     if (errorEl) {errorEl.textContent = STATE.lastError ? "部分内容未完成：" + STATE.lastError : "";errorEl.title=errorEl.textContent;}
+    const noticeEl = $("#btModalLanguageNotice");
+    if (noticeEl) noticeEl.textContent = STATE.languageNoticeCount
+      ? "语言提示：" + STATE.languageNoticeCount + " 处内容无法自动识别源语言，已跳过。请为 MyMemory 指定源语言或切换引擎。" : "";
     renderEngineOptions();
     window.BT_CONST.fillLanguageSelect($("#btModalFrom"),"from",STATE.from);
     window.BT_CONST.fillLanguageSelect($("#btModalTo"),"to",STATE.to);
@@ -1344,8 +1395,10 @@ function init() {
    * 更新悬浮球完成标记及失败提醒，使状态与当前页面一致。
    */
   function setFabTranslated(translated) {
-    if(fabWrap)fabWrap.classList.toggle("bt-has-error",!!STATE.lastError&&!STATE.pagePaused);
-    if(fabEl)fabEl.title=STATE.lastError&&!STATE.pagePaused?"部分内容未完成，打开面板查看原因":"点击翻译 / 取消翻译";
+    // 感叹号只概括当前页面有未完成内容，详细原因仅在控制面板展示。
+    const incomplete = !STATE.translating && !STATE.pagePaused && (!!STATE.lastError || STATE.languageNoticeCount > 0);
+    if (fabWrap) fabWrap.classList.toggle("bt-has-error", incomplete);
+
     if (!fabWrap) return;
     fabWrap.classList.toggle("bt-translated", translated && !STATE.translating && !STATE.cancelRequested);
     if (fabEl) fabEl.title = translated ? "点击取消翻译" : "点击翻译";
@@ -1449,7 +1502,7 @@ function init() {
    * 观察新增、替换和文字变化；忽略插件自身节点，只对受影响区域安排补翻。
    */
   function observeDynamicContent() {
-    const uiSelector = ".bt-translation-text, .bt-modal, .bt-popup, .bt-fab-wrap, .bt-thumb";
+    const uiSelector = ".bt-translation-text, .bt-modal, .bt-popup, .bt-fab-wrap, .bt-thumb, .bt-page-notice";
     const observer = new MutationObserver(records => {
       if (STATE.pagePaused || STATE.cancelRequested) return;
       const touched = new Set();
@@ -1471,7 +1524,7 @@ function init() {
         if (target.closest(EXCLUDED_SELECTOR)) continue;
         const added = [...(record.addedNodes || [])];
         const pluginOnly = record.type === "childList" && added.length &&
-          added.every(node => node.nodeType === 1 && node.matches(".bt-translation-text, .bt-original-text, .bt-text-fragment, .bt-fab-wrap, .bt-modal, .bt-popup, .bt-thumb"));
+          added.every(node => node.nodeType === 1 && node.matches(".bt-translation-text, .bt-original-text, .bt-text-fragment, .bt-fab-wrap, .bt-modal, .bt-popup, .bt-thumb, .bt-page-notice"));
         if (pluginOnly) continue;
         if (record.type === "attributes" && target.hasAttribute(STATE.processedAttr)) continue;
         const root = target.closest(BLOCK_SELECTOR + ", " + FORM_SELECTOR) || target;
@@ -1498,7 +1551,11 @@ function init() {
       subtree:true,childList:true,characterData:true,attributes:true,
       attributeFilter:["open","hidden","aria-hidden","aria-expanded","data-state","class","style"]
     });
-    for (const event of ["toggle","transitionend","animationend"]) document.addEventListener(event,scheduleVisibleTranslation,true);
+    for (const event of ["toggle","transitionend","animationend"]) document.addEventListener(event,(e)=>{
+      // 插件按钮悬停动画、悬浮球动画均不属于网页内容变化。
+      if (e.target instanceof Element && e.target.closest(uiSelector)) return;
+      scheduleVisibleTranslation();
+    },true);
   }
 
   /**

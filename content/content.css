@@ -359,7 +359,11 @@
   display: inline; margin: 0 0 0 0.35em; padding: 0; flex: 0 1 auto;
   font-size: 0.9em; line-height: inherit; white-space: normal;
 }
-.bt-fab-wrap.bt-has-error .bt-check-badge { opacity: 0; }
+
+.bt-modal #btModalError { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+
+/* 未完成标记覆盖成功绿勾，原因文字由控制面板单独展示。 */
+.bt-fab-wrap.bt-has-error:not(.bt-busy) .bt-check-badge { opacity: 0; }
 .bt-fab-wrap.bt-has-error::after {
   content: "!"; position: absolute; right: -3px; bottom: -3px;
   width: 14px; height: 14px; border-radius: 50%;
@@ -367,4 +371,18 @@
   text-align: center; pointer-events: none;
 }
 
-.bt-modal #btModalError { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+/* 页面提示独立于控制面板，不占用网页排版空间。 */
+.bt-page-notice {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  z-index: 2147483647; display: flex; align-items: center; gap: 12px;
+  width: max-content; max-width: min(560px, calc(100vw - 32px));
+  box-sizing: border-box; padding: 12px 16px; border: 1px solid #efb4b4;
+  border-radius: 10px; background: #fff2f2; color: #b42318;
+  box-shadow: 0 6px 24px #0002; font: 14px/1.6 system-ui, sans-serif;
+}
+.bt-page-notice > button {
+  appearance: none; background: transparent; border: 0; padding: 0; margin: 0;
+  color: inherit; font: inherit; cursor: pointer; text-align: left;
+  white-space: normal; overflow-wrap: anywhere; min-width: 0;
+}
+.bt-page-notice > button:last-child { flex: 0 0 auto; font-size: 20px; }

@@ -212,6 +212,8 @@ async function translateGoogle(text, from, to, signal) {
  */
 async function translateMyMemory(text, from, to, signal) {
   if (from === "auto") from = await self.BT_LANG.detectSourceLanguage(text);
+  // 同语种内容无需请求翻译，直接交给前端的相同译文去重逻辑跳过。
+  if (from.toLowerCase() === to.toLowerCase()) return text;
   const url = "https://api.mymemory.translated.net/get?q=" +
     encodeURIComponent(text) + "&langpair=" + from + "|" + to;
   const res = await fetchWithTimeout(url,{signal});

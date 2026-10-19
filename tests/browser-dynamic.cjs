@@ -6,7 +6,7 @@ async function setup(browser,html) {
  const page=await browser.newPage({viewport:{width:1280,height:900}});
  await page.setContent(html);
  await page.evaluate(()=>{
-   window.requests=[];window.failMode=false;
+   window.requests=[];window.failMode=false;window.responseDelay=8;window.languageMode=false;
    const config={autoTranslate:false,concurrency:4,from:'auto',to:'zh-CN'};
    const storage={async get(keys,cb){const r=Object.fromEntries(keys.filter(k=>k in config).map(k=>[k,config[k]]));if(cb)cb(r);return r;},async set(values){
      const changes=Object.fromEntries(Object.entries(values).map(([key,newValue])=>[key,{newValue,oldValue:config[key]}]));
@@ -16,7 +16,7 @@ async function setup(browser,html) {
    },async remove(){}};
    window.chrome={runtime:{onMessage:{addListener(){}},sendMessage(request,cb){if(request.action==="CANCEL_TRANSLATION_REQUESTS"){cb?.({ok:true});return;}
      window.requests.push(request.text);
-     setTimeout(()=>cb(window.failMode?{ok:false,error:'模拟网络失败'}:{ok:true,data:'译：'+request.text}),8);
+     setTimeout(()=>cb(window.languageMode?{ok:false,error:'需要指定源语言',code:'NEED_SOURCE_LANGUAGE'}:window.failMode?{ok:false,error:'模拟网络失败'}:{ok:true,data:'译：'+request.text}),window.responseDelay);
    }},storage:{sync:storage,local:{async get(){return {}},async set(){}},onChanged:{addListener(fn){window.storageChange=fn;}}}};
  });
  for(const file of ['core/constants.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
@@ -80,8 +80,21 @@ async function setup(browser,html) {
  await page.close();
 
  const failed=await setup(browser,'<p id="failure">Failing paragraph</p>');
+ assert.equal(await failed.locator('.bt-has-error').count(),0,'fresh page has no old error badge');
  await failed.evaluate(()=>{window.failMode=true;return test.translatePage();});
+ assert.equal(await failed.locator('.bt-has-error').count(),1);
+ assert.equal(await failed.locator('.bt-page-notice').count(),1);
  assert.match(await failed.locator('#btModalError').textContent(),/模拟网络失败/);
+ await failed.evaluate(()=>test.translatePage(false,true));
+ assert.equal(await failed.locator('.bt-page-notice').count(),1,'empty automatic scan preserves page warning');
+ assert.equal(await failed.locator('.bt-has-error').count(),1,'empty automatic scan preserves incomplete badge');
+ assert.equal(await failed.locator('.bt-check-badge').evaluate(el=>getComputedStyle(el).opacity),'0');
+ await failed.locator('#btModalTranslate').hover();
+ await failed.waitForTimeout(700);
+ assert.equal(await failed.locator('#btModalTranslate').textContent(),'重试翻译');
+ assert.equal(await failed.locator('#btModalTranslate').isEnabled(),true);
+ assert.equal(await failed.locator('.bt-page-notice').count(),1);
+
  await failed.evaluate(()=>document.querySelector('#btModalError').textContent='翻译服务连续失败，请检查源语言或配置后再试。'.repeat(12));
  const buttonGeometry=await failed.locator('#btModalTranslate').evaluate(el=>{
    const r=el.getBoundingClientRect(),style=getComputedStyle(el);
@@ -100,10 +113,22 @@ async function setup(browser,html) {
  await failed.evaluate(()=>{const clock=Date.now;Date.now=()=>clock()+200000;});
  await failed.evaluate(()=>test.translatePage(false,true));
  assert.equal(await failed.evaluate(()=>window.requests.length),3,'three failures stop automatic retries');
- await failed.evaluate(()=>{window.failMode=false;return test.translatePage();});
+ await failed.evaluate(()=>{window.failMode=false;window.responseDelay=150;window.retryDone=test.translatePage();});
+ assert.equal(await failed.locator('.bt-has-error').count(),0,'retry immediately clears previous error before response');
+ assert.equal(await failed.locator('#btModalError').textContent(),'');
+ assert.equal(await failed.locator('.bt-page-notice').count(),0);
+ await failed.evaluate(()=>window.retryDone);
  assert.equal(await failed.evaluate(()=>window.requests.length),4);
  assert.equal(await failed.locator('#failure .bt-translation-text').count(),1);
  await failed.close();
+ const language=await setup(browser,'<p>Short ambiguous title</p>');
+ await language.evaluate(()=>{window.languageMode=true;return test.translatePage();});
+ assert.equal(await language.evaluate(()=>test.STATE.failedCount),0);
+ assert.equal(await language.locator('#btModalError').textContent(),'');
+ assert.match(await language.locator('#btModalLanguageNotice').textContent(),/语言提示：1/);
+ assert.equal(await language.locator('.bt-has-error').count(),1);
+ assert.equal(await language.locator('.bt-page-notice').count(),1);
+ await language.close();
 
  const navigation=await setup(browser,'<style>aside{width:160px}nav a{display:block;width:150px;line-height:22px}</style><aside><nav><a id="nav" href="#"><span>View history</span></a></nav></aside>');
  await navigation.evaluate(()=>test.translatePage());
