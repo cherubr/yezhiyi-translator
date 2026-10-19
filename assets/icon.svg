@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#3166EF"/><stop offset="1" stop-color="#5636CB"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="24" fill="url(#brand)"/>
+  <text x="64" y="91" text-anchor="middle" font-family="Microsoft YaHei, sans-serif" font-size="80" font-weight="700" fill="#fff">译</text>
+  <path d="M99 108 111 96v12Z" fill="#86F0DA"/>
+</svg>
