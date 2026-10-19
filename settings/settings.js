@@ -647,6 +647,17 @@ function bindAIDetail() {
       if (!cfg.aiKeys) cfg.aiKeys = {};
       cfg.aiKeys[pid] = data;
 
+      try {
+        // 授权完成前不切换正式使用的服务。
+        setBtn.disabled = true;
+        await window.BT_AI_ACCESS.request(pid, data);
+      } catch (error) {
+        showSaveTip("✗ " + error.message);
+        return;
+      } finally {
+        setBtn.disabled = false;
+      }
+
       cfg.aiProvider = pid;
       cfg.engine = "ai";
 
@@ -694,35 +705,33 @@ function updateProviderGrid(providerId) {
 async function runTest(engine, resultId, btn) {
   const resultEl = document.getElementById(resultId);
   if (!resultEl) return;
+  const testPid = editingProvider || cfg.aiProvider || "openai";
+  let testConfig;
   btn.disabled = true;
   resultEl.textContent = "测试中…";
   resultEl.className = "test-result";
   try {
     if (engine === "ai") {
-      const pid = editingProvider || cfg.aiProvider || "openai";
-      const keys = (cfg.aiKeys && cfg.aiKeys[pid]) || {};
-      if (pid !== "ollama" && !keys.key) {
-        resultEl.textContent = `✗ 请先为「${(PROVIDERS[pid] || {}).name || pid}」填写 API Key`;
-        resultEl.className = "test-result error";
-        btn.disabled = false;
-        return;
-      }
-
+      const pid = testPid;
       const current = readProviderInputs();
+      testConfig = { ...current };
+      if (pid !== "ollama" && !current.key) {
+        throw new Error("请先为「" + ((PROVIDERS[pid] || {}).name || pid) + "」填写 API Key");
+      }
+      // 先读取当前表单并请求域名授权，拒绝授权时不发送翻译请求。
+      await window.BT_AI_ACCESS.request(pid, current);
       if (!cfg.aiKeys) cfg.aiKeys = {};
-      cfg.aiKeys[pid] = {
-        key: current.key || keys.key || "",
-        base: current.base || keys.base || "",
-        model: current.model || keys.model || ""
-      };
+      cfg.aiKeys[pid] = current;
     }
 
-    const testPid = editingProvider || cfg.aiProvider || "openai";
+
     const res = await chrome.runtime.sendMessage({
       action: "TRANSLATE",
+      retryManual: true,
+      retryToken: String(Date.now()) + ":" + Math.random(),
       engine: engine,
       aiProvider: testPid,
-      aiConfig: { ...((cfg.aiKeys || {})[testPid] || {}) },
+      aiConfig: testConfig || { ...((cfg.aiKeys || {})[testPid] || {}) },
       text: "Hello world",
       from: "en",
       to: "zh-CN"
@@ -891,7 +900,12 @@ function save() {
   // 合并连续输入产生的保存请求；共享存储层负责将密钥和普通偏好分别保存。
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
-    await window.BT_STORAGE.set(cfg);
+    try {
+      await window.BT_STORAGE.set(cfg);
+    } catch (error) {
+      showSaveTip("✗ 保存失败：" + error.message);
+      return;
+    }
     showSaveTip();
     if (currentService === null) {
       renderServiceList();

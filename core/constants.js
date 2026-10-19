@@ -19,8 +19,8 @@
     from: "auto",
     to: "zh-CN",
     mode: "bilingual",
-    concurrency: 10,
-    autoTranslate: true,
+    concurrency: 4,
+    autoTranslate: false,
     hoverPanel: true,
     hoverTranslate: true,
     hoverRequireShift: true,
@@ -47,6 +47,8 @@
   const LANGUAGES = {
     from: [
       { value: "auto", label: "自动检测" },
+      { value: "zh-CN", label: "简体中文" },
+      { value: "zh-TW", label: "繁体中文" },
       { value: "en", label: "英语" },
       { value: "ja", label: "日语" },
       { value: "ko", label: "韩语" },

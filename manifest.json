@@ -5,8 +5,6 @@
   "description": "在网页段落下方显示翻译，支持 Google / 百度 / AI 多引擎，带悬浮球 + 控制面板 + 完整设置页。",
   "permissions": [
     "contextMenus",
-    "activeTab",
-    "scripting",
     "storage",
     "tabs"
   ],
@@ -30,15 +28,26 @@
     "http://127.0.0.1:11434/*"
   ],
   "optional_host_permissions": [
-    "https://*/*"
+    "https://*/*",
+    "http://*/*"
   ],
   "background": {
     "service_worker": "background/service-worker.js"
   },
-  "icons": { "16": "assets/icon16.png", "32": "assets/icon32.png", "48": "assets/icon48.png", "128": "assets/icon128.png" },
+  "icons": {
+    "16": "assets/icon16.png",
+    "32": "assets/icon32.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
   "action": {
     "default_title": "页知译 · 网页双语翻译",
-    "default_icon": { "16": "assets/icon16.png", "32": "assets/icon32.png", "48": "assets/icon48.png", "128": "assets/icon128.png" }
+    "default_icon": {
+      "16": "assets/icon16.png",
+      "32": "assets/icon32.png",
+      "48": "assets/icon48.png",
+      "128": "assets/icon128.png"
+    }
   },
   "commands": {
     "toggle-translation": {
@@ -64,18 +73,6 @@
       ],
       "run_at": "document_idle",
       "all_frames": false
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "settings/settings.html",
-        "settings/settings.css",
-        "settings/settings.js"
-      ],
-      "matches": [
-        "<all_urls>"
-      ]
     }
   ]
 }

@@ -1,0 +1,14 @@
+{
+  "name": "yezhiyi-translator",
+  "version": "0.9.0",
+  "private": true,
+  "scripts": {
+    "test": "node tests/regression.cjs && node tests/storage.cjs && node tests/network.cjs && node tests/permissions.cjs && node tests/runtime.cjs && node tests/languages.cjs",
+    "test:browser": "node tests/browser-layout.cjs && node tests/browser-dynamic.cjs && node tests/browser-extension.cjs",
+    "check": "node scripts/check.cjs",
+    "package": "node scripts/package.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.58.2"
+  }
+}

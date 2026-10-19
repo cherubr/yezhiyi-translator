@@ -4,7 +4,9 @@
 importScripts(
   "../core/constants.js",
   "../core/providers.js",
-  "../core/md5.js"
+  "../core/md5.js",
+  "../core/languages.js",
+  "../core/translation-runtime.js"
 );
 
 const { MSG } = self.BT_CONST;
@@ -107,14 +109,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 // ============ 翻译调度 ============
-async function handleTranslate({ engine, text, from = "auto", to = "zh-CN", aiProvider, aiConfig }) {
-  // 根据请求指定的引擎分发，接口调用集中在后台，结果通过消息返回网页。
-  switch (engine) {
-    case "google":   return translateGoogle(text, from, to);
-    case "baidu":    return translateBaidu(text, from, to);
-    case "ai":       return translateAI(text, from, to, aiProvider, aiConfig);
-    case "mymemory":
-    default:         return translateMyMemory(text, from, to);
+const translationRuntime=self.BT_CREATE_TRANSLATION_RUNTIME(dispatchTranslation);
+async function handleTranslate(request) {
+  const {engine,text,from="auto",to="zh-CN"}=request;
+  if(!["google","baidu","ai","mymemory"].includes(engine))throw new Error("不支持的翻译引擎");
+  if(typeof text!=="string"||!text.trim()||text.length>10000)throw new Error("翻译文本为空或过长");
+  const normalized={engine,text,from,to,retryManual:request.retryManual===true,retryToken:request.retryToken};
+  if(engine==="ai") {
+    const stored=await self.BT_STORAGE.get(["aiProvider","aiKeys"]);
+    normalized.aiProvider=request.aiProvider||stored.aiProvider||"openai";
+    normalized.aiConfig={...(request.aiConfig||(stored.aiKeys||{})[normalized.aiProvider]||{})};
+    const endpoint=self.BT_AI_ACCESS.getEndpoint(normalized.aiProvider,normalized.aiConfig);
+    if(!await chrome.permissions.contains({origins:[endpoint.origin]}))throw new Error("尚未授权访问接口域名（"+endpoint.host+"），请到设置页测试连接并允许访问");
+  }
+  if(engine==="baidu")normalized.baiduConfig=await self.BT_STORAGE.get(["baiduAppId","baiduKey"]);
+  return translationRuntime.run(normalized);
+}
+async function dispatchTranslation({engine,text,from,to,aiProvider,aiConfig,baiduConfig}) {
+  switch(engine) {
+    case "google":return translateGoogle(text,from,to);
+    case "baidu":return translateBaidu(text,from,to,baiduConfig);
+    case "ai":return translateAI(text,from,to,aiProvider,aiConfig);
+    case "mymemory":return translateMyMemory(text,from,to);
   }
 }
 
@@ -132,6 +148,7 @@ async function translateGoogle(text, from, to) {
 }
 
 async function translateMyMemory(text, from, to) {
+  if (from === "auto") from = await self.BT_LANG.detectSourceLanguage(text);
   const url = "https://api.mymemory.translated.net/get?q=" +
     encodeURIComponent(text) + "&langpair=" + from + "|" + to;
   const res = await fetchWithTimeout(url);
@@ -147,8 +164,8 @@ async function translateMyMemory(text, from, to) {
   return translated;
 }
 
-async function translateBaidu(text, from, to) {
-  const { baiduAppId, baiduKey } = await self.BT_STORAGE.get(["baiduAppId", "baiduKey"]);
+async function translateBaidu(text, from, to, credentials) {
+  const { baiduAppId, baiduKey } = credentials || await self.BT_STORAGE.get(["baiduAppId", "baiduKey"]);
   if (!baiduAppId || !baiduKey) throw new Error("未配置百度翻译 AppID / 密钥");
 
   const salt = Date.now().toString();
@@ -156,8 +173,8 @@ async function translateBaidu(text, from, to) {
 
   const params = new URLSearchParams({
     q: text,
-    from: from,
-    to: to === "zh-CN" ? "zh" : to,
+    from: self.BT_LANG.mapLanguage("baidu", from),
+    to: self.BT_LANG.mapLanguage("baidu", to),
     appid: baiduAppId,
     salt: salt,
     sign: sign
@@ -182,9 +199,13 @@ async function translateAI(text, from, to, requestedProvider, requestedConfig) {
   }
 
   const providerDefaults = (self.AI_PROVIDERS && self.AI_PROVIDERS[provider]) || {};
-  const fallbackBase = provider === "custom" ? "https://api.openai.com/v1" : (providerDefaults.base || "https://api.openai.com/v1");
   const fallbackModel = provider === "custom" ? "gpt-4o-mini" : (providerDefaults.model || "gpt-4o-mini");
-  const base = (keys.base || fallbackBase).replace(/\/+$/, "");
+  const endpoint = self.BT_AI_ACCESS.getEndpoint(provider, keys);
+  const base = endpoint.base;
+  // 后台不能自行弹出授权；缺少权限时提示用户回设置页主动授权。
+  if (!await chrome.permissions.contains({ origins: [endpoint.origin] })) {
+    throw new Error("尚未授权访问接口域名（" + endpoint.host + "），请到设置页点击测试连接或启用服务并允许访问");
+  }
   const model = keys.model || fallbackModel;
 
   const headers = { "Content-Type": "application/json" };
@@ -198,7 +219,7 @@ async function translateAI(text, from, to, requestedProvider, requestedConfig) {
       messages: [
         {
           role: "system",
-          content: "你是一个专业翻译引擎。请把用户输入从 " + from + " 翻译成 " + to + "，只输出译文，不要解释、不要引号。"
+          content: "你是一个专业翻译引擎。请把用户输入从 " + (from === "auto" ? "自动识别的源语言" : from) + " 翻译成 " + (to === "zh-CN" ? "简体中文" : to === "zh-TW" ? "繁體中文" : to) + "，只输出译文，不要解释、不要引号。"
         },
         { role: "user", content: text }
       ]

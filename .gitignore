@@ -3,7 +3,6 @@ node_modules/
 playwright-report/
 test-results/
 *.log
-tests/
 
 # 密钥及个人环境配置
 .env
@@ -25,3 +24,6 @@ Thumbs.db
 # 本机打包文件
 *.zip
 *.crx
+
+# 白名单脚本生成的安装包
+dist/
