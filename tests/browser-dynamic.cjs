@@ -22,7 +22,7 @@ async function setup(browser,html) {
  for(const file of ['core/constants.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
  await page.addStyleTag({content:fs.readFileSync(path.join(root,'content/content.css'),'utf8')});
  const source=fs.readFileSync(path.join(root,'content/content.js'),'utf8').replace('  bootstrap();',
- '  window.test={STATE,changeTranslationSetting,translatePage,cancelTranslation,collectBlocks,translatedElements,insertTranslation,clearTranslations,createFab,observeDynamicContent,scheduleVisibleTranslation,bindHoverTranslate};');
+ '  window.test={STATE,openControlPanel,changeTranslationSetting,translatePage,cancelTranslation,collectBlocks,translatedElements,insertTranslation,clearTranslations,createFab,observeDynamicContent,scheduleVisibleTranslation,bindHoverTranslate};');
  await page.addScriptTag({content:source});
  await page.evaluate(()=>{test.createFab();test.observeDynamicContent();test.bindHoverTranslate();});
  return page;
@@ -39,6 +39,18 @@ async function setup(browser,html) {
  assert.equal(await page.evaluate(()=>savedControl===document.querySelector('#check')),true);
  assert.equal(await page.locator('#label .bt-translation-text').count(),1);
  assert.equal(await page.locator('#button svg').count(),1);
+ await page.evaluate(()=>{
+   test.openControlPanel();
+   window.responseDelay=400;
+   document.body.appendChild(Object.assign(document.createElement('p'),{id:'backgroundNew',textContent:'New background paragraph'}));
+ });
+ await page.waitForFunction(()=>test.STATE.translating && test.STATE.backgroundTranslating);
+ assert.equal(await page.locator('#btModalTranslate').textContent(),'重新翻译');
+ assert.equal(await page.locator('#btModalTranslate').isEnabled(),true);
+ assert.equal(await page.locator('.bt-fab-wrap.bt-translated').count(),1,'background translation keeps completed badge');
+ assert.equal(await page.locator('.bt-fab-wrap.bt-busy').count(),0,'background translation does not animate completed badge');
+ await page.waitForFunction(()=>document.querySelector('#backgroundNew .bt-translation-text'));
+ await page.evaluate(()=>{window.responseDelay=8;});
  await page.evaluate(()=>{
    window.fullScans=0;const original=document.querySelectorAll.bind(document);
    document.querySelectorAll=(...args)=>{window.fullScans++;return original(...args);};

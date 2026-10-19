@@ -33,6 +33,10 @@
     if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
       throw new Error("接口地址仅支持 HTTP/HTTPS，且不能包含账号密码、查询参数或片段");
     }
+    // 远程网页文字与密钥必须通过 HTTPS 传输；仅本机回环接口允许 HTTP。
+    if (url.protocol === "http:" && !["localhost","127.0.0.1"].includes(url.hostname)) {
+      throw new Error("远程接口必须使用 HTTPS；HTTP 仅支持本机 localhost 或 127.0.0.1");
+    }
     return { base, origin: url.protocol + "//" + url.host + "/*", host: url.hostname };
   }
 

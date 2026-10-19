@@ -1,7 +1,8 @@
 // 完整扩展回归：用独立测试配置加载扩展，并用本地模拟接口验证后台与页面协作。
 const {chromium}=require('playwright');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
-const root=path.resolve(__dirname,'..');
+// 可指定已解压的白名单包，验证真正交付的运行文件。
+const root=process.env.YEZHIYI_EXTENSION_DIR?path.resolve(process.env.YEZHIYI_EXTENSION_DIR):path.resolve(__dirname,'..');
 const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).version;
 (async()=>{
  const calls=[];

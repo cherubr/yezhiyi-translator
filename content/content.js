@@ -26,6 +26,7 @@ function init() {
   // 页面级运行状态：取消只暂停当前页面，不修改用户的全局自动翻译偏好。
   const STATE = {
     translating: false,
+    backgroundTranslating: false,
     translated: false,
     cancelRequested: false,
     pagePaused: false,
@@ -64,7 +65,7 @@ function init() {
   function recordTranslationIssue(error) {
     if (error.code === "NEED_SOURCE_LANGUAGE") STATE.languageNoticeCount++;
     else { STATE.lastError = error.message; STATE.failedCount++; }
-    setFabTranslated(STATE.translated);
+    if (!STATE.backgroundTranslating || !STATE.translating) setFabTranslated(STATE.translated);
     if (panelModalEl) refreshPanelModal();
   }
 
@@ -410,7 +411,12 @@ function init() {
   async function translatePage(force = false, automatic = false) {
     // 自动任务不能解除用户暂停；只有手动翻译入口可以恢复当前页面。
     if (automatic && (STATE.pagePaused || STATE.cancelRequested)) return;
-    if (STATE.translating) return;
+    if (STATE.translating) {
+      if (automatic || !STATE.backgroundTranslating) return;
+      // 用户手动重译优先于局部补翻；取消旧批次后按新批次重新开始。
+      cancelTranslation();
+    }
+    STATE.backgroundTranslating = automatic && STATE.translated;
     STATE.pagePaused = false;
     STATE.pageStarted = true;
     if (force && STATE.translated) {
@@ -467,7 +473,7 @@ function init() {
       return;
     }
 
-    if (automatic) { setFabBusy(true); setFabTranslated(STATE.translated); }
+    if (automatic && !STATE.backgroundTranslating) { setFabBusy(true); setFabTranslated(STATE.translated); }
     const blocks = sortByViewport(rawBlocks);
     const total = blocks.length;
     const workerCount = Math.min(10, Math.max(1, Number(STATE.concurrency) || 4));
@@ -585,7 +591,6 @@ function init() {
         const attempts = same ? old.attempts + 1 : 1;
         failureRecords.set(target,{text,scope:requestScope(config),attempts,next:e.code==="NEED_SOURCE_LANGUAGE"?Infinity:Date.now()+30000*Math.pow(2,attempts-1)});
         recordTranslationIssue(e);
-        setFabTranslated(STATE.translated);
       }
       el.removeAttribute(STATE.processedAttr);
       return e.code === "NEED_SOURCE_LANGUAGE" ? "skipped" : false;
@@ -774,7 +779,7 @@ function init() {
     visibleTranslateTimer=null;initialTranslateTimer=null;
     pendingViewport=false;dirtyRoots.clear();wholePageScan=true;
     pendingRecords=new WeakSet();hoveredEl=null;
-    STATE.cancelRequested=false;STATE.translating=false;STATE.activeWorkers=0;
+    STATE.cancelRequested=false;STATE.translating=false;STATE.backgroundTranslating=false;STATE.activeWorkers=0;
     hidePageNotice();
     STATE.lastError="";STATE.failedCount=0;STATE.languageNoticeCount=0;
     clearTranslations();setFabBusy(false);setFabTranslated(false);
@@ -1319,7 +1324,7 @@ function init() {
       btnT.textContent = "取消中…";
       btnT.disabled = true;
       btnC.disabled = true;
-    } else if (STATE.translating) {
+    } else if (STATE.translating && !STATE.backgroundTranslating) {
       statusEl.textContent = "翻译中…";
       btnT.textContent = "翻译中…";
       btnT.disabled = true;
@@ -1383,6 +1388,7 @@ function init() {
    */
   function setFabBusy(busy) {
     if (!fabEl) return;
+    busy = busy && !STATE.backgroundTranslating;
     fabEl.classList.toggle("bt-busy", busy);
     if (fabWrap) {
       fabWrap.classList.toggle("bt-busy", busy);
@@ -1396,11 +1402,11 @@ function init() {
    */
   function setFabTranslated(translated) {
     // 感叹号只概括当前页面有未完成内容，详细原因仅在控制面板展示。
-    const incomplete = !STATE.translating && !STATE.pagePaused && (!!STATE.lastError || STATE.languageNoticeCount > 0);
+    const incomplete = (!STATE.translating || STATE.backgroundTranslating) && !STATE.pagePaused && (!!STATE.lastError || STATE.languageNoticeCount > 0);
     if (fabWrap) fabWrap.classList.toggle("bt-has-error", incomplete);
 
     if (!fabWrap) return;
-    fabWrap.classList.toggle("bt-translated", translated && !STATE.translating && !STATE.cancelRequested);
+    fabWrap.classList.toggle("bt-translated", translated && (!STATE.translating || STATE.backgroundTranslating) && !STATE.cancelRequested);
     if (fabEl) fabEl.title = translated ? "点击取消翻译" : "点击翻译";
   }
 
@@ -1467,6 +1473,7 @@ function init() {
    * 合并频繁的页面变化触发，仅在页面允许继续翻译时安排补翻。
    */
   function scheduleVisibleTranslation() {
+    debugLog("[页知译] 合并补翻触发", {dirtyRegions:dirtyRoots.size,wholePageScan});
     // 已取消的页面不自动重启；将连续触发的事件合并为一次可见区域扫描。
     if ((!STATE.autoTranslate && !STATE.pageStarted && !STATE.translated && !STATE.translating) || STATE.cancelRequested || STATE.pagePaused) return;
     if (visibleTranslateTimer) clearTimeout(visibleTranslateTimer);
@@ -1522,9 +1529,9 @@ function init() {
           });
         }
         if (target.closest(EXCLUDED_SELECTOR)) continue;
-        const added = [...(record.addedNodes || [])];
-        const pluginOnly = record.type === "childList" && added.length &&
-          added.every(node => node.nodeType === 1 && node.matches(".bt-translation-text, .bt-original-text, .bt-text-fragment, .bt-fab-wrap, .bt-modal, .bt-popup, .bt-thumb, .bt-page-notice"));
+        const changedNodes = [...(record.addedNodes || []), ...(record.removedNodes || [])];
+        const pluginOnly = record.type === "childList" && changedNodes.length &&
+          changedNodes.every(node => node.nodeType === 1 && node.matches(".bt-translation-text, .bt-original-text, .bt-text-fragment, .bt-fab-wrap, .bt-modal, .bt-popup, .bt-thumb, .bt-page-notice"));
         if (pluginOnly) continue;
         if (record.type === "attributes" && target.hasAttribute(STATE.processedAttr)) continue;
         const root = target.closest(BLOCK_SELECTOR + ", " + FORM_SELECTOR) || target;

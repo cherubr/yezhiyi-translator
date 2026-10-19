@@ -27,6 +27,8 @@ const access = window.BT_AI_ACCESS;
   for (const base of ['bad-url','file:///tmp/api','https://user:secret@example.test/v1','https://example.test/v1?key=secret']) {
     assert.throws(()=>access.getEndpoint('custom',{base}));
   }
+  assert.throws(()=>access.getEndpoint('custom',{base:'http://remote.example.test/v1'}),/HTTPS/);
+  assert.equal(access.getEndpoint('custom',{base:'http://127.0.0.1:8080/v1'}).origin,'http://127.0.0.1:8080/*');
   const task=access.request('custom',{base:'https://proxy.example.test/v1'});
   assert.equal(requested.length,1,'permission requested synchronously in click call chain');
   await task;
