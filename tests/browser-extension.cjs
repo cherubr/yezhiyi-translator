@@ -76,7 +76,7 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    assert.equal(await page.inputValue('#input'),'private input');
    await page.evaluate(()=>document.querySelector('#first').appendChild(document.createTextNode(' updated')));
    await page.waitForFunction(()=>document.querySelector('#first .bt-translation-text')?.textContent.includes('updated'));
-   assert.equal(calls.length,2);
+   assert.equal(calls.length,2,'手动启动当前页后，即使自动启动开关关闭也持续补翻');
    await send('CANCEL_TRANSLATION');await page.waitForFunction(()=>!document.querySelector('.bt-translation-text'));
    const beforeCancel=calls.length;
    await page.evaluate(()=>document.querySelector('#first').textContent='Changed after cancel');

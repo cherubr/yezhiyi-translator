@@ -51,6 +51,7 @@ class Element {
  querySelectorAll(){return [];}
  matches(){return false;}
  hasAttribute(k){return Object.hasOwn(this.attrs,k);}
+ getAttribute(k){return this.attrs[k] ?? null;}
  get firstChild(){return this.children[0]||null;}
  appendChild(n){n.remove();this.children.push(n);n.parentNode=this;return n;}
  insertBefore(n,ref){n.remove();this.children.splice(this.children.indexOf(ref),0,n);n.parentNode=this;}
@@ -159,9 +160,14 @@ const mixedBlocks=t.collectBlocks();
 assert.equal(mixedBlocks.length,2);
 assert.equal(mixedBlocks[0].node,labelText,'mixed label sends only its text');
 assert.equal(mixedBlocks[1].text,'Save','bare text next to icon is included');
-t.STATE.autoTranslate=false;t.STATE.translated=false;t.STATE.pageStarted=true;
+t.STATE.autoTranslate=false;t.STATE.translated=false;t.STATE.pageStarted=false;
 const beforeManual=scheduled;t.scheduleVisibleTranslation();
-assert.equal(scheduled,beforeManual+1,'manual start remains enabled even before any translation succeeds');
+assert.equal(scheduled,beforeManual,'未启动且自动开关关闭时不能补翻');
+t.STATE.pageStarted=true;t.scheduleVisibleTranslation();
+assert.equal(scheduled,beforeManual+1,'手动启动当前页后，即使自动开关关闭也持续补翻');
+t.STATE.pagePaused=true;t.scheduleVisibleTranslation();
+assert.equal(scheduled,beforeManual+1,'只有取消暂停当前页后才停止补翻');
+t.STATE.pagePaused=false;
 
 (async()=>{
  const byteRequests=[];
@@ -197,22 +203,34 @@ assert.equal(scheduled,beforeManual+1,'manual start remains enabled even before 
  assert.equal(t.STATE.pagePaused,true,'stale automatic work cannot resume the page');
  assert.equal(t.STATE.translating,false);
 
- // 悬停请求在取消后返回时应丢弃结果，取消后也不应发送新的悬停请求。
+ // 取消丢弃旧结果并暂停自动悬停，但允许之后明确按 Shift 翻译单段。
  let hoverListener,reply,requests=0;
  context.document.addEventListener=(type,fn)=>{if(type==='mouseover')hoverListener=fn;};
  context.chrome.runtime.sendMessage=(request,cb)=>{if(request.action==="CANCEL_TRANSLATION_REQUESTS"){cb?.({ok:true});return;}requests++;reply=cb;};
  t.bindHoverTranslate();
  const hoverEl=new Element('p');
  hoverEl.textContent='Hover paragraph';hoverEl.hasAttribute=()=>false;
- hoverEl.closest=()=>null;hoverEl.querySelector=()=>null;
- const event={target:{closest:()=>hoverEl},shiftKey:true};
+ hoverEl.closest=selector=>selector.startsWith('p, h1, h2')?hoverEl:null;
+ hoverEl.matches=selector=>selector.startsWith('p, h1, h2');
+ hoverEl.querySelector=()=>null;
+ hoverEl.getBoundingClientRect=()=>({width:200,height:30,top:20,bottom:50,left:10,right:210});
+ const event={target:hoverEl,shiftKey:true};
  t.STATE.pagePaused=false;t.STATE.cancelRequested=false;
  const hoverTask=hoverListener(event);
  assert.equal(requests,1);
  t.cancelTranslation();reply({ok:true,data:'悬停段落'});
  await hoverTask;
  assert.equal(t.translatedElements.size,0,'late hover result is discarded');
- await hoverListener(event);
- assert.equal(requests,1,'paused hover does not send requests');
- console.log('PASS: 取消清理定时器、旧自动任务拦截、悬停迟到结果丢弃、暂停后不再悬停翻译');
+ t.STATE.hoverRequireShift=false;
+ await hoverListener({target:hoverEl,shiftKey:false});
+ assert.equal(requests,1,'暂停后直接悬停不发请求');
+ t.STATE.hoverRequireShift=true;
+ const manualHover=hoverListener(event);
+ assert.equal(requests,2,'取消后明确按 Shift 可重新请求单段');
+ reply({ok:true,data:'手动悬停段落'});
+ await manualHover;
+ assert.equal(t.translatedElements.size,1);
+ assert.equal(t.STATE.pagePaused,true,'手动悬停不解除整页暂停');
+ t.cancelTranslation();
+ console.log('PASS: 取消清理定时器、旧任务与迟到结果拦截、暂停自动悬停、取消后允许Shift单段翻译');
 })().catch(error=>{console.error(error);process.exitCode=1;});

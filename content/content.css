@@ -3,10 +3,15 @@
    ============================================================ */
 
 .bt-translation-text {
+  /* 无装饰双语样式：跟随网页字体、字号及标题层级，通过段落间距区分原文和译文。 */
   color: inherit;
-  font-size: 0.95em;
+  font-family: inherit;
+  font-size: 1em;
+  font-weight: inherit;
   font-style: normal;
-  margin: 2px 0 4px;
+  opacity: 1;
+  text-shadow: none;
+  margin: 0.4em 0 0.6em;
   background: transparent;
   padding: 0;
   border: 0;
@@ -19,16 +24,8 @@
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: normal;
-  line-height: 1.5;
+  line-height: inherit;
   border-radius: 0;
-}
-
-.bt-translation-text.bt-hover-translation {
-  animation: bt-hover-fade-in 0.25s ease;
-}
-@keyframes bt-hover-fade-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
 }
 
 .bt-fab-wrap {
@@ -331,11 +328,10 @@
   border: 0;
   background: transparent;
   color: inherit;
-  opacity: 0.85;
-  font-family: inherit;
-  font-size: 0.9em;
-  font-weight: normal;
-  line-height: 1.4;
+  opacity: 1;
+  font-size: 1em;
+  font-weight: inherit;
+  line-height: inherit;
   text-align: inherit;
 }
 .bt-translation-text.bt-translation-control {
@@ -358,6 +354,11 @@
 .bt-translation-text.bt-translation-inline {
   display: inline; margin: 0 0 0 0.35em; padding: 0; flex: 0 1 auto;
   font-size: 0.9em; line-height: inherit; white-space: normal;
+}
+
+/* 隐藏原文后不再需要双语段落间距，行内控件的紧凑排版由原规则保留。 */
+.bt-translation-text.bt-translation-only:not(.bt-translation-inline):not(.bt-translation-control) {
+  margin: 0;
 }
 
 .bt-modal #btModalError { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }

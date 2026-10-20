@@ -79,7 +79,10 @@
           </div>
           <div class="field">
             <label>译文样式预览</label>
-            <div class="style-preview"><div class="bt-preview">This is a preview of translated text.</div></div>
+            <div class="style-preview" style="line-height: 1.6">
+              <div>This is a preview of translated text.</div>
+              <div class="bt-preview">这是译文样式预览，让双语阅读更自然。</div>
+            </div>
           </div>
         </section>
 
@@ -113,8 +116,8 @@
 
             <div class="switch-row">
               <div class="switch-row-text">
-                <div class="switch-row-label">打开新页面时自动翻译</div>
-                <div class="switch-row-hint">进入新页面后，自动开始翻译。</div>
+                <div class="switch-row-label">打开网页时自动翻译</div>
+                <div class="switch-row-hint">控制是否自动启动翻译；手动启动后也会持续补翻，点击取消停止当前页补翻。</div>
               </div>
               <div class="switch" id="autoTranslate"></div>
             </div>
@@ -122,7 +125,7 @@
             <div class="switch-row">
               <div class="switch-row-text">
                 <div class="switch-row-label">悬停段落时翻译</div>
-                <div class="switch-row-hint" id="hoverTranslateHint">按住 Shift 并把鼠标移到段落上，自动翻译该段。</div>
+                <div class="switch-row-hint" id="hoverTranslateHint">鼠标放在段落上按 Shift，可翻译或还原该段；也可按住 Shift 移入翻译。</div>
               </div>
               <select class="switch-row-select" id="hoverTranslateMode">
                 <option value="off">关闭</option>
@@ -195,7 +198,7 @@
                 <div class="guide-title">🖱 悬浮球操作</div>
                 <div class="guide-row">
                   <kbd>Shift</kbd><span class="guide-op">+ 悬停段落</span>
-                  <span class="guide-desc">翻译该段落（仅这一段）</span>
+                  <span class="guide-desc">翻译 / 还原当前段落</span>
                 </div>
                 <div class="guide-row">
                   <span class="guide-op">悬停悬浮球</span>
@@ -245,7 +248,7 @@
             <ul class="tips">
               <li>点击悬浮球：翻译 / 取消翻译当前页面</li>
               <li>悬停悬浮球：出现小图标，点击打开控制面板</li>
-              <li>Shift + 悬停段落：只翻译该段</li>
+              <li>Shift + 悬停段落：翻译 / 还原该段</li>
               <li>Ctrl + Shift + Y（Mac：Command + Shift + Y）：翻译 / 取消翻译当前页面</li>
               <li>右键菜单：翻译整页 / 翻译选中文字</li>
             </ul>

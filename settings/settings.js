@@ -192,7 +192,7 @@ function updateHoverTranslateHint(mode) {
   if (mode === "off") {
     hintEl.textContent = "悬停段落时不会自动翻译。";
   } else if (mode === "shift") {
-    hintEl.textContent = "按住 Shift 并把鼠标移到段落上，自动翻译该段。";
+    hintEl.textContent = "鼠标放在段落上按 Shift，可翻译或还原该段；也可按住 Shift 移入翻译。";
   } else if (mode === "direct") {
     hintEl.textContent = "鼠标悬停在段落上即翻译，可能误触。";
   }
