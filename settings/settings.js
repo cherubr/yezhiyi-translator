@@ -5,7 +5,7 @@
 const { STORAGE_KEYS: KEYS, DEFAULTS: DEFAULT } = window.BT_CONST;
 const PROVIDERS = window.AI_PROVIDERS;
 // 与共享存储的分流保持一致，避免旧同步区密钥删除事件覆盖本机有效凭据。
-const LOCAL_CONFIG_KEYS = new Set(["aiKeys", "baiduAppId", "baiduKey", "baiduVerification"]);
+const LOCAL_CONFIG_KEYS = new Set(["aiKeys", "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion"]);
 
 let cfg = { ...DEFAULT };
 let currentService = null;
@@ -15,38 +15,13 @@ let editingProvider = null;
 /**
  * 将引擎和 AI 厂商编码为下拉选项值，例如 ai:openai。
  */
-function engineToSelectValue(engine, provider) {
-  if (engine === "ai") return `ai:${provider || "openai"}`;
-  return engine;
-}
-/**
- * 解析引擎下拉值，返回实际引擎与厂商；普通引擎保留当前 AI 厂商。
- */
-function selectValueToEngine(v) {
-  if (typeof v === "string" && v.startsWith("ai:")) {
-    return { engine: "ai", aiProvider: v.slice(3) };
-  }
-  return { engine: v, aiProvider: cfg.aiProvider };
-}
-/**
- * 判断服务是否具备必填配置，控制未配置服务的选择状态。
- */
-function isEngineConfigured(id) {
-  if (id === "google" || id === "mymemory") return true;
-  if (id === "baidu") return window.BT_CONST.hasVerifiedBaiduCredentials(cfg);
-  // 下拉选项使用 ai:厂商标识，分别检查每家服务是否已配置。
-  if (typeof id === "string" && id.startsWith("ai:")) return isProviderConfigured(id.slice(3));
-  if (id === "ai") return isProviderConfigured(cfg.aiProvider || "openai");
-  return false;
-}
-/**
- * 检查指定 AI 厂商的密钥是否已填写；本地 Ollama 无需密钥。
- */
-function isProviderConfigured(pid) {
-  if (pid === "ollama") return true;
-  const keys = (cfg.aiKeys && cfg.aiKeys[pid]) || {};
-  return !!keys.key;
-}
+function engineToSelectValue(engine,provider) {return window.BT_SERVICES.value(engine,provider);}
+/** 将下拉值拆为实际引擎与 AI 厂商。 */
+function selectValueToEngine(value) {return window.BT_SERVICES.parse(value,cfg.aiProvider);}
+/** 两个界面统一使用相同的就绪规则。 */
+function isEngineConfigured(value) {return window.BT_SERVICES.isConfigured(value,cfg);}
+/** AI 配置入口不等于启用操作，未配置厂商仍可进入详情填写密钥。 */
+function isProviderConfigured(provider) {return window.BT_SERVICES.isProviderConfigured(provider,cfg);}
 
 /**
  * 仅更新正在编辑厂商的配置字段，未传入的字段保留原值。
@@ -133,30 +108,16 @@ function refreshAllProviderBadges() {
 }
 
 /**
- * 更新当前启用服务的说明条，区分正在编辑与实际使用的厂商。
+ * 在密钥区域显示正在配置的厂商，并更新就近的默认服务按钮。
  */
+
 function refreshCurrentUsingBar() {
-  const bar = document.getElementById("currentUsingBar");
-  const textEl = document.getElementById("currentUsingText");
-  const btnEl = document.getElementById("setCurrentBtn");
-  if (!bar || !textEl || !btnEl) return;
-
-  const usingPid = cfg.aiProvider || "openai";
-  const usingName = (PROVIDERS[usingPid] || {}).name || usingPid;
-  const usingConfigured = isProviderConfigured(usingPid);
-
-  textEl.innerHTML = `当前使用：<b>${usingName}</b>${usingConfigured ? "" : "（未配置）"}`;
-
-  const editing = editingProvider || usingPid;
-  if (editing !== usingPid && isProviderConfigured(editing)) {
-    btnEl.style.display = "inline-flex";
-    btnEl.textContent = `切换为 ${(PROVIDERS[editing] || {}).name || editing}`;
-  } else {
-    btnEl.style.display = "none";
-  }
+  const heading=document.getElementById("providerConfigTitle");
+  const editing=editingProvider||cfg.aiProvider||"openai";
+  if(heading)heading.textContent="2. 配置 "+((PROVIDERS[editing]||{}).name||editing);
+  refreshDefaultServiceButton();
 }
 
-// ---------- 悬停翻译模式 ----------
 /**
  * 把悬停开关及 Shift 要求组合成界面使用的单一模式值。
  */
@@ -289,6 +250,10 @@ async function init() {
   bindBackButton();
   renderServiceList();
   bindBehaviorExtras();
+  document.getElementById("configureCurrentService").onclick=()=>{
+    document.querySelector('.nav-item[data-tab="service"]').click();openServiceDetail(cfg.engine);
+  };
+  document.getElementById("manageTranslationServices").onclick=()=>document.querySelector('.nav-item[data-tab="service"]').click();
   await refreshShortcutDisplay();
 }
 
@@ -300,7 +265,6 @@ function renderAll() {
   renderEngineSelect();
   window.BT_CONST.fillLanguageSelect(document.getElementById("from"),"from",cfg.from);
   window.BT_CONST.fillLanguageSelect(document.getElementById("to"),"to",cfg.to);
-  setValue("concurrency", cfg.concurrency);
   setSegment("mode-seg", cfg.mode);
   setSwitch("autoTranslate", cfg.autoTranslate);
   setSwitch("hoverPanel", cfg.hoverPanel);
@@ -320,44 +284,15 @@ function renderAll() {
 /**
  * 生成包含 AI 厂商的引擎下拉选项，并反映当前启用状态。
  */
+
 function renderEngineSelect() {
-  const sel = document.getElementById("engine");
-  if (!sel) return;
-  const currentVal = engineToSelectValue(cfg.engine, cfg.aiProvider);
-  const engines = [
-    { id: "google", label: "Google（免费）" },
-    { id: "baidu", label: "百度翻译" },
-    { id: `ai:${cfg.aiProvider || "openai"}`, label: `AI 大模型（${(PROVIDERS[cfg.aiProvider] || {}).name || cfg.aiProvider}）` },
-    { id: "mymemory", label: "MyMemory（免费）" }
-  ];
-  const configured = engines.filter((e) => isEngineConfigured(e.id));
-  const unconfigured = engines.filter((e) => !isEngineConfigured(e.id));
-  let html = "";
-  configured.forEach((e) => { html += `<option value="${e.id}">✓ ${e.label}</option>`; });
-  if (unconfigured.length) {
-    html += '<optgroup label="未就绪（请先配置或测试连接）">';
-    unconfigured.forEach((e) => {
-      const pendingTest = e.id === "baidu" && cfg.baiduAppId && cfg.baiduKey;
-      html += `<option value="${e.id}" class="bt-unconfigured"${e.id === "baidu" ? " disabled" : ""}>${e.label}（${pendingTest ? "待测试" : "未配置"}）</option>`;
-    });
-    html += '</optgroup>';
-  }
-  sel.innerHTML = html;
-  if (currentVal && sel.querySelector(`option[value="${currentVal}"]`)) {
-    sel.value = currentVal;
-  } else if (configured.length) {
-    sel.value = configured[0].id;
-    const parsed = selectValueToEngine(sel.value);
-    cfg.engine = parsed.engine;
-    cfg.aiProvider = parsed.aiProvider;
-  }
-  const hintEl = document.getElementById("engineHint");
-  if (hintEl) {
-    hintEl.textContent = unconfigured.length
-      ? `⚠ 有 ${unconfigured.length} 个引擎未就绪，请到“翻译服务”配置；百度需测试连接成功后选用。`
-      : "想换 AI 厂商？到「翻译服务 → AI 大模型」里切换。";
-    hintEl.style.color = unconfigured.length ? "#d64545" : "#999";
-  }
+  window.BT_SERVICES.renderSelect(document.getElementById("engine"),cfg);
+  const selected=engineToSelectValue(cfg.engine,cfg.aiProvider);
+  const hint=document.getElementById("engineHint");
+  if(hint)hint.textContent=isEngineConfigured(selected)
+    ?"带 ✓ 的服务可选择；“已配置”不代表连接测试通过，实际可用性受网络与账号影响。暂不可选的服务请到“翻译服务”配置或测试。"
+    :"当前默认服务暂不可用，请到“翻译服务”配置；百度需当前凭据测试成功后选用，也可改选“可选择”分组中的服务。";
+  refreshDefaultServiceButton();
 }
 
 /**
@@ -383,45 +318,53 @@ function setSegment(segId, value) {
   seg.querySelectorAll(".seg-btn").forEach((b) => {
     b.classList.toggle("active", b.dataset.mode === value);
   });
+  if(segId==="mode-seg"){
+    const original=document.querySelector(".style-preview>div:first-child");
+    if(original)original.hidden=value==="translation-only";
+  }
 }
 
 const SERVICES = [
   { id: "google",   name: "Google 翻译", desc: "免费，速度快，质量好",                icon: "🌐" },
   { id: "baidu",    name: "百度翻译",     desc: "需配置 AppID + 密钥",                 icon: "🔵" },
   { id: "ai",       name: "AI 大模型",    desc: "OpenAI / DeepSeek / Kimi / 通义 等",  icon: "🤖" },
-  { id: "mymemory", name: "MyMemory",    desc: "免费，有每日额度限制",                 icon: "💾" }
+  { id: "mymemory", name: "MyMemory",    desc: "直接使用，存在使用额度",                 icon: "💾" }
 ];
 
 /**
  * 渲染翻译服务列表及每项服务的当前配置状态。
  */
+
 function renderServiceList() {
-  const grid = document.getElementById("serviceGrid");
-  if (!grid) return;
-  grid.innerHTML = "";
-  SERVICES.forEach((svc) => {
-    const status = getServiceStatus(svc.id);
-    const card = document.createElement("div");
-    card.className = "service-card";
-    card.innerHTML = `
-      <div class="service-icon ${svc.id}">${svc.icon}</div>
-      <div class="service-info">
-        <div class="service-name">${svc.name}</div>
-        <div class="service-desc">${svc.desc}</div>
-      </div>
-      <span class="badge ${status.cls}">${status.text}</span>
-      <span class="service-arrow">›</span>
-    `;
-    card.addEventListener("click", () => openServiceDetail(svc.id));
-    grid.appendChild(card);
-  });
+  const root=document.getElementById("serviceGrid");if(!root)return;
+  root.classList.add("service-groups");root.replaceChildren();
+  const groups=[
+    {title:"直接使用",description:"无需填写接口凭据。可用性及使用额度受服务规则与网络影响。",ids:["google","mymemory"]},
+    {title:"自行配置",description:"连接自己的账号或接口。费用和免费额度由服务方决定，本地模型需自行运行。",ids:["baidu","ai"]}
+  ];
+  for(const group of groups){
+    const section=document.createElement("section"),heading=document.createElement("h2"),description=document.createElement("p"),grid=document.createElement("div");
+    section.className="service-group";heading.textContent=group.title;description.textContent=group.description;description.className="hint";
+    grid.className="service-grid";section.append(heading,description,grid);
+    for(const id of group.ids){
+      const service=SERVICES.find(item=>item.id===id),status=getServiceStatus(id),button=document.createElement("button");
+      button.type="button";button.className="service-card";button.dataset.service=id;
+      button.innerHTML='<div class="service-icon '+id+'"></div><div class="service-info"><div class="service-name"></div><div class="service-desc"></div></div><span class="badge"></span><span class="service-arrow" aria-hidden="true">›</span>';
+      button.querySelector(".service-icon").textContent=service.icon;
+      button.querySelector(".service-name").textContent=service.name;
+      button.querySelector(".service-desc").textContent=id==="google"?"无需配置 · 受网络环境影响":id==="mymemory"?"无需配置 · 存在使用额度":service.desc;
+      const badge=button.querySelector(".badge"),using=cfg.engine===id;
+      badge.textContent=using?(id==="baidu"&&!isEngineConfigured(id)?"默认 · 待验证":"默认使用中"):status.text;
+      badge.className="badge "+status.cls;button.onclick=()=>openServiceDetail(id);grid.append(button);
+    }root.append(section);
+  }
 }
 
 /**
  * 计算指定服务在列表中展示的状态说明。
  */
 function getServiceStatus(id) {
-  if (id === "google" || id === "mymemory") return { text: "已启用", cls: "badge-ok" };
+  if (id === "google" || id === "mymemory") return { text: "可直接使用", cls: "badge-ok" };
   if (id === "baidu") {
     if (isEngineConfigured("baidu")) return { text: "测试通过", cls: "badge-ok" };
     if (cfg.baiduAppId && cfg.baiduKey) return { text: "待测试", cls: "" };
@@ -447,11 +390,20 @@ function openServiceDetail(id) {
   const content = document.getElementById("serviceDetailContent");
   listView.style.display = "none";
   detailView.style.display = "block";
-  content.innerHTML = buildServiceDetailHTML(id);
+  content.innerHTML = buildServiceDetailHTML(id)+requestSettingsHTML();
+  // 填写连接信息后即可测试并启用，无需滚回页面顶部寻找操作。
+  const actions=content.querySelector(".card-actions");
+  if(actions){
+    actions.classList.add("service-connection-actions");
+    const useButton=document.createElement("button");
+    useButton.type="button";useButton.id="useServiceButton";useButton.className="btn-test btn-use-service";
+    actions.insertBefore(useButton,actions.querySelector(".test-result"));
+  }
 
   if (id === "baidu") bindBaiduDetail();
   else if (id === "ai") bindAIDetail();
   else if (id === "google" || id === "mymemory") bindFreeDetail(id);
+  refreshRequestSettings();refreshDefaultServiceButton();
 }
 
 /**
@@ -475,13 +427,13 @@ function buildServiceDetailHTML(id) {
     return `
       <div class="service-detail-header">
         <div class="service-icon google">🌐</div>
-        <div><h1>Google 翻译</h1><p class="desc">免费，无需配置，开箱即用</p></div>
+        <div><h1>Google 翻译</h1><p class="desc">直接使用，无需接口凭据</p></div>
       </div>
       <div class="card">
         <h3>说明</h3>
         <ul class="tips">
           <li>使用 Google 免费翻译接口，无需 API Key</li>
-          <li>速度快，质量好，推荐作为默认引擎</li>
+          <li>可用性与响应速度受网络和服务状态影响</li>
           <li>偶尔可能被限流，如遇失败可切换其他引擎</li>
         </ul>
       </div>
@@ -496,14 +448,14 @@ function buildServiceDetailHTML(id) {
     return `
       <div class="service-detail-header">
         <div class="service-icon mymemory">💾</div>
-        <div><h1>MyMemory</h1><p class="desc">免费，有每日额度限制</p></div>
+        <div><h1>MyMemory</h1><p class="desc">直接使用，存在使用额度</p></div>
       </div>
       <div class="card">
         <h3>说明</h3>
         <ul class="tips">
           <li>免费翻译接口，无需 API Key</li>
-          <li>每日有匿名额度限制（约 5000 字符/天）</li>
-          <li>翻译质量一般，建议作为备用引擎</li>
+          <li>存在匿名使用额度，具体以服务方当前规则为准</li>
+          <li>短文字可能无法可靠识别源语言，可手动指定</li>
         </ul>
       </div>
       <div class="card-actions">
@@ -533,7 +485,7 @@ function buildServiceDetailHTML(id) {
         </div>
         <div class="hint">
           申请地址：<a href="https://fanyi-api.baidu.com/" target="_blank">fanyi-api.baidu.com</a>
-          · 选择"通用文本翻译"· 标准版免费额度 5 万字符/月
+          · 选择"通用文本翻译"· 费用与额度以你的账号规则为准
         </div>
         <div class="card-actions">
           <button class="btn-test" id="testBaidu">测试连接</button>
@@ -544,8 +496,6 @@ function buildServiceDetailHTML(id) {
   }
 
   if (id === "ai") {
-    const usingPid = cfg.aiProvider || "openai";
-    const usingName = (PROVIDERS[usingPid] || {}).name || usingPid;
 
     return `
       <div class="service-detail-header">
@@ -553,15 +503,6 @@ function buildServiceDetailHTML(id) {
         <div><h1>AI 大模型</h1><p class="desc">OpenAI 兼容接口，支持国内外主流模型</p></div>
       </div>
 
-      <div class="current-using-bar" id="currentUsingBar">
-        <div class="current-using-info">
-          <span class="current-using-icon">⚡</span>
-          <span class="current-using-text" id="currentUsingText">
-            当前使用：<b>${usingName}</b>
-          </span>
-        </div>
-        <button class="current-using-btn" id="setCurrentBtn" style="display:none"></button>
-      </div>
 
       <div class="card">
         <div class="ai-section-title">1. 选择服务商</div>
@@ -584,7 +525,7 @@ function buildServiceDetailHTML(id) {
       </div>
 
       <div class="card">
-        <div class="ai-section-title">2. 填写密钥</div>
+        <div class="ai-section-title" id="providerConfigTitle">2. 配置服务</div>
 
         <div class="field">
           <label>API Key <span class="required">*</span></label>
@@ -748,43 +689,6 @@ function bindAIDetail() {
     });
   }
 
-  const setBtn = document.getElementById("setCurrentBtn");
-  if (setBtn) {
-    setBtn.addEventListener("click", async () => {
-      const pid = editingProvider;
-      if (!pid || !isProviderConfigured(pid)) return;
-
-      const data = readProviderInputs();
-      if (!cfg.aiKeys) cfg.aiKeys = {};
-      cfg.aiKeys[pid] = data;
-
-      try {
-        // 授权完成前不切换正式使用的服务。
-        setBtn.disabled = true;
-        await window.BT_AI_ACCESS.request(pid, data);
-      } catch (error) {
-        showSaveTip("✗ " + error.message);
-        return;
-      } finally {
-        setBtn.disabled = false;
-      }
-
-      cfg.aiProvider = pid;
-      cfg.engine = "ai";
-
-      await window.BT_STORAGE.set({
-        aiProvider: pid,
-        aiKeys: cfg.aiKeys,
-        engine: "ai"
-      });
-
-      refreshAllProviderBadges();
-      refreshCurrentUsingBar();
-      renderEngineSelect();
-      showSaveTip(`✓ 已切换为 ${(PROVIDERS[pid] || {}).name || pid}`);
-    });
-  }
-
   const btn = document.getElementById("testAI");
   if (btn) btn.addEventListener("click", () => runTest("ai", "aiTestResult", btn));
 }
@@ -801,6 +705,7 @@ function updateProviderUI(providerId) {
       ? "Ollama 本地运行，无需填写 Key"
       : "在对应平台申请 API Key";
   }
+  refreshRequestSettings();refreshDefaultServiceButton();
   if (modelHintEl) {
     modelHintEl.textContent = providerId === "custom"
       ? "手动填写模型名称"
@@ -899,6 +804,7 @@ async function runTest(engine, resultId, btn) {
     resultEl.className = "test-result error";
   } finally {
     btn.disabled = false;
+    refreshDefaultServiceButton();
   }
 }
 
@@ -951,7 +857,6 @@ function bindFields() {
 
   bindSelect("from", (v) => { cfg.from = v; });
   bindSelect("to", (v) => { cfg.to = v; });
-  bindSelect("concurrency", (v) => { cfg.concurrency = v; });
 
   const modeSeg = document.getElementById("mode-seg");
   if (modeSeg) {
@@ -1074,7 +979,9 @@ function save() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
-      await window.BT_STORAGE.set(cfg);
+      // 请求策略由专用保存入口更新，普通偏好/凭据自动保存不覆盖它。
+      const {requestPolicies,requestPolicyVersion,...ordinary}=cfg;
+      await window.BT_STORAGE.set(ordinary);
     } catch (error) {
       showSaveTip("✗ 保存失败：" + error.message);
       return;
@@ -1110,7 +1017,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   for (const [key, change] of Object.entries(changes)) {
     if (!KEYS.includes(key) || (area === "local") !== LOCAL_CONFIG_KEYS.has(key)) continue;
     const nextValue = change.newValue === undefined ? DEFAULT[key] : change.newValue;
-    if (area === "local" && key !== "baiduVerification") {
+    if (area === "local" && key !== "baiduVerification" && key !== "requestPolicies" && key !== "requestPolicyVersion") {
       // 延迟保存的旧通知不能覆盖此窗口中更晚输入、尚未保存的凭据草稿。
       const current = JSON.stringify(cfg[key] === undefined ? DEFAULT[key] : cfg[key]);
       const previous = JSON.stringify(change.oldValue === undefined ? DEFAULT[key] : change.oldValue);
@@ -1125,7 +1032,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
   renderEngineSelect();
   if (applied.from) window.BT_CONST.fillLanguageSelect(document.getElementById("from"), "from", cfg.from);
   if (applied.to) window.BT_CONST.fillLanguageSelect(document.getElementById("to"), "to", cfg.to);
-  if (applied.concurrency) setValue("concurrency", cfg.concurrency);
   if (applied.mode) setSegment("mode-seg", cfg.mode);
   for (const key of ["autoTranslate", "hoverPanel", "shortcutTranslate"]) {
     if (applied[key]) setSwitch(key, cfg[key]);
@@ -1140,11 +1046,113 @@ chrome.storage.onChanged.addListener((changes, area) => {
     refreshCurrentUsingBar();
   }
   if (currentService === null) renderServiceList();
+  if(applied.requestPolicies)refreshRequestSettings();
+  refreshDefaultServiceButton();
   updateBehaviorSubStates();
 });
 
 window.addEventListener("focus", () => {
   refreshShortcutDisplay();
 });
+
+// 请求设置与系统规则说明共用 core/request-policy.js，界面不维护另一套默认值。
+const requestDrafts = new Map();
+let serviceSelectionVersion = 0;
+
+/** 返回当前编辑的具体服务；编辑 AI 厂商不会隐式切换默认服务。 */
+function currentRequestService() {
+  return {engine:currentService,provider:editingProvider || cfg.aiProvider || "openai"};
+}
+function requestSettingsHTML() {
+  return '<section class="card request-settings" aria-labelledby="requestSettingsTitle">'+
+    '<h3 id="requestSettingsTitle">请求设置</h3><p class="hint">只影响当前服务；同一账号的多个网页共同遵守限制。AI 按厂商分别保存配置。</p>'+
+    '<div class="field"><label for="requestMode">配置方式</label><select id="requestMode"><option value="recommended">推荐配置</option><option value="manual">手动配置</option></select></div>'+
+    '<p id="requestSummary" class="request-summary"></p>'+
+    '<details id="requestAdvanced"><summary>高级请求设置</summary><form id="requestPolicyForm">'+
+    '<div class="field-row"><div class="field"><label for="requestQps">每秒最多发送请求数</label><input id="requestQps" type="number" min="1" max="100" step="1" required aria-describedby="requestQpsHint"><div class="hint" id="requestQpsHint">控制新请求的发送速度；填写 10 表示每秒最多启动 10 次。</div></div>'+
+    '<div class="field"><label for="requestMaxConcurrent">同时请求上限</label><input id="requestMaxConcurrent" type="number" min="1" max="32" step="1" required aria-describedby="requestConcurrentHint"><div class="hint" id="requestConcurrentHint">最多允许多少个请求一起等待结果，不是页面段落数量。</div></div></div>'+
+    '<p class="hint">请按账号额度设置。提高数值不保证更快，仍受网络、服务响应和账号限制。</p>'+
+    '<div class="request-actions"><button type="submit" id="requestPolicySave" class="btn-test">保存请求设置</button><button type="button" id="requestPolicyReset" class="request-secondary">恢复推荐配置</button></div>'+
+    '<p id="requestPolicyResult" class="request-result" role="status" aria-live="polite"></p></form></details>'+
+    '</section>';
+}
+/** 保存专用字段，不让普通自动保存覆盖另一个窗口刚更新的请求策略。 */
+async function saveRequestSettings(value) {
+  const {engine,provider}=currentRequestService(),key=window.BT_REQUEST_POLICY.id(engine,provider);
+  const message=window.BT_REQUEST_POLICY.validate(value);
+  if(message)throw new Error(message);
+  const stored=await window.BT_STORAGE.get(["requestPolicies"]);
+  const policies={...(stored.requestPolicies || {}),[key]:{
+    mode:value.mode,qps:Number(value.qps),maxConcurrent:Number(value.maxConcurrent)
+  }};
+  await window.BT_STORAGE.set({requestPolicies:policies,requestPolicyVersion:window.BT_REQUEST_POLICY.VERSION});
+  cfg.requestPolicies=policies;requestDrafts.delete(key);
+}
+/** 只更新请求区域；凭据、地址和模型输入不重建。 */
+function refreshRequestSettings() {
+  const mode=document.getElementById("requestMode");
+  if(!mode||!currentService)return;
+  const {engine,provider}=currentRequestService(),key=window.BT_REQUEST_POLICY.id(engine,provider);
+  const current=window.BT_REQUEST_POLICY.resolve(engine,provider,cfg.requestPolicies);
+  let draft=requestDrafts.get(key);
+  if(!draft||!draft.dirty){draft={mode:current.mode,qps:current.qps,maxConcurrent:current.maxConcurrent,dirty:false};requestDrafts.set(key,draft);}
+  const qps=document.getElementById("requestQps"),concurrent=document.getElementById("requestMaxConcurrent");
+  mode.value=draft.mode;qps.value=draft.qps;concurrent.value=draft.maxConcurrent;
+  qps.disabled=concurrent.disabled=draft.mode!=="manual";
+  document.getElementById("requestSummary").textContent="当前生效：每秒最多 "+current.qps+" 次，同时最多 "+current.maxConcurrent+" 个请求。";
+  const status=document.getElementById("requestPolicyResult");
+  status.textContent=draft.dirty?"有未保存的请求设置，保存后生效。":"";
+  mode.onchange=()=>{
+    draft.mode=mode.value;draft.dirty=true;
+    if(draft.mode==="recommended"){
+      const defaults=window.BT_REQUEST_POLICY.resolve(engine,provider,{});
+      draft.qps=defaults.qps;draft.maxConcurrent=defaults.maxConcurrent;
+    }
+    refreshRequestSettings();if(draft.mode==="manual")document.getElementById("requestAdvanced").open=true;
+  };
+  qps.oninput=()=>{draft.qps=qps.value;draft.dirty=true;status.textContent="有未保存的请求设置，保存后生效。";};
+  concurrent.oninput=()=>{draft.maxConcurrent=concurrent.value;draft.dirty=true;status.textContent="有未保存的请求设置，保存后生效。";};
+  const form=document.getElementById("requestPolicyForm");
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const button=document.getElementById("requestPolicySave");button.disabled=true;
+    try{await saveRequestSettings(draft);refreshRequestSettings();status.textContent="请求设置已保存，将用于后续发送。";}
+    catch(error){status.textContent="保存失败："+error.message;}
+    finally{button.disabled=false;}
+  };
+  document.getElementById("requestPolicyReset").onclick=async()=>{
+    const defaults=window.BT_REQUEST_POLICY.resolve(engine,provider,{});
+    try{await saveRequestSettings({...defaults,mode:"recommended"});refreshRequestSettings();status.textContent="已恢复推荐请求配置，连接信息保持不变。";}
+    catch(error){status.textContent="保存失败："+error.message;}
+  };
+}
+/** 只有显式选择才修改默认服务；测试或编辑不会自动替换。 */
+function refreshDefaultServiceButton() {
+  const button=document.getElementById("useServiceButton");if(!button||!currentService)return;
+  const {engine,provider}=currentRequestService(),key=engineToSelectValue(engine,provider);
+  const using=key===engineToSelectValue(cfg.engine,cfg.aiProvider),ready=isEngineConfigured(key);
+  button.disabled=using||!ready;
+  button.textContent=using?"当前默认服务":ready?"设为默认服务":engine==="baidu"&&cfg.baiduAppId&&cfg.baiduKey?"请先测试连接":"请先填写配置";
+  button.onclick=async()=>{
+    const revision=++serviceSelectionVersion;
+    button.disabled=true;
+    try{
+      let aiKeys=cfg.aiKeys;
+      if(engine==="ai"){
+        const data=readProviderInputs();
+        await window.BT_AI_ACCESS.request(provider,data);
+        aiKeys={...(cfg.aiKeys || {}),[provider]:data};
+      }
+      if(revision!==serviceSelectionVersion)return;
+      const value={engine,aiProvider:engine==="ai"?provider:cfg.aiProvider};
+      if(engine==="ai")value.aiKeys=aiKeys;
+      await window.BT_STORAGE.set(value);
+      if(revision!==serviceSelectionVersion)return;
+      Object.assign(cfg,value);renderEngineSelect();refreshAllProviderBadges();refreshCurrentUsingBar();
+      showSaveTip("✓ 已设为默认翻译服务");
+    }catch(error){showSaveTip("✗ "+error.message);}
+    finally{refreshDefaultServiceButton();}
+  };
+}
 
 init();

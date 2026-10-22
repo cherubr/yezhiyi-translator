@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '..');
 let allowed = true, requested = [], sent = [], fetched = 0;
 const window = {};
 const context = {
-  window, self: window, URL, console,
+  window, self: window, URL, TextEncoder, setTimeout, clearTimeout, console,
   chrome: {
     permissions: {
       request(details) { requested.push(details); return Promise.resolve(allowed); },
@@ -18,6 +18,9 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(root,'core/providers.js'),'utf8'), context);
+// AI 请求构造依赖保护标记模块，与真实后台的导入保持一致。
+vm.runInContext(fs.readFileSync(path.join(root,'core/translation-units.js'),'utf8'), context);
+vm.runInContext(fs.readFileSync(path.join(root,'core/request-policy.js'),'utf8'), context);
 const access = window.BT_AI_ACCESS;
 (async () => {
   assert.equal(access.getEndpoint('openai',{}).origin,'https://api.openai.com/*');
@@ -40,6 +43,7 @@ const access = window.BT_AI_ACCESS;
     cfg:{aiProvider:'custom',aiKeys:{}}, editingProvider:'custom',
     PROVIDERS:window.AI_PROVIDERS,
     document:{getElementById:()=>resultEl},
+    refreshDefaultServiceButton:()=>{},
     readProviderInputs:()=>({key:'test-key',base:'https://proxy.example.test/v1',model:'test-model'})
   });
   const settings=fs.readFileSync(path.join(root,'settings/settings.js'),'utf8');

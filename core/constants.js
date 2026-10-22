@@ -9,7 +9,7 @@
     "autoTranslate", "hoverPanel",
     "hoverTranslate", "hoverRequireShift",
     "shortcutTranslate", "shortcutKey",
-    "baiduAppId", "baiduKey", "baiduVerification"
+    "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion"
   ];
 
   const DEFAULTS = {
@@ -19,7 +19,9 @@
     from: "auto",
     to: "browser",
     mode: "bilingual",
-    concurrency: 4,
+    concurrency: 4, // 仅保留旧版配置兼容，不再控制网络或页面调度。
+    requestPolicies: {},
+    requestPolicyVersion: 1,
     autoTranslate: false,
     hoverPanel: true,
     hoverTranslate: true,
@@ -31,8 +33,42 @@
     baiduVerification: null
   };
 
-  // 正式版默认关闭运行日志；本地排查时改为 true 并重新加载扩展。
-  const DEBUG = false;
+  // 日志配置：仅 development 允许打印；修改后重新加载扩展并刷新网页。
+  // 等级从少到多：off → error → warn → info → debug，包含所选级别及更严重的日志。
+  // 正式打包会在临时副本中强制改为 production + off，不改变这里的开发配置。
+  const LOG_CONFIG = Object.freeze({
+    environment: "development",
+    level: "debug"
+  });
+  const LOG_LEVELS = Object.freeze({off:0,error:1,warn:2,info:3,debug:4});
+  const logThreshold = LOG_CONFIG.environment === "development"
+    ? (LOG_LEVELS[LOG_CONFIG.level] ?? 0) : 0;
+
+  /** 统一检查日志门槛；非法级别/环境默认静默，生产环境不能通过提高级别重新打开。 */
+  function isLogEnabled(level) {
+    return Object.prototype.hasOwnProperty.call(LOG_LEVELS,level) &&
+      LOG_LEVELS[level] > 0 && LOG_LEVELS[level] <= logThreshold;
+  }
+  /**
+   * 只转发允许级别的主动日志，不替换全局 console，也不影响网页或浏览器自身日志。
+   * 调用方必须先去除原文、译文、凭据和完整请求对象；日志系统不自动脱敏任意对象。
+   * 控制台缺失/打印失败不应改变翻译流程，生产环境在访问控制台前直接返回。
+   */
+  function writeLog(level,args) {
+    if(!isLogEnabled(level))return;
+    try {
+      const target=global.console || (typeof console!=="undefined"?console:null);
+      const output=target?.[level];
+      if(typeof output==="function")output.apply(target,args);
+    } catch (_) {}
+  }
+  const BT_LOG = Object.freeze({
+    isEnabled:isLogEnabled,
+    error:(...args)=>writeLog("error",args),
+    warn:(...args)=>writeLog("warn",args),
+    info:(...args)=>writeLog("info",args),
+    debug:(...args)=>writeLog("debug",args)
+  });
 
   const ENGINES = ["google", "baidu", "ai", "mymemory"];
 
@@ -47,7 +83,10 @@
     OPEN_SETTINGS: "OPEN_SETTINGS",
     TRANSLATE_SELECTION: "TRANSLATE_SELECTION",
     GET_STATUS: "GET_STATUS",
-    RELOAD_CONFIG: "RELOAD_CONFIG"
+    RELOAD_CONFIG: "RELOAD_CONFIG",
+    SET_PAGE_STATE: "SET_PAGE_STATE",
+    TRANSLATION_REQUEST_STATE: "TRANSLATION_REQUEST_STATE",
+    TRANSLATION_DIAGNOSTIC: "TRANSLATION_DIAGNOSTIC"
   };
 
   // 语言名称、通用代码和百度代码只维护这一份，设置页与面板共同使用。
@@ -170,10 +209,10 @@
     return !!fingerprint && config.baiduVerification?.fingerprint === fingerprint;
   }
 
-  const BT_CONST = { DEBUG, STORAGE_KEYS, DEFAULTS, ENGINES, MSG, LANGUAGES, SHORTCUT_KEYS, fillLanguageSelect, resolveTargetLanguage, getBaiduCredentialFingerprint, hasVerifiedBaiduCredentials };
+  const BT_CONST = { LOG_CONFIG, STORAGE_KEYS, DEFAULTS, ENGINES, MSG, LANGUAGES, SHORTCUT_KEYS, fillLanguageSelect, resolveTargetLanguage, getBaiduCredentialFingerprint, hasVerifiedBaiduCredentials };
 
   // 服务配置包含密钥，只保存在本机；语言和显示模式等普通偏好仍使用同步存储。
-  const LOCAL_KEYS = ["aiKeys", "baiduAppId", "baiduKey", "baiduVerification"];
+  const LOCAL_KEYS = ["aiKeys", "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion"];
   const LEGACY_KEYS = ["openaiKey", "openaiBase", "openaiModel"];
   let migration;
   // 同一上下文共享迁移任务；失败后允许重试，避免重复初始化时重复搬运数据。
@@ -195,6 +234,8 @@
         };
       }
       if (synced.aiKeys || synced.openaiKey) moved.aiKeys = providers;
+      if (synced.requestPolicies) moved.requestPolicies = { ...synced.requestPolicies, ...(local.requestPolicies || {}) };
+      if (synced.requestPolicyVersion && !local.requestPolicyVersion) moved.requestPolicyVersion = synced.requestPolicyVersion;
       for (const key of ["baiduAppId", "baiduKey"]) {
         if (Object.prototype.hasOwnProperty.call(synced, key) && !Object.prototype.hasOwnProperty.call(local, key)) moved[key] = synced[key];
       }
@@ -239,6 +280,8 @@
     }
   };
 
+  if (typeof self !== "undefined") self.BT_LOG = BT_LOG;
+  if (typeof window !== "undefined") window.BT_LOG = BT_LOG;
   if (typeof self !== "undefined") self.BT_CONST = BT_CONST;
   if (typeof window !== "undefined") window.BT_CONST = BT_CONST;
   if (typeof self !== "undefined") self.BT_STORAGE = BT_STORAGE;

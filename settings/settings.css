@@ -1204,3 +1204,45 @@ h3 {
     color: #999;
   }
 }
+
+/* 服务请求参数与连接信息分别管理；开发规则仅保留在项目文档中。 */
+.service-groups { display:block; }
+.service-group { margin:24px 0 30px; }
+.service-group h2 { font-size:16px;margin:0 0 8px; }
+.service-group>.hint { margin-bottom:14px; }
+button.service-card { width:100%;font:inherit;text-align:left;color:inherit; }
+.service-info { min-width:0; }
+.request-settings { margin-top:24px; }
+.request-settings>h3 { margin-top:0; }
+.request-summary { color:#526173;font-size:13px;line-height:1.8; }
+.request-settings details { margin-top:14px;border-top:1px solid #e0e5ec;padding-top:14px; }
+.request-settings summary { cursor:pointer;font-weight:600;margin-bottom:16px; }
+.request-actions { display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:18px 0; }
+.request-secondary { border:1px solid #d7dee8;background:transparent;border-radius:6px;padding:8px 12px;cursor:pointer;color:inherit;font:inherit; }
+.request-rule-link { padding:8px 0;border:0;background:transparent;color:#007acc;cursor:pointer;font:inherit;font-size:13px; }
+.request-result { font-size:13px;line-height:1.8;min-height:1.5em;overflow-wrap:anywhere; }
+.request-settings input:disabled { opacity:.6;cursor:not-allowed; }
+.page-session-rules { padding:20px; }
+.page-session-rules p { font-size:13px;line-height:1.9;margin:10px 0 0; }
+@media(prefers-color-scheme:dark) {
+ .request-summary { color:#b0bdce; }
+ .request-settings details { border-color:#414c5e; }
+ .request-rule-link { color:#65baf4; }
+}
+
+
+/* 默认服务选择：状态不能只靠灰色表达，可选项不继承分组标题的灰色。 */
+#engine optgroup { color:#526173;font-weight:600; }
+#engine option.bt-configured { color:#202938;font-weight:400; }
+#engine option.bt-unconfigured { color:#707987;font-weight:400; }
+@media(prefers-color-scheme:dark) {
+  #engine optgroup { color:#b4c2d4; }
+  #engine option.bt-configured { color:#edf3fa; }
+  #engine option.bt-unconfigured { color:#9ba7b7; }
+}
+
+/* 连接测试和默认选择放在同一位置，结果单独一行，长说明不挤压按钮。 */
+.service-connection-actions { flex-wrap:wrap; }
+.service-connection-actions .test-result { flex-basis:100%;overflow-wrap:anywhere; }
+.service-connection-actions .btn-use-service:not(:disabled) { background:#007acc;color:#fff;border-color:#007acc; }
+.service-connection-actions .btn-use-service:not(:disabled):hover { background:#0069b0; }

@@ -14,17 +14,17 @@ async function setup(browser,html,preferences={}) {
      setTimeout(()=>window.storageChange?.(changes,"sync"),5);
      await new Promise(resolve=>setTimeout(resolve,20));
    },async remove(){}};
-   window.chrome={runtime:{onMessage:{addListener(){}},sendMessage(request,cb){if(request.action==="CANCEL_TRANSLATION_REQUESTS"){cb?.({ok:true});return;}
+   window.chrome={runtime:{onMessage:{addListener(){}},sendMessage(request,cb){if(request.action==="CANCEL_TRANSLATION_REQUESTS"||request.action==="SET_PAGE_STATE"){cb?.({ok:true});return;}
      window.requests.push(request.text);
      setTimeout(()=>cb(window.languageMode?{ok:false,error:'需要指定源语言',code:'NEED_SOURCE_LANGUAGE'}:window.failMode?{ok:false,error:'模拟网络失败'}:{ok:true,data:window.returnSameText?request.text:'译：'+request.text}),window.responseDelay);
    }},storage:{sync:storage,local:{async get(){return {}},async set(){}},onChanged:{addListener(fn){window.storageChange=fn;}}}};
  },preferences);
- for(const file of ['core/constants.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
+ for(const file of ['core/constants.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
  await page.addStyleTag({content:fs.readFileSync(path.join(root,'content/content.css'),'utf8')});
  const source=fs.readFileSync(path.join(root,'content/content.js'),'utf8').replace('  bootstrap();',
- '  window.test={STATE,openControlPanel,changeTranslationSetting,translatePage,cancelTranslation,collectBlocks,translatedElements,insertTranslation,clearTranslations,createFab,observeDynamicContent,scheduleVisibleTranslation,bindHoverTranslate};');
+ '  window.test={STATE,openControlPanel,changeTranslationSetting,translatePage,cancelTranslation,collectBlocks,translatedElements,insertTranslation,clearTranslations,createFab,observeDynamicContent,scheduleVisibleTranslation,bindHoverTranslate,bindPageLifecycle};');
  await page.addScriptTag({content:source});
- await page.evaluate(preferences=>{Object.assign(test.STATE,preferences);test.createFab();test.observeDynamicContent();test.bindHoverTranslate();},preferences);
+ await page.evaluate(preferences=>{Object.assign(test.STATE,preferences);test.createFab();test.bindPageLifecycle();test.observeDynamicContent();test.bindHoverTranslate();},preferences);
  return page;
 }
 (async()=>{
@@ -523,7 +523,7 @@ async function setup(browser,html,preferences={}) {
  await generic.locator('#longHover').hover();await generic.keyboard.down('Shift');await generic.keyboard.up('Shift');
  await generic.waitForFunction(()=>document.querySelector('#longHover .bt-hover-translation'));
  const longParts=await generic.evaluate(count=>requests.slice(count),longCount);
- assert.ok(longParts.length>1);assert.ok(longParts.every(text=>text.length<=480));assert.equal(longParts.join(''),longSource.trim());
+ assert.equal(longParts.length,1,'页面把完整段落交给后台统一分块');assert.equal(longParts[0],longSource.trim());
  // 普通 div 在请求期间被复用，也必须丢弃旧译文。
  await generic.evaluate(()=>{window.responseDelay=250;});
  await generic.locator('#changingDiv').hover();await generic.keyboard.down('Shift');await generic.keyboard.up('Shift');
@@ -620,6 +620,81 @@ async function setup(browser,html,preferences={}) {
  assert.equal(await actual.locator('#actualLabel .bt-text-fragment').count(),0);
  await actual.close();
  console.log('PASS Chromium: Shift以实际译文决定翻译或还原、删除/空/隐藏/移走译文修复、记录丢失、残留标记、两种触发顺序及控件片段修复');
+
+
+ // AI 多长段投递有背压：先完成在处理的段落，而不是一次把几十段的分片堆入后台。
+ const aiQueue=await setup(browser,'<main id="aiQueueFixture"></main>',{engine:'ai',aiProvider:'custom'});
+ await aiQueue.addScriptTag({content:fs.readFileSync(path.join(root,'core/translation-runtime.js'),'utf8')});
+ await aiQueue.evaluate(()=>{
+   let seed=43;
+   const text=()=>Array.from({length:BT_REQUEST_POLICY.DEFAULTS.ai.maxChars*8},()=>{
+     seed=(Math.imul(seed,1664525)+1013904223)>>>0;
+     return String.fromCharCode(65+seed%26);
+   }).join('');
+   window.fillAiQueue=(count,scrollTarget=false)=>{
+     const fixture=document.getElementById('aiQueueFixture');fixture.replaceChildren();
+     for(let i=0;i<count;i++){
+       const p=document.createElement('p');p.id='aiQueue'+i;p.textContent=text();
+       p.style.cssText='height:24px;overflow:hidden;margin:0';fixture.appendChild(p);
+     }
+     if(scrollTarget){
+       const spacer=document.createElement('div');spacer.style.height='1600px';fixture.appendChild(spacer);
+       const p=document.createElement('p');p.id='aiQueueNewViewport';p.textContent='Latest reading position after scroll';fixture.appendChild(p);
+     }
+   };
+   window.aiSubmissions=[];window.aiWaiting=new Set();window.aiControllers=new Set();
+   window.aiQueueRuntime=BT_CREATE_TRANSLATION_RUNTIME(r=>new Promise((resolve,reject)=>{
+     const record={resolve:()=>{aiWaiting.delete(record);r.signal.removeEventListener('abort',abort);resolve('模拟译文分片');}};
+     const abort=()=>{aiWaiting.delete(record);reject(Object.assign(Error('cancelled'),{name:'AbortError'}));};
+     r.signal.addEventListener('abort',abort,{once:true});aiWaiting.add(record);
+   }),{interval:0});
+   const original=chrome.runtime.sendMessage.bind(chrome.runtime);
+   chrome.runtime.sendMessage=(request,callback)=>{
+     if(request.action==='CANCEL_TRANSLATION_REQUESTS'){
+       for(const controller of aiControllers)controller.abort();
+       original(request,callback);return;
+     }
+     if(request.action!=='TRANSLATE'){original(request,callback);return;}
+     const controller=new AbortController();aiControllers.add(controller);
+     requests.push(request.text);
+     aiSubmissions.push({completed:document.querySelectorAll('.bt-translation-text').length,text:request.text});
+     aiQueueRuntime.runText({...request,ownerKey:'ai-queue-page',signal:controller.signal})
+       .then(data=>callback({ok:true,data}),error=>callback({ok:false,error:error.message,cancelled:error.name==='AbortError'}))
+       .finally(()=>aiControllers.delete(controller));
+   };
+   window.completeAiBatch=()=>{for(const record of [...aiWaiting])record.resolve();};
+   fillAiQueue(12);window.aiPagePromise=test.translatePage();
+ });
+ await aiQueue.waitForFunction(()=>requests.length>=4 && aiWaiting.size===4);
+ assert.equal(await aiQueue.evaluate(()=>requests.length),4,'默认只投递四个未完成 AI 整段');
+ for(let round=0;round<180 && await aiQueue.locator('#aiQueueFixture .bt-translation-text').count()<12;round++){
+   await aiQueue.evaluate(()=>completeAiBatch());await aiQueue.waitForTimeout(10);
+ }
+ await aiQueue.waitForFunction(()=>!test.STATE.translating);
+ assert.equal(await aiQueue.locator('#aiQueueFixture .bt-translation-text').count(),12,'所有排队段落仍能完成');
+ assert.equal(await aiQueue.evaluate(()=>aiSubmissions[4].completed>=1),true,'下一批整段在已有整段显示后才投递');
+ assert.equal(await aiQueue.evaluate(()=>requests.length),12,'不会因背压丢段或重复整段');
+ // 改为两个请求上限时也收紧整段投递；提高上限无需等待旧段完成。
+ await aiQueue.evaluate(()=>{
+   test.cancelTranslation();fillAiQueue(4,true);requests.length=0;aiSubmissions.length=0;
+   const previousGet=BT_STORAGE.get.bind(BT_STORAGE);
+   window.aiManualPolicies={'ai:custom':{mode:'manual',qps:6,maxConcurrent:2}};
+   BT_STORAGE.get=async keys=>({...await previousGet(keys),requestPolicies:aiManualPolicies});
+   window.aiPagePromise=test.translatePage();
+ });
+ await aiQueue.waitForFunction(()=>requests.length>=2 && aiWaiting.size>0);
+ assert.equal(await aiQueue.evaluate(()=>requests.length),2,'整段投递随用户设置的同时上限变化');
+ await aiQueue.evaluate(()=>{
+   aiManualPolicies={'ai:custom':{mode:'manual',qps:6,maxConcurrent:3}};
+   storageChange({requestPolicies:{newValue:aiManualPolicies}},'local');
+ });
+ await aiQueue.waitForFunction(()=>requests.length===3);
+ await aiQueue.locator('#aiQueueNewViewport').scrollIntoViewIfNeeded();
+ await aiQueue.waitForFunction(()=>requests.includes('Latest reading position after scroll'));
+ assert.equal(await aiQueue.locator('#aiQueueFixture .bt-translation-text').count(),0,'旧视口尚未完成时，新视口仍能提交');
+ await aiQueue.evaluate(()=>test.cancelTranslation());
+ await aiQueue.close();
+ console.log('PASS Chromium: AI 长段投递背压、完整段落及时显示、手动上限即时生效、旧视口慢任务不阻塞新视口');
 
  const long=await setup(browser,Array.from({length:2500},(_,i)=>'<div><span id="row'+i+'">Long page row '+i+'</span></div>').join(''),{autoTranslate:true});
  const metrics=await long.evaluate(()=>{
