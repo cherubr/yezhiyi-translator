@@ -1,7 +1,7 @@
 // 从现有 SVG 和真实扩展界面导出商店图片；使用独立临时配置，不读取个人资料或访问外部翻译接口。
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
 const {chromium}=require('playwright');
-const root=path.resolve(__dirname,'..'),out=path.join(root,'docs','store');
+const root=path.resolve(__dirname,'..'),out=path.join(root,'.local','store-assets');
 /** 导出不同尺寸的品牌图标、宣传图及无个人配置的设置页截图。 */
 async function main(){
  fs.mkdirSync(out,{recursive:true});
@@ -13,7 +13,8 @@ async function main(){
   const id=new URL(worker.url()).host;
   const page=await context.newPage();
   await page.goto('chrome-extension://'+id+'/settings/settings.html');
-  await page.waitForFunction(()=>document.querySelector('#version')?.textContent==='v1.0.0');
+  const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'),'utf8')).version;
+  await page.waitForFunction(expected=>document.querySelector('#version')?.textContent==='v'+expected,version);
   await page.screenshot({path:path.join(out,'settings-1280x800.png'),animations:'disabled'});
   const svg=fs.readFileSync(path.join(root,'assets/icon.svg'),'utf8');
   const icon='data:image/svg+xml;base64,'+Buffer.from(svg).toString('base64');
