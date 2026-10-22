@@ -42,5 +42,15 @@ function setup(syncData, localData = {}, failWrite = false) {
   const failed = setup({ baiduKey: 'keep-me' }, {}, true);
   await assert.rejects(failed.storage.get(), /local write failed/);
   assert.equal(failed.sync.baiduKey, 'keep-me', 'failed migration preserves synced credentials');
+  const policies=setup({concurrency:10,requestPolicies:{baidu:{mode:'manual',qps:10,maxConcurrent:4}}});
+  const policyCfg=await policies.storage.get();
+  assert.equal(policyCfg.concurrency,10,'旧值不被擅自换算或删除');
+  assert.equal(policies.local.requestPolicies.baidu.qps,10);
+  assert.equal(policies.sync.requestPolicies,undefined);
+  await policies.storage.set({requestPolicies:{google:{mode:'manual',qps:3,maxConcurrent:2}},requestPolicyVersion:1});
+  assert.equal(policies.local.requestPolicyVersion,1);
+  assert.equal(policies.sync.requestPolicyVersion,undefined);
+  const noPolicy=setup({concurrency:10});await noPolicy.storage.get();assert.equal(noPolicy.local.requestPolicies,undefined,'没有策略则用默认值，不从旧并发换算');
+  console.log('PASS: 请求策略迁移、本机分流及旧并发不换算');
   console.log('PASS: credential migration, local precedence, legacy migration, split writes, failed migration preservation');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "node tests/regression.cjs && node tests/storage.cjs && node tests/network.cjs && node tests/permissions.cjs && node tests/runtime.cjs && node tests/languages.cjs",
-    "test:browser": "node tests/browser-layout.cjs && node tests/browser-dynamic.cjs && node tests/browser-extension.cjs",
+    "test": "node tests/logging.cjs && node tests/regression.cjs && node tests/storage.cjs && node tests/network.cjs && node tests/permissions.cjs && node tests/runtime.cjs && node tests/request-policy.cjs && node tests/languages.cjs && node tests/baidu-verification.cjs",
+    "test:browser": "node tests/browser-layout.cjs && node tests/browser-dynamic.cjs && node tests/browser-collection.cjs && node tests/browser-extension.cjs",
     "check": "node scripts/check.cjs",
     "package": "node scripts/package.cjs",
     "store:assets": "node scripts/store-assets.cjs"

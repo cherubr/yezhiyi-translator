@@ -3,10 +3,15 @@
    ============================================================ */
 
 .bt-translation-text {
+  /* 无装饰双语样式：跟随网页字体、字号及标题层级，通过段落间距区分原文和译文。 */
   color: inherit;
-  font-size: 0.95em;
+  font-family: inherit;
+  font-size: 1em;
+  font-weight: inherit;
   font-style: normal;
-  margin: 2px 0 4px;
+  opacity: 1;
+  text-shadow: none;
+  margin: 0.4em 0 0.6em;
   background: transparent;
   padding: 0;
   border: 0;
@@ -19,16 +24,8 @@
   white-space: normal;
   overflow-wrap: anywhere;
   word-break: normal;
-  line-height: 1.5;
+  line-height: inherit;
   border-radius: 0;
-}
-
-.bt-translation-text.bt-hover-translation {
-  animation: bt-hover-fade-in 0.25s ease;
-}
-@keyframes bt-hover-fade-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
 }
 
 .bt-fab-wrap {
@@ -331,11 +328,10 @@
   border: 0;
   background: transparent;
   color: inherit;
-  opacity: 0.85;
-  font-family: inherit;
-  font-size: 0.9em;
-  font-weight: normal;
-  line-height: 1.4;
+  opacity: 1;
+  font-size: 1em;
+  font-weight: inherit;
+  line-height: inherit;
   text-align: inherit;
 }
 .bt-translation-text.bt-translation-control {
@@ -355,16 +351,23 @@
 .bt-modal .bt-modal-hero-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .bt-modal .bt-modal-btn { flex: 0 0 auto; white-space: nowrap; word-break: keep-all; overflow-wrap: normal; writing-mode: horizontal-tb; }
 .bt-modal #btModalError { overflow-wrap: anywhere; line-height: 1.5; }
+/* 正文单元即使包在 span 中，也应在完整原文之后独立成段。 */
+.bt-translation-text.bt-translation-paragraph { display:block; }
 .bt-translation-text.bt-translation-inline {
   display: inline; margin: 0 0 0 0.35em; padding: 0; flex: 0 1 auto;
   font-size: 0.9em; line-height: inherit; white-space: normal;
+}
+
+/* 隐藏原文后不再需要双语段落间距，行内控件的紧凑排版由原规则保留。 */
+.bt-translation-text.bt-translation-only:not(.bt-translation-inline):not(.bt-translation-control) {
+  margin: 0;
 }
 
 .bt-modal #btModalError { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
 
 /* 未完成标记覆盖成功绿勾，原因文字由控制面板单独展示。 */
 .bt-fab-wrap.bt-has-error:not(.bt-busy) .bt-check-badge { opacity: 0; }
-.bt-fab-wrap.bt-has-error::after {
+.bt-fab-wrap.bt-has-error:not(.bt-busy)::after {
   content: "!"; position: absolute; right: -3px; bottom: -3px;
   width: 14px; height: 14px; border-radius: 50%;
   background: #a86700; color: white; font: bold 11px/14px sans-serif;
@@ -386,3 +389,33 @@
   white-space: normal; overflow-wrap: anywhere; min-width: 0;
 }
 .bt-page-notice > button:last-child { flex: 0 0 auto; font-size: 20px; }
+
+
+/* 页面离开只暂停发送；暂停状态不显示完成勾或忙碌动画。 */
+.bt-fab-wrap.bt-page-paused::before {
+  content: "Ⅱ"; position:absolute;right:-3px;bottom:-3px;width:14px;height:14px;
+  background:#68758a;color:white;border-radius:50%;font:10px/14px sans-serif;
+  text-align:center;z-index:2;pointer-events:none;
+}
+
+
+/* 单行菜单、截断标签和紧凑横向控件不新增段落；文字放不下时沿用网页的裁切方式。 */
+.bt-translation-text.bt-translation-tight {
+  display:inline;flex:0 0 auto;max-width:none;width:auto;
+  margin:0 0 0 .35em;padding:0;font-size:.9em;line-height:inherit;
+  /* 对齐行框顶部，避免不同字体的基线差额外撑高单行导航。 */
+  white-space:nowrap;overflow-wrap:normal;word-break:normal;vertical-align:top;
+}
+.bt-translation-text.bt-translation-tight.bt-translation-only { margin:0; }
+
+
+/* 控制面板与设置页采用同一目录和状态，不让可选项继承分组标题灰色。 */
+#btModalEngine optgroup { color:#526173;font-weight:600; }
+#btModalEngine option.bt-configured { color:#202938;font-weight:400; }
+#btModalEngine option.bt-unconfigured { color:#707987;font-weight:400; }
+#btModalRequestPolicy, #btModalModel { margin-top:5px;overflow-wrap:anywhere; }
+@media(prefers-color-scheme:dark) {
+ #btModalEngine optgroup { color:#b4c2d4; }
+ #btModalEngine option.bt-configured { color:#edf3fa; }
+ #btModalEngine option.bt-unconfigured { color:#9ba7b7; }
+}

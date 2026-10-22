@@ -34,10 +34,10 @@
         <!-- 基本设置 -->
         <section class="tab-panel active" data-panel="general">
           <h1>基本设置</h1>
-          <p class="desc">配置默认的翻译引擎与语言方向。</p>
+          <p class="desc">选择默认翻译服务与语言方向。连接和请求设置分别管理。</p>
 
           <div class="field">
-            <label>默认翻译引擎</label>
+            <label for="engine">默认翻译服务</label>
             <select id="engine"></select>
             <div class="hint" id="engineHint">选 AI 厂商后，会自动使用"翻译服务"里配好的 Key。</div>
           </div>
@@ -53,16 +53,11 @@
             </div>
           </div>
 
-          <div class="field">
-            <label>并发数</label>
-            <select id="concurrency">
-              <option value="2">2（保守）</option>
-              <option value="4">4（推荐）</option>
-              <option value="8">8（激进）</option>
-              <option value="10">10（更快）</option>
-            </select>
-            <div class="hint">同时发起的翻译请求数量，过高可能被接口限流。</div>
+          <div class="request-actions">
+            <button type="button" class="request-secondary" id="configureCurrentService">配置当前服务</button>
+            <button type="button" class="request-rule-link" id="manageTranslationServices">管理全部翻译服务 →</button>
           </div>
+          <p class="hint">页面文字任务由程序管理；每秒请求数和同时请求上限在各服务详情中配置。</p>
         </section>
 
         <!-- 显示样式 -->
@@ -79,7 +74,10 @@
           </div>
           <div class="field">
             <label>译文样式预览</label>
-            <div class="style-preview"><div class="bt-preview">This is a preview of translated text.</div></div>
+            <div class="style-preview" style="line-height: 1.6">
+              <div>This is a preview of translated text.</div>
+              <div class="bt-preview">这是译文样式预览，让双语阅读更自然。</div>
+            </div>
           </div>
         </section>
 
@@ -87,7 +85,7 @@
         <section class="tab-panel" data-panel="service">
           <div class="service-list-view" id="serviceListView">
             <h1>翻译服务</h1>
-            <p class="desc">选择一个服务进行配置，或直接使用免费引擎。</p>
+            <p class="desc">直接使用免配置服务，或连接自己的翻译账号与 AI 接口。</p>
             <div class="service-grid" id="serviceGrid"></div>
           </div>
 
@@ -113,8 +111,8 @@
 
             <div class="switch-row">
               <div class="switch-row-text">
-                <div class="switch-row-label">打开新页面时自动翻译</div>
-                <div class="switch-row-hint">进入新页面后，自动开始翻译。</div>
+                <div class="switch-row-label">打开网页时自动翻译</div>
+                <div class="switch-row-hint">控制是否自动启动翻译；手动启动后持续补翻，离开页面暂停，返回继续；点击取消后不自动恢复。</div>
               </div>
               <div class="switch" id="autoTranslate"></div>
             </div>
@@ -122,7 +120,7 @@
             <div class="switch-row">
               <div class="switch-row-text">
                 <div class="switch-row-label">悬停段落时翻译</div>
-                <div class="switch-row-hint" id="hoverTranslateHint">按住 Shift 并把鼠标移到段落上，自动翻译该段。</div>
+                <div class="switch-row-hint" id="hoverTranslateHint">鼠标放在段落上按 Shift，可翻译或还原该段；也可按住 Shift 移入翻译。</div>
               </div>
               <select class="switch-row-select" id="hoverTranslateMode">
                 <option value="off">关闭</option>
@@ -132,13 +130,19 @@
             </div>
           </div>
 
+          <div class="settings-group page-session-rules">
+            <div class="settings-group-title">页面切换时的翻译行为</div>
+            <p>离开当前标签页或最小化浏览器时，停止发送本页的新请求；已经发送的请求允许完成并保留结果。返回页面后继续未完成内容。</p>
+            <p class="hint">用户点击取消后，返回页面也不会自动恢复。Shift 单段翻译不解除整页取消状态；返回不会清空限流等待和重试记录。</p>
+          </div>
+
           <!-- 组 2：悬浮球 -->
           <div class="settings-group">
             <div class="settings-group-title">悬浮球</div>
 
             <div class="switch-row">
               <div class="switch-row-text">
-                <div class="switch-row-label">悬停悬浮球显示快捷菜单</div>
+                <div class="switch-row-label">悬停悬浮球显示控制面板</div>
                 <div class="switch-row-hint">关闭后悬浮球只用于点击翻译。</div>
               </div>
               <div class="switch" id="hoverPanel"></div>
@@ -195,7 +199,7 @@
                 <div class="guide-title">🖱 悬浮球操作</div>
                 <div class="guide-row">
                   <kbd>Shift</kbd><span class="guide-op">+ 悬停段落</span>
-                  <span class="guide-desc">翻译该段落（仅这一段）</span>
+                  <span class="guide-desc">翻译 / 还原当前段落</span>
                 </div>
                 <div class="guide-row">
                   <span class="guide-op">悬停悬浮球</span>
@@ -245,7 +249,7 @@
             <ul class="tips">
               <li>点击悬浮球：翻译 / 取消翻译当前页面</li>
               <li>悬停悬浮球：出现小图标，点击打开控制面板</li>
-              <li>Shift + 悬停段落：只翻译该段</li>
+              <li>Shift + 悬停段落：翻译 / 还原该段</li>
               <li>Ctrl + Shift + Y（Mac：Command + Shift + Y）：翻译 / 取消翻译当前页面</li>
               <li>右键菜单：翻译整页 / 翻译选中文字</li>
             </ul>
@@ -256,7 +260,9 @@
     </main>
   </div>
 
+  <script src="../core/md5.js"></script>
   <script src="../core/constants.js"></script>
+  <script src="../core/request-policy.js"></script>
   <script src="../core/providers.js"></script>
   <script src="settings.js"></script>
 </body>

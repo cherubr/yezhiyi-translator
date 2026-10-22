@@ -56,6 +56,53 @@
   if (typeof self !== "undefined") self.BT_AI_ACCESS = BT_AI_ACCESS;
   if (typeof window !== "undefined") window.BT_AI_ACCESS = BT_AI_ACCESS;
 
+  /** 统一编码服务选项；AI 厂商不是独立的翻译引擎，保存时仍拆为 engine 与 aiProvider。 */
+  function serviceValue(engine,provider) {return engine==="ai"?"ai:"+(provider||"openai"):engine;}
+  function parseServiceValue(value,currentProvider="openai") {
+    return typeof value==="string"&&value.startsWith("ai:")
+      ?{engine:"ai",aiProvider:value.slice(3)}:{engine:value,aiProvider:currentProvider};
+  }
+  /** 仅表示连接配置是否齐全；AI 密钥是否有效仍由实际测试判定。 */
+  function isProviderReady(provider,config={}) {
+    if(!Object.hasOwn(AI_PROVIDERS,provider))return false;
+    if(provider==="ollama")return true;
+    return !!String(config.aiKeys?.[provider]?.key||"").trim();
+  }
+  function isServiceReady(value,config={}) {
+    if(value==="google"||value==="mymemory")return true;
+    if(value==="baidu")return !!global.BT_CONST?.hasVerifiedBaiduCredentials(config);
+    const provider=value==="ai"?config.aiProvider||"openai":typeof value==="string"&&value.startsWith("ai:")?value.slice(3):null;
+    return provider?isProviderReady(provider,config):false;
+  }
+  /** 设置页和控制面板共用目录、就绪判断及状态文案，避免只列出当前 AI 厂商。 */
+  function serviceOptions(config={}) {
+    const items=[{value:"google",label:"Google 翻译"},{value:"mymemory",label:"MyMemory"},{value:"baidu",label:"百度翻译"},
+      ...Object.entries(AI_PROVIDERS).map(([provider,item])=>({value:"ai:"+provider,label:item.name+(provider==="ollama"?" · 本地":" · AI")}))];
+    return items.map(item=>{
+      const ready=isServiceReady(item.value,config);
+      const status=ready?(item.value==="google"||item.value==="mymemory"?"无需配置":item.value==="baidu"?"测试通过":item.value==="ai:ollama"?"需运行本地服务":"已配置"):
+        item.value==="baidu"&&config.baiduAppId&&config.baiduKey?"待测试":"未配置";
+      return {...item,ready,status,text:ready?"✓ "+item.label+"（"+status+"）":status+" · "+item.label};
+    });
+  }
+  /** 原生下拉保留键盘操作；未就绪选项真正禁用，不能仅靠颜色表示不可用。 */
+  function renderServiceSelect(select,config={}) {
+    if(!select)return;
+    const doc=select.ownerDocument,items=serviceOptions(config);select.replaceChildren();
+    for(const [label,ready]of [["可选择 · 无需配置或已配置",true],["暂不可选 · 请先配置或测试",false]]){
+      const group=doc.createElement("optgroup");group.label=label;
+      for(const item of items.filter(item=>item.ready===ready)){
+        const option=doc.createElement("option");option.value=item.value;option.disabled=!ready;
+        option.className=ready?"bt-configured":"bt-unconfigured";option.textContent=item.text;group.append(option);
+      }
+      if(group.children.length)select.append(group);
+    }
+    select.value=serviceValue(config.engine,config.aiProvider);
+  }
+  const BT_SERVICES={value:serviceValue,parse:parseServiceValue,isConfigured:isServiceReady,isProviderConfigured:isProviderReady,options:serviceOptions,renderSelect:renderServiceSelect};
+  if(typeof self!=="undefined")self.BT_SERVICES=BT_SERVICES;
+  if(typeof window!=="undefined")window.BT_SERVICES=BT_SERVICES;
+
   const AI_PROVIDER_NAMES = Object.fromEntries(
     Object.entries(AI_PROVIDERS).map(([k, v]) => [k, v.name])
   );

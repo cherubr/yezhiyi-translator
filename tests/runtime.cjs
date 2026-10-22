@@ -1,6 +1,7 @@
 // 调度回归：检查缓存、并发合并、消费者取消隔离、队列限流、失败冷却和熔断。
 const vm=require('node:vm'),fs=require('node:fs'),assert=require('node:assert/strict'),path=require('node:path');
-const context={setTimeout,clearTimeout,AbortController,console};vm.createContext(context);
+const context={setTimeout,clearTimeout,AbortController,TextEncoder,URL,console};vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../core/request-policy.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../core/translation-runtime.js'),'utf8'),context);
 const create=context.BT_CREATE_TRANSLATION_RUNTIME;
 const request=(text,extra={})=>({engine:'google',text,from:'en',to:'zh-CN',...extra});
@@ -30,7 +31,7 @@ const request=(text,extra={})=>({engine:'google',text,from:'en',to:'zh-CN',...ex
  assert.equal(peak,4);
  active=0;peak=0;
  await Promise.all(Array.from({length:4},(_,i)=>limited.run(request('b'+i,{engine:'baidu'}))));
- assert.equal(peak,1);
+ assert.equal(peak,4);
 
  // 两个页面共享同一请求，其中一个取消时保留另一个消费者。
  const ca=new AbortController(),cb=new AbortController();
@@ -66,6 +67,7 @@ const request=(text,extra={})=>({engine:'google',text,from:'en',to:'zh-CN',...ex
    if(r.text==='first')await new Promise(resolve=>firstDone=resolve);
    return 'done';
  },{interval:0});
+ queue.updatePolicies({baidu:{mode:'manual',qps:100,maxConcurrent:1}});
  const firstJob=queue.run(request('first',{engine:'baidu'}));
  const queuedController=new AbortController();
  const cancelledJob=queue.run(request('cancelled',{engine:'baidu',signal:queuedController.signal}));

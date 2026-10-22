@@ -1,14 +1,15 @@
 // 语言回归：验证共享目录、浏览器语言解析、百度代码映射和 MyMemory 检测失败提示。
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
 let detection={isReliable:true,languages:[{language:'en',percentage:98}]},url;
-const context={URLSearchParams,console,chrome:{i18n:{async detectLanguage(){return detection;}}}};
+const context={URL,URLSearchParams,TextEncoder,setTimeout,clearTimeout,console,chrome:{i18n:{async detectLanguage(){return detection;}}}};
 context.self=context;vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../core/constants.js'),'utf8'),context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../core/languages.js'),'utf8'),context);
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../core/request-policy.js'),'utf8'),context);
 const s=fs.readFileSync(path.join(__dirname,'../background/service-worker.js'),'utf8');
 context.BT_STORAGE={async get(){return {baiduAppId:'id',baiduKey:'key'};}};
 context.md5=()=> 'signature';
-context.fetchWithTimeout=async value=>{url=new URL(value);return {ok:true,async json(){return {trans_result:[{dst:'ok'}],responseData:{translatedText:'ok'}};}};};
+context.fetchWithTimeout=async (value,options)=>{url=options?.body?{searchParams:new URLSearchParams(options.body)}:new URL(value);return {ok:true,async json(){return {trans_result:[{dst:'ok'}],responseData:{translatedText:'ok'}};}};};
 vm.runInContext(s.slice(s.indexOf('async function translateMyMemory('),s.indexOf('async function translateAI(')),context);
 (async()=>{
  assert.equal(context.BT_CONST.LANGUAGES.to.length,49);

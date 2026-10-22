@@ -27,3 +27,4 @@ Thumbs.db
 
 # 白名单脚本生成的安装包
 dist/
+prototypes/
