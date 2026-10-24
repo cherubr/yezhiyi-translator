@@ -77,9 +77,11 @@ npx playwright install chromium
 修改后重新加载扩展并刷新网页；详细诊断需在浏览器控制台启用 Verbose/详细级别。
 日志不得包含原文、译文、密钥或完整请求对象。
 
+Chrome 商店草稿上传由 `.github/workflows/chrome-store-upload.yml` 执行：推送与版本一致的 `v*` 标签后，校验其提交已进入 `main`，自动测试、打包并上传现有商店条目；也支持从 `main` 手动选择标签运行，并可关闭“运行自动化测试”仅试传草稿。仓库 Actions Secrets 需要配置 `CWS_SERVICE_ACCOUNT_JSON`、`CWS_PUBLISHER_ID` 和 `CWS_EXTENSION_ID`。此流程仅上传草稿，审核由开发者在商店后台手动提交。
+
 明确准备发布时才执行 `npm run package`。输出为 `dist/yezhiyi-translator-<Manifest版本>.zip`，仅包含运行文件、图标与隐私说明。
 脚本在临时发布副本中强制关闭插件主动日志并检查 ZIP，不改本地开发配置；手动压缩源码不会执行此转换。
-Git 推送、Tag 与 GitHub Release 均不会自动更新 Chrome 商店。
+普通分支推送和 GitHub Release 不触发商店上传；版本标签仅触发草稿上传，上线仍需在商店后台手动提交审核。
 
 个人操作手册、发布填写草稿、商店图片和原型集中保留在本地 `.local/`；本地入口为 `.local/README.md`。
 这些资料不属于运行代码，不会提交到 GitHub 或进入安装包。
