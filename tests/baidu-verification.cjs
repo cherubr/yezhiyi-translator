@@ -1,10 +1,24 @@
-// 百度验证回归：加载真实后台、存储和调度器，只模拟接口响应。
+/**
+ * 测试模块：百度凭据验证状态。
+ * 隔离方式：加载真实后台模块，以模拟接口和共享存储控制异步顺序。
+ * 验收范围：测试来源、缓存绕过、凭据绑定、旧测试隔离、取消和验证记录写入。
+ * 执行：node tests/baidu-verification.cjs
+ */
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'..');
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
+/**
+ * 通过短轮询等待受控异步状态达到条件，超时直接断言失败，不让测试无限等待。
+ */
 async function until(predicate){for(let i=0;i<40;i++){if(predicate())return;await tick();}assert.fail('模拟网络未开始');}
+/**
+ * 构造可重复读取的成功百度响应；正文深拷贝，避免测试共享对象产生污染。
+ */
 function response(data={trans_result:[{dst:'你好，世界'}]}){return {ok:true,status:200,async json(){return structuredClone(data);}};}
+/**
+ * 在独立 VM 加载真实后台与调度器，返回消息、存储和可控 fetch 入口。
+ */
 function setup(){
  const sync={},local={baiduAppId:'test-app',baiduKey:'test-key'},writes=[],calls=[];
  let listener,sequence=0,fetchImpl=async()=>response();

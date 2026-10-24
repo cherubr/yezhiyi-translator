@@ -1,9 +1,12 @@
-// 各引擎的语言标识独立转换，覆盖设置页提供的全部语种。
 (function(global) {
   "use strict";
+  // 百度语码映射，由共享语言目录生成，不单独维护第二份列表。
   const baidu=Object.fromEntries(global.BT_CONST.LANGUAGES.from.map(item=>[item.value,item.baidu]));
   /**
-   * 将通用语言代码转换为指定引擎的代码；百度未配置的语言会明确报错。
+   * 转换引擎语码；百度缺少映射时报错，其他引擎保留输入代码。
+   * @param {string} engine 引擎标识。
+   * @param {string} code 通用语言代码。
+   * @returns {string} 可传给对应接口的语码。
    */
   function mapLanguage(engine,code) {
     if(engine==="baidu") {
@@ -13,7 +16,10 @@
     return code;
   }
   /**
-   * 调用浏览器语言检测，仅接受可靠且占比足够的结果，否则提示用户指定源语言。
+   * 使用浏览器识别源语言；仅接受可靠且首选语种占比至少 70% 的结果。
+   * @param {string} text 本次待识别文字。
+   * @returns {Promise<string>} 识别语码，zh 转换为 zh-CN。
+   * @throws {Error} 不可靠结果带 NEED_SOURCE_LANGUAGE，提示手动指定，不视为服务故障。
    */
   async function detectSourceLanguage(text) {
     if(!chrome.i18n||!chrome.i18n.detectLanguage)throw new Error("此服务需要明确源语言，请在设置中选择源语言");

@@ -1,22 +1,3 @@
-// ============================================================
-// 页知译 · 网页双语翻译：网页内容脚本。
-//
-// 本文件负责网页侧状态、文字单元采集入口、译文 DOM 与交互；不直接访问翻译厂商接口。
-// 主要调用链：bootstrap → 加载配置/绑定事件 → translatePage → collectBlocks
-// → handleBlock → requestTranslate → 后台调度与 HTTP → 校验原文快照/保护标记 → 插入译文。
-// Shift 通过 getHoverItem 定位同一套翻译单元，再复用 handleBlock，不另写采集或请求算法。
-//
-// 模块边界：translation-units.js 划分正文与混合控件、保护行内文字；后台统一分块、
-// 缓存、去重、QPS、并发与重试；本文件不把页面任务数当作真实网络并发数。
-//
-// 三类状态必须区分：
-// 1. autoTranslate 是“打开网页时自动启动”的偏好；当前页已开始后，关闭偏好不停止补翻。
-// 2. pageStarted/pagePaused 是当前页会话；明确取消才暂停补翻，手动翻译可以重新启动。
-// 3. visibilityPaused 是标签页不可见的临时暂停；返回可继续，不能解除用户明确取消。
-//
-// 异步安全：cancelVersion 防止旧回调修改新状态，requestToken 隔离后台取消批次。
-// 还原页面移动原有节点，不用 innerHTML 重建原文，以保留链接事件和控件状态。
-// ============================================================
 
 if (window.__BT_INJECTED) {
   // 同一文档只初始化一次，避免重复绑定键盘/滚动监听、重复创建观察器和悬浮球。
@@ -26,13 +7,11 @@ if (window.__BT_INJECTED) {
 }
 
 /**
- * 在当前文档的内容脚本环境中建立独立状态和闭包，最后由 bootstrap 启动。
- * 全局仅保留注入标识；刷新页面会重新建立本文件的状态和本地记录。
- * 本地记录重置不代表后台翻译缓存、服务配额或用户配置也被清除。
+ * 建立当前文档的翻译状态、DOM 记录和交互入口，由 bootstrap 完成初始化。
+ * 页面刷新会重建这些本地状态，不会清空后台缓存或用户配置。
  */
 function init() {
   const { MSG } = window.BT_CONST;
-  // 日志只是诊断信息；失败状态、悬浮球徽标、页面提示和面板内容由各自流程更新。
   /**
    * 仅在日志级别允许 debug 时输出本地诊断，不参与翻译决策或错误计数。
    * 传入参数不得包含网页原文、完整译文、密钥或含凭据的配置对象。
@@ -46,7 +25,6 @@ function init() {
     request_success:"请求完成",request_error:"请求失败",request_cancelled:"请求取消",
     request_retry:"安排重试",request_shared:"复用进行中请求",cache_hit:"命中缓存",
     task_complete:"后台任务完成",task_error:"后台任务失败",task_cancelled:"后台任务取消"};
-  // 只展示后台数值诊断；不把数据用于面板状态、重试或任务调度。
   /**
    * 把后台阶段码转换为可读日志，并关联页面 clientId 与后台任务/请求编号。
    * 仅展示耗时、等待原因和生效限制；配置并发与实际账号并发可能不同。
@@ -73,7 +51,6 @@ function init() {
     pagePaused: false, // 用户明确取消或配置切换清理期间暂停当前页；自动事件不能擅自解除。
     pageStarted: false, // 本页是否建立过整页翻译会话；已启动会话允许后续滚动/动态补翻。
     cancelVersion: 0, // 每次取消递增的本地代次，旧异步回调必须先检查它再修改页面。
-    activeWorkers: 0, // 本轮尚未完成的文字单元数，不是后台实际 HTTP 连接数。
     lastError: "", // 最近一次真正失败的可读说明；与源语言无法识别的提示分开保存。
     failedCount: 0, // 本地累计失败单元计数，供本轮是否新增问题的判断使用。
     languageNoticeCount: 0, // 无法可靠识别源语言而跳过的单元计数，不直接当作服务故障。
@@ -81,20 +58,19 @@ function init() {
     aiProvider: "openai", // 当前选用的 AI 厂商 ID，编辑其他厂商配置不等于切换当前服务。
     from: window.BT_CONST.DEFAULTS.from, // 源语言偏好，auto 的具体识别方式由后台各引擎适配器处理。
     to: window.BT_CONST.DEFAULTS.to, // 目标语言偏好；跟随浏览器的值在发请求时解析为实际语言。
-    // 网络请求由后台统一调度；旧 concurrency 只由存储层兼容。
     visibilityPaused: false, // 页面不可见的临时状态，返回后仍要检查 pagePaused 才能续翻。
     pageStateVersion: 0, // 递增的页面状态序号，后台用它忽略乱序到达的可见性更新。
     viewportEpoch: 0, // 滚动后的阅读位置代次，用于后台优先级与 AI 当前视口投递名额。
     requestNotice: "", // 后台限流/退避等待说明，等待中不等同于已失败。
     processedAttr: "data-bt-processed", // 写在网页节点上的插件处理标识，避免整段和内部链接被重复采集。
-    mode: "bilingual", // 双语对照或仅译文；切换只更新 DOM 显示，不重新请求接口。
+    // 双语对照或仅译文；切换只改变节点显示。
+    mode: "bilingual",
+    translationStyle: {}, // 译文外观配置；修改时更新现有节点，不重新请求翻译。
     autoTranslate: false, // 全局自动启动偏好，不等于当前页会话是否正在持续补翻。
     hoverPanel: true, // 是否允许悬停悬浮球后显示打开面板的快捷卡片。
     viewportFirst: true, // 开启时只采集视口内的可见单元，屏幕外内容留待滚动补翻。
     hoverTranslate: true, // 是否启用鼠标所在段落的翻译入口。
     hoverRequireShift: true, // 是否要求主动按住 Shift；与无需按键的普通悬停模式区分。
-    shortcutTranslate: true, // 快捷键偏好快照；浏览器命令的启用检查由后台完成。
-    shortcutKey: "Alt+A", // 快捷键显示/兼容配置；浏览器实际绑定仍由 Chrome 命令设置决定。
     baiduAppId: "", // 百度凭据快照来自本机存储，不写入诊断日志。
     baiduKey: "", // 百度密钥快照，前端就绪判断不替代后台权限/验证检查。
     baiduVerification: null, // 与当前百度凭据绑定的连接测试记录。
@@ -178,7 +154,6 @@ function init() {
    */
   function changeTranslationSetting(key,value) {return changeTranslationSettings({[key]:value});}
 
-  // ---------- 接收消息 ----------
   // START/CANCEL 控制整页会话；OPEN_PANEL 只控制面板；TOGGLE_PANEL 是旧名，实际切换翻译。
   // 后台状态/诊断必须匹配当前 requestToken，避免取消后仍收到旧批次的等待或失败外观。
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -217,7 +192,7 @@ function init() {
     if(!Object.keys(changes).length)return;
     // relevant 决定是否重读配置；affecting 仅列出会改变译文含义/服务的字段。
     // 显示模式和请求参数变化不必把已有译文全部撤回，策略变化可直接唤醒当前队列。
-    const relevant = ["engine", "aiProvider", "aiKeys", "requestPolicies", "from", "to", "mode", "autoTranslate", "hoverPanel", "concurrency", "baiduAppId", "baiduKey", "baiduVerification", "hoverTranslate", "hoverRequireShift", "shortcutTranslate", "shortcutKey"];
+    const relevant = ["engine", "aiProvider", "aiKeys", "requestPolicies", "from", "to", "mode", "translationStyle", "autoTranslate", "hoverPanel", "baiduAppId", "baiduKey", "baiduVerification", "hoverTranslate", "hoverRequireShift"];
     if (!relevant.some((key) => Object.prototype.hasOwnProperty.call(changes, key))) return;
     const affecting = ["engine","aiProvider","aiKeys","from","to","baiduAppId","baiduKey"];
     const changed = affecting.some(key => Object.prototype.hasOwnProperty.call(changes,key) &&
@@ -236,7 +211,7 @@ function init() {
       }
       if (changes.requestPolicies) activePageRun?.pump();
       if (panelModalEl) refreshPanelModal();
-    }).catch((err) => window.BT_LOG.warn("[页知译] 配置同步失败，请检查设置"));
+    }).catch(() => window.BT_LOG.warn("[页知译] 配置同步失败，请检查设置"));
   });
 
   /**
@@ -248,10 +223,10 @@ function init() {
   async function reloadConfig() {
     const autoVersion = autoPreferenceVersion;
     const cfg = await window.BT_STORAGE.get([
-      "engine", "aiProvider", "aiKeys", "requestPolicies", "from", "to", "mode",
-      "autoTranslate", "hoverPanel", "concurrency",
+      "engine", "aiProvider", "aiKeys", "requestPolicies", "from", "to", "mode", "translationStyle",
+      "autoTranslate", "hoverPanel",
       "baiduAppId", "baiduKey", "baiduVerification",
-      "hoverTranslate", "hoverRequireShift", "shortcutTranslate", "shortcutKey"
+      "hoverTranslate", "hoverRequireShift"
     ]);
     for(const [key,entry] of pendingPreferenceWrites)cfg[key]=entry.value;
     if (cfg.engine) STATE.engine = cfg.engine;
@@ -272,19 +247,16 @@ function init() {
     STATE.baiduVerification = cfg.baiduVerification || null;
     if (typeof cfg.hoverTranslate === "boolean") STATE.hoverTranslate = cfg.hoverTranslate;
     if (typeof cfg.hoverRequireShift === "boolean") STATE.hoverRequireShift = cfg.hoverRequireShift;
-    if (typeof cfg.shortcutTranslate === "boolean") STATE.shortcutTranslate = cfg.shortcutTranslate;
-    if (cfg.shortcutKey) STATE.shortcutKey = cfg.shortcutKey;
     if (modeChanged) applyMode();
+    // 样式是独立偏好。读取完成后应用于现有译文；在途结果插入时读取最新 STATE 样式。
+    const nextStyle=window.BT_TRANSLATION_STYLE.normalize(cfg.translationStyle);
+    const styleChanged=JSON.stringify(nextStyle)!==JSON.stringify(STATE.translationStyle);
+    STATE.translationStyle=nextStyle;
+    // 普通补翻也会读取配置，只有样式真的改变时才遍历已有译文，避免长页面重复刷写样式。
+    if(styleChanged)for(const entry of translatedElements.values())window.BT_TRANSLATION_STYLE.apply(entry.wrapper,nextStyle);
   }
 
-  /**
-   * 等待配置快照刷新，供翻译和初始化入口在继续前取得最新设置。
-   * 这里不建立独立缓存，也不发出翻译请求。
-   * @returns {Promise<void>} 与 reloadConfig 相同的完成/失败结果。
-   */
-  async function loadConfig() { await reloadConfig(); }
 
-  // ---------- 引擎配置状态 ----------
   /**
    * 委托共享服务目录判断选项是否具备所需配置；百度还要求凭据绑定的验证记录。
    * 这是界面就绪判断，不实时探测网络、余额或服务可用性，后台仍会独立校验。
@@ -293,7 +265,6 @@ function init() {
    */
   function isEngineConfigured(id) {return window.BT_SERVICES.isConfigured(id,STATE);}
 
-  // ---------- 请求翻译 ----------
   /**
    * 向后台提交一个完整文字任务，携带配置快照、页面身份状态与翻译批次。
    * 前端不再拆 MyMemory/AI 长文本，字符和字节分块由后台统一执行。
@@ -418,7 +389,6 @@ function init() {
   const TEXT_SELECTOR = "div, span, a, small, strong, em, b, time, dt, dd, summary, dialog, section, form, fieldset, [role='option'], [role='menuitem'], [role='tab'], [role='status'], [role='tooltip']";
   const EXCLUDED_SELECTOR = ".bt-translation-text, .bt-original-text, .bt-text-fragment, .bt-modal, .bt-popup, .bt-fab-wrap, .bt-thumb, .bt-page-notice, pre, code, script, style, noscript, svg, math, canvas, textarea, input, select, [translate='no'], .notranslate, [contenteditable]:not([contenteditable='false'])";
 
-  // 只采集已显示的内容；视口优先开启时，屏幕外内容等待滚动后补翻。
   /**
    * 排除 hidden/aria-hidden、CSS 隐藏和无尺寸元素；开启视口优先时还需与屏幕相交。
    * 检查的是布局与矩形交集，不是像素级遮挡检测，也不判断是否被其他浮层盖住。
@@ -442,14 +412,18 @@ function init() {
     getStyle:el=>window.getComputedStyle(el),
     excluded:scan=>scan.hover?HOVER_SCAN_EXCLUDED_SELECTOR:EXCLUDED_SELECTOR,
     canTranslate:text=>text.length>=2&&/\p{L}/u.test(text)&&!isMostlyChinese(text),
-    /** 已由祖先单元占有的子元素不重复提交，避免整段与句中链接同时请求。 */
+    /**
+     * 已由祖先单元占有的子元素不重复提交，避免整段与句中链接同时请求。
+     */
     ownedByAncestor(el) {
       // 整段已在请求、已完成或被手动还原时，不能再向其链接/span 发起重复请求。
       for(let parent=el.parentElement;parent;parent=parent.parentElement)
         if(parent.hasAttribute(STATE.processedAttr))return true;
       return false;
     },
-    /** 状态过滤：允许原文/配置变化后重采集，主动 Shift 可清理已失效的处理标记。 */
+    /**
+     * 状态过滤：允许原文/配置变化后重采集，主动 Shift 可清理已失效的处理标记。
+     */
     acceptElement(el,{hover=false,retryProcessed=false}) {
       if(el.hasAttribute(STATE.processedAttr)){
         const retryHover=hover&&retryProcessed&&!translatedElements.has(el)&&
@@ -463,7 +437,9 @@ function init() {
       }
       return isVisibleBlock(el);
     },
-    /** 连续片段以首节点记住未变化结果；主动 Shift 可解除用户还原留下的跳过记录。 */
+    /**
+     * 连续片段以首节点记住未变化结果；主动 Shift 可解除用户还原留下的跳过记录。
+     */
     skipUnit(unit,{hover=false,retryProcessed=false}) {
       if(!unit.node)return false;
       const skipped=unchangedTextNodes.get(unit.node);
@@ -501,7 +477,6 @@ function init() {
     return scored;
   }
 
-  // ---------- 主流程 ----------
   /**
    * 整页调度主入口：检查会话 → 加载配置 → 固定本轮快照 → 采集/入队 → 等待排空。
    * 自动事件不能解除用户暂停；空扫描不进入忙碌外观，避免完成徽标和按钮来回闪烁。
@@ -541,14 +516,13 @@ function init() {
     const generation = STATE.cancelVersion;
     STATE.translating = true;
     STATE.cancelRequested = false;
-    STATE.activeWorkers = 0;
     // 自动扫描确认有新内容后才更新忙碌界面，避免空扫描造成按钮闪烁。
     if (!automatic) { setFabBusy(true); setFabTranslated(STATE.translated); hidePageNotice(); }
     STATE.requestNotice="";
     const issuesBefore = STATE.failedCount + STATE.languageNoticeCount;
     const pageStartedAt=Date.now();
 
-    try { await loadConfig(); } catch (error) {
+    try { await reloadConfig(); } catch (error) {
       if(generation!==STATE.cancelVersion)return;
       STATE.translating = false;
       STATE.lastError = "读取配置失败：" + error.message;
@@ -626,7 +600,7 @@ function init() {
           const item=queue.shift(),target=item.node||item.el;queued.delete(target);
           if(!item.el.isConnected)continue;
           if(!translationUnits.isCurrent(item)){wholePageScan=true;pendingViewport=true;continue;}
-          pending++;STATE.activeWorkers=pending;
+          pending++;
           pendingByViewport.set(epoch,(pendingByViewport.get(epoch)||0)+1);
           const snapshot={...runConfig,viewportEpoch:epoch};
           handleBlock(item,snapshot).then(result=>{
@@ -641,7 +615,6 @@ function init() {
             pending--;
             const remaining=(pendingByViewport.get(epoch)||1)-1;
             if(remaining)pendingByViewport.set(epoch,remaining);else pendingByViewport.delete(epoch);
-            if(generation===STATE.cancelVersion)STATE.activeWorkers=pending;
             run.pump();
           });
         }
@@ -680,7 +653,6 @@ function init() {
     }
   }
 
-  // ---------- 单段处理 ----------
   /**
    * 单元执行器：防重复登记 → 请求编码文字 → 校验批次/原文快照 → 还原保护标记 → 插入。
    * 原译文相同只记录跳过；混合区间仅包装连续源节点，不移动旁边的输入控件。
@@ -824,8 +796,8 @@ function init() {
     const compact = el.matches && (el.matches(FORM_SELECTOR + ", td, th") || !!el.closest("form, " + DIALOG_SELECTOR));
     if (compact) wrapper.classList.add("bt-translation-compact");
     // 继承所在区域的文字颜色，兼容同一页面上的浅色和深色卡片。
-    wrapper.style.color = "inherit";
-    wrapper.style.background = "transparent";
+    // 预览与真实译文共用同一映射，避免内联颜色覆盖用户保存的配置。
+    window.BT_TRANSLATION_STYLE.apply(wrapper,STATE.translationStyle);
     // 按钮等紧凑控件采用行内译文，尽量减少额外高度并保留原始文字。
     if (el.matches && (el.matches("button, [role='button'], summary, [role='tab'], [role='menuitem'], [role='option']") ||
         el.closest("button, [role='button'], summary, [role='tab'], [role='menuitem'], [role='option']"))) wrapper.classList.add("bt-translation-control");
@@ -852,7 +824,7 @@ function init() {
    * 本操作只改展示，不更换源快照、重新采集或触发网络翻译。
    */
   function applyMode() {
-    for (const [el, entry] of translatedElements) {
+    for (const entry of translatedElements.values()) {
       if (!entry.wrapper.isConnected) continue;
       applyEntryMode(entry);
     }
@@ -869,7 +841,7 @@ function init() {
     const generation=STATE.cancelVersion;
     // 网络请求期间选区可能消失，提前保存位置以便在原选区旁展示结果。
     const anchorRect = getSelectionAnchorRect();
-    await loadConfig();
+    await reloadConfig();
     if(generation!==STATE.cancelVersion)return;
     try {
       const res = await requestTranslate(text.trim(),{...STATE,priority:0,runToken:requestToken,retryManual:true,retryToken:String(Date.now())});
@@ -963,16 +935,14 @@ function init() {
     visibleTranslateTimer=null;initialTranslateTimer=null;
     pendingViewport=false;dirtyRoots.clear();wholePageScan=true;
     pendingRecords=new WeakSet();hoverPendingRecords=new WeakSet();hoverGestureRecords=new WeakMap();
-    STATE.cancelRequested=false;STATE.translating=false;STATE.backgroundTranslating=false;STATE.activeWorkers=0;
+    STATE.cancelRequested=false;STATE.translating=false;STATE.backgroundTranslating=false;
     hidePageNotice();
     STATE.lastError="";STATE.failedCount=0;STATE.languageNoticeCount=0;
     clearTranslations();setFabBusy(false);setFabTranslated(false);
     if(panelModalEl)refreshPanelModal();
   }
 
-  // ============================================================
   // 悬停段落翻译
-  // ============================================================
   // 每个节点只记录正在进行的悬停请求；结束后释放，避免失败把该段永久锁住。
   let hoverPendingRecords = new WeakSet();
   // 只用于同一次按键的去重，翻译/还原的决定仍依据页面上的实际译文。
@@ -1187,9 +1157,6 @@ function init() {
     window.addEventListener("blur", () => { pointer = null; shiftPressed = false; });
   }
 
-  // ============================================================
-  // 悬浮球 + 小图标 + 控制面板
-  // ============================================================
   let fabWrap = null;
   let fabEl = null;
   let checkBadgeEl = null;
@@ -1230,7 +1197,7 @@ function init() {
 
     chrome.storage.sync.get(["fabPos"], (cfg) => {
       const pos = cfg.fabPos;
-      // 旧版位置不再恢复，使本次更新采用上方默认位置；之后继续记住用户拖动位置。
+      // 只恢复 layoutVersion=2 的坐标，其他旧位置使用 CSS 默认值。
       if (pos && pos.layoutVersion === 2 && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
         fabWrap.style.left = Math.max(8, Math.min(pos.left, window.innerWidth - 40)) + "px";
         fabWrap.style.top = Math.max(48, Math.min(pos.top, window.innerHeight - 40)) + "px";
@@ -1398,9 +1365,7 @@ function init() {
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
   }
 
-  // ============================================================
   // 控制面板
-  // ============================================================
   /**
    * 确保当前页面存在一个控制面板；重复普通打开请求直接返回，不会反向关闭。
    * 创建静态模板后挂载、绑定拖动和表单事件，再按 STATE 填充选项与显示状态。
@@ -1492,6 +1457,7 @@ function init() {
           <button class="bt-modal-settings" id="btModalSettings">
             <span>⚙</span> 更多设置
           </button>
+          <a class="bt-modal-settings" id="btModalFeedback" href="https://github.com/cherubr/yezhiyi-translator/issues/new" target="_blank" rel="noopener noreferrer" title="前往 GitHub 提交问题">问题反馈 ↗</a>
         </div>
       </div>
     `;
@@ -1846,9 +1812,7 @@ function init() {
     if (fabEl) fabEl.title = translated ? "点击取消翻译" : "点击翻译";
   }
 
-  // ============================================================
   // 划词弹窗
-  // ============================================================
   let popupEl = null;
   /**
    * 创建选中文字的原译文弹层，锚点优先选区矩形，无锚点时在视口中部定位。
@@ -1906,9 +1870,7 @@ function init() {
     );
   }
 
-  // ============================================================
   // 启动
-  // ============================================================
   let visibleTranslateTimer = null;
   let initialTranslateTimer = null;
   let pendingViewport = false;
@@ -2090,7 +2052,7 @@ function init() {
    * 启动定时器执行时再次检查偏好与暂停；另有 1.5 秒悬浮球兜底，createFab 自身保证幂等。
    */
   async function bootstrap() {
-    try { await loadConfig(); } catch (error) {
+    try { await reloadConfig(); } catch (error) {
       STATE.autoTranslate = false;
       STATE.lastError = "读取配置失败，请打开设置检查：" + error.message;
     }

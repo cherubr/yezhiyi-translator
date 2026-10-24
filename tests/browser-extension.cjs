@@ -1,4 +1,9 @@
-// 完整扩展回归：用独立测试配置加载扩展，并用本地模拟接口验证后台与页面协作。
+/**
+ * 测试模块：完整扩展集成验收。
+ * 隔离方式：独立浏览器资料，加载真实 Manifest，并将厂商传输转到本地服务。
+ * 验收范围：后台消息、权限、设置同步、样式配置、反馈布局、取消/切换及页面生命周期；不消耗真实 API 额度。
+ * 执行：node tests/browser-extension.cjs
+ */
 const {chromium}=require('playwright');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
 // 可指定已解压的白名单包，验证真正交付的运行文件。
@@ -72,6 +77,9 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    const page=await context.newPage();page.on('console',msg=>{if(msg.text().startsWith('[页知译]')||msg.text().startsWith('[双语翻译]'))pluginLogs.push(msg.text());if(['info','debug'].includes(msg.type())&&msg.text().startsWith('[页知译][诊断]'))diagnosticLogs.push(msg.text());if(msg.type()==='error'||msg.type()==='warn')console.log('EXTENSION:',msg.text());});page.on('pageerror',error=>console.log('PAGE:',error.message));await page.goto(origin+'/fixture');
    await page.waitForSelector('.bt-fab-wrap');
    assert.equal(calls.length,0,'fresh page does not automatically transmit text');
+   /**
+    * 经真实后台向目标网页发送控制消息，复用正式扩展的页面消息入口。
+    */
    async function send(action,extra={}){
      await worker.evaluate(async({url,action,extra})=>{
        const tabs=await chrome.tabs.query({url});
@@ -130,6 +138,50 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    await settings.goto('chrome-extension://'+id+'/settings/settings.html');
    await settings.waitForFunction(expected=>document.querySelector('#version')?.textContent==='v'+expected,version);
    assert.equal(await settings.locator('#aboutVersion').textContent(),version);
+   // 设置页真实操作 → 同步存储 → 已有网页译文：只更新外观，不能增加任何翻译请求。
+   await settings.locator('.nav-item[data-tab="display"]').click();
+   const styleCallsBefore={ai:calls.length,google:await worker.evaluate(()=>googleCalls.length)};
+   const originalFont=await page.locator('#first .bt-original-text').evaluate(el=>getComputedStyle(el).fontSize);
+   await settings.locator('#translationFontFamily').selectOption('serif');
+   await settings.locator('#translationFontSize').selectOption('120');
+   await settings.locator('#translationFontWeight').selectOption('bold');
+   await settings.locator('#translationLineHeight').selectOption('1.8');
+   await settings.locator('#translationParagraphSpacing').selectOption('0.6');
+   await settings.locator('#translationColorMode').selectOption('custom');
+   await settings.locator('#translationColor').evaluate(el=>{el.value='#cc3300';el.dispatchEvent(new Event('change',{bubbles:true}));});
+   await settings.waitForFunction(()=>getComputedStyle(document.querySelector('#translationStylePreview')).color==='rgb(204, 51, 0)');
+   await page.waitForFunction(()=>getComputedStyle(document.querySelector('#first .bt-translation-text')).color==='rgb(204, 51, 0)');
+   const styled=await page.locator('#first .bt-translation-text').evaluate(el=>{const s=getComputedStyle(el);return {size:parseFloat(s.fontSize),weight:s.fontWeight,line:parseFloat(s.lineHeight),top:parseFloat(s.marginTop),font:s.fontFamily};});
+   assert.ok(Math.abs(styled.size-parseFloat(originalFont)*1.2)<.1);
+   assert.equal(styled.weight,'700');assert.ok(styled.font.includes('SimSun'));
+   assert.ok(Math.abs(styled.line-styled.size*1.8)<.1);assert.ok(Math.abs(styled.top-styled.size*.6)<.1);
+   assert.equal(await page.locator('#first .bt-original-text').evaluate(el=>getComputedStyle(el).fontSize),originalFont,'原文字号不能被修改');
+   assert.equal(calls.length,styleCallsBefore.ai);assert.equal(await worker.evaluate(()=>googleCalls.length),styleCallsBefore.google);
+   // 新打开的设置页读取保存值，证明配置不只存在于本次预览的 DOM 中。
+   const secondSettings=await context.newPage();await secondSettings.goto('chrome-extension://'+id+'/settings/settings.html');
+   await secondSettings.waitForFunction(()=>document.querySelector('#translationFontSize')?.value==='120');
+   assert.equal(await secondSettings.locator('#translationColor').inputValue(),'#cc3300');await secondSettings.close();
+   // 面板左设置、右反馈；反馈链接没有附带网页原文、选区或页面 URL。
+   await send('OPEN_PANEL');
+   const settingsButton=await page.locator('#btModalSettings').boundingBox(),feedbackButton=await page.locator('#btModalFeedback').boundingBox();
+   assert.ok(settingsButton.x<feedbackButton.x);
+   assert.equal(await page.locator('#btModalFeedback').getAttribute('href'),'https://github.com/cherubr/yezhiyi-translator/issues/new');
+   assert.equal(await page.locator('#btModalFeedback').getAttribute('target'),'_blank');
+   assert.match(await page.locator('#btModalFeedback').getAttribute('rel'),/noopener/);
+   // 后续动态译文也读取最新样式；页面返回可见后才继续补翻。
+   await page.bringToFront();
+   await page.evaluate(()=>{const p=document.createElement('p');p.id='styleNewParagraph';p.textContent='New paragraph for style acceptance';document.body.append(p);});
+   await page.waitForFunction(()=>document.querySelector('#styleNewParagraph .bt-translation-text'));
+   assert.equal(await page.locator('#styleNewParagraph .bt-translation-text').evaluate(el=>getComputedStyle(el).color),'rgb(204, 51, 0)');
+   // 清理本用例新增的段落，后续自动翻译用例仍以原始两段正文验收。
+   await page.locator('#styleNewParagraph').evaluate(el=>el.remove());
+   // 只恢复样式，服务配置/模式不变，原文和代码节点仍留在原处。
+   await settings.bringToFront();await settings.locator('#resetTranslationStyle').click();
+   await page.waitForFunction(()=>document.querySelector('#first .bt-translation-text')?.style.getPropertyValue('--bt-translation-color')==='inherit');
+   assert.equal(await settings.locator('#translationFontSize').inputValue(),'100');
+   assert.equal(await settings.locator('#translationColor').isDisabled(),true);
+   await settings.locator('.nav-item[data-tab="general"]').click();
+   console.log('PASS Chromium extension: 样式即时预览/跨页同步/持久化/已有与新增译文应用/原文保持/无重复请求/恢复默认/面板设置与反馈布局');
    assert.equal(await settings.locator('#from option').count(),49);
    assert.equal(await settings.locator('#to option').count(),49);
    assert.equal(await settings.locator('#to option[value="ms"]').textContent(),'马来语');

@@ -1,10 +1,13 @@
-// 翻译单元：先划分正文/控件/混合区域，再保护行内原文；不依赖网站域名或翻译引擎。
 (function(global) {
   "use strict";
+  // 具有段落语义的正文候选，避免把句内链接单独提交。
   const BLOCK_TEXT="p, h1, h2, h3, h4, h5, h6, li, blockquote, td, th, figcaption, dt, dd";
+  // 可处理文字的控件外壳；输入区域本身由 INPUTS 划为边界。
   const CONTROLS="label, legend, button, summary, [role='button'], [role='tab'], [role='menuitem'], [role='option']";
+  // 输入和编辑边界，整页采集不读取其中填写的内容。
   const INPUTS="input, textarea, select, [contenteditable]:not([contenteditable='false'])";
   const HIDDEN="[hidden], [aria-hidden='true']";
+  // 保留原文的行内内容，以保护标记参与整句翻译，本地保存真实值。
   const OPAQUE="code, [translate='no'], .notranslate";
   const BLOCK_DISPLAY=/^(block|flex|grid|list-item|flow-root|table($|-)|inline-flex|inline-grid)/;
 
@@ -13,7 +16,9 @@
   const MARKER_BODY=MARKER_GAP+"[YyＹｙ]"+MARKER_GAP+"[ZzＺｚ]"+MARKER_GAP+"[YyＹｙ][^⟦⟧\\[\\]【】［］]{1,80}";
   const MARKER_PATTERN=new RegExp("⟦"+MARKER_BODY+"⟧|\\[\\["+MARKER_BODY+"\\]\\]|\\["+MARKER_BODY+"\\]|【"+MARKER_BODY+"】|［"+MARKER_BODY+"］","g");
 
-  /** 仅规范化标记内部的宽字符、空白及不可见分隔符，不改变译文正文和本地代码。 */
+  /**
+   * 仅规范化标记内部的宽字符、空白及不可见分隔符，不改变译文正文和本地代码。
+   */
   function markerInfo(raw) {
     const inner=raw.startsWith("[[")?raw.slice(2,-2):raw.slice(1,-1);
     const normalized=inner.normalize("NFKC").replace(/[\s\u200B-\u200D\u2060\uFEFF]/g,"").toUpperCase();
@@ -22,7 +27,9 @@
     return /^YZY\d+:/.test(normalized)?{normalized,invalid:true}:null;
   }
 
-  /** 保护映射仅留在页面。接口收到占位标记，不收到代码/禁译文字；原始 DOM 不参与编码。 */
+  /**
+   * 保护映射仅留在页面。接口收到占位标记，不收到代码/禁译文字；原始 DOM 不参与编码。
+   */
   function encode(segments) {
     const plain=segments.map(item=>item.text).join("");
     // 将格式变体也计入命名空间避让，避免把原文中已有的示例标记误认成内部标记。
@@ -70,17 +77,31 @@
     return result;
   }
 
-  /** 后台分块不可切断保护标记；索引使用 UTF-16 偏移，与字符串 slice 一致。 */
+  /**
+   * 后台分块不可切断保护标记；索引使用 UTF-16 偏移，与字符串 slice 一致。
+   */
   function protectedRanges(text) {
     return [...text.matchAll(/⟦YZY\d+:\d+⟧/g)].map(match=>({start:match.index,end:match.index+match[0].length}));
   }
 
+  /**
+   * 返回文字片段覆盖的节点；整元素单元返回 null。
+   * @param {Object} unit 采集到的翻译单元。
+   * @returns {Node[]|null} 连续节点集合。
+   */
   function nodesOf(unit){return unit.nodes||(unit.node?[unit.node]:null);}
-  /** 当前快照用原始 textContent 校验，和含换行/保护标记的接口文字分别保存。 */
+  /**
+   * 当前快照用原始 textContent 校验，和含换行/保护标记的接口文字分别保存。
+   */
   function sourceOf(unit) {
     const nodes=nodesOf(unit);
     return (nodes?nodes.map(node=>node.textContent||"").join(""):unit.el.textContent||"").trim();
   }
+  /**
+   * 检查容器连接、片段归属和相邻顺序，再比较原文快照，阻止迟到译文插入已变化页面。
+   * @param {Object} unit 提交请求前保存的单元。
+   * @returns {boolean} 当前 DOM 是否仍对应原始请求。
+   */
   function isCurrent(unit) {
     if(!unit.el.isConnected)return false;
     const nodes=nodesOf(unit);
@@ -94,6 +115,12 @@
    * 整页、局部补翻和 Shift 都通过同一个入口；状态兼容判断由内容脚本回调提供。
    */
   function createCollector(options) {
+    /**
+     * 扫描整页或指定根节点，按正文与控件边界形成连续文字单元，并按实际覆盖节点去重。
+     * @param {Element[]} roots 可选局部区域，未提供时扫描文档候选。
+     * @param {Object} [scan={}] 由调用方解释的单段及处理状态过滤选项。
+     * @returns {Object[]} 带原文快照、显示类型、保护映射及可选节点区间的翻译单元。
+     */
     function collect(roots,scan={}) {
       const styles=new WeakMap(),inlineCache=new WeakMap(),candidates=new Set();
       const excluded=options.excluded(scan),doc=options.getDocument?options.getDocument():global.document;
@@ -112,7 +139,9 @@
         addRoot(root?.closest?.(BLOCK_TEXT)||root);
       }
 
-      /** null 表示边界。保护片段不计入可翻译正文，纯代码区域不会产生请求。 */
+      /**
+       * null 表示边界。保护片段不计入可翻译正文，纯代码区域不会产生请求。
+       */
       function inline(el,depth=0) {
         if(depth>64)return null;
         if(inlineCache.has(el))return inlineCache.get(el);

@@ -1,6 +1,3 @@
-// ============================================================
-// md5.js —— 完整 MD5 实现（UTF-8 安全，同步版本）
-// ============================================================
 (function (global) {
   "use strict";
 
@@ -173,7 +170,9 @@
    */
   function rawMD5(s) { return rstrMD5(str2rstrUTF8(s)); }
   /**
-   * 返回输入字符串的十六进制 MD5 摘要，供百度接口签名使用。
+   * 生成 UTF-8 文本的十六进制 MD5；用于百度接口签名，不用于密码加密。
+   * @param {string} s 原始文字。
+   * @returns {string} 十六进制摘要。
    */
   function hexMD5(s) { return rstr2hex(rawMD5(s)); }
 

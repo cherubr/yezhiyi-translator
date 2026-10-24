@@ -1,4 +1,9 @@
-// 权限回归：验证接口地址解析、用户点击授权、拒绝授权阻断及后台访问检查。
+/**
+ * 测试模块：自定义接口授权。
+ * 隔离方式：VM 中模拟 permissions 和设置页 DOM。
+ * 验收范围：地址解析、用户授权/拒绝、后台权限阻断；不代替真实授权弹框验收。
+ * 执行：node tests/permissions.cjs
+ */
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
@@ -47,7 +52,9 @@ const access = window.BT_AI_ACCESS;
     readProviderInputs:()=>({key:'test-key',base:'https://proxy.example.test/v1',model:'test-model'})
   });
   const settings=fs.readFileSync(path.join(root,'settings/settings.js'),'utf8');
-  vm.runInContext(settings.slice(settings.indexOf('async function runTest('),settings.indexOf('// ---------- 导航 ----------')),context);
+  const testStart=settings.indexOf('async function runTest('),testEnd=settings.indexOf('function bindNav(');
+  assert.ok(testStart>=0&&testEnd>testStart,'设置页测试方法及边界必须存在');
+  vm.runInContext(settings.slice(testStart,testEnd),context);
   const btn={disabled:false};
   await context.runTest('ai','result',btn);
   assert.equal(sent.length,0,'denied access does not send translation');
@@ -62,7 +69,9 @@ const access = window.BT_AI_ACCESS;
   window.BT_STORAGE={async get(){return {aiProvider:'custom',aiKeys:{custom:{key:'test',base:'https://proxy.example.test/v1'}}};}};
   context.fetchWithTimeout=async()=>{fetched++;return {ok:true,async json(){return {choices:[{message:{content:'译文'}}]};}};};
   const worker=fs.readFileSync(path.join(root,'background/service-worker.js'),'utf8');
-  vm.runInContext(worker.slice(worker.indexOf('async function translateAI('),worker.indexOf('// 为网络请求设置超时')),context);
+  const aiStart=worker.indexOf('async function translateAI('),aiEnd=worker.indexOf('async function fetchWithTimeout(');
+  assert.ok(aiStart>=0&&aiEnd>aiStart,'AI 请求方法及网络封装边界必须存在');
+  vm.runInContext(worker.slice(aiStart,aiEnd),context);
   allowed=false;
   await assert.rejects(context.translateAI('text','en','zh-CN'),/尚未授权/);
   assert.equal(fetched,0,'background does not fetch without permission');

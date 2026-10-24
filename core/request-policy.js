@@ -1,7 +1,7 @@
-// 请求规则的唯一默认值来源；参数是扩展策略，不是厂商账号额度。
 (function(global) {
   "use strict";
   const VERSION = 1;
+  // 服务默认预算：qps 为每秒启动上限，maxConcurrent 为在途上限，maxChars/maxBytes 为单片预算。
   const DEFAULTS = Object.freeze({
     google: Object.freeze({qps:6,maxConcurrent:4,maxChars:1200,maxBytes:1800}),
     baidu: Object.freeze({qps:6,maxConcurrent:4,maxChars:900,maxBytes:2700}),
@@ -9,25 +9,28 @@
     // 未知兼容模型没有统一 Token 查询协议，采用保守文本预算，不冒充精确分词。
     ai: Object.freeze({qps:6,maxConcurrent:4,maxChars:1200,maxBytes:1800})
   });
+  // 系统保护边界：页面投递、分片生产、队列容量、文字长度、尝试次数及退避时间。
   const LIMITS = Object.freeze({maxQps:100,maxConcurrent:32,pageTasks:64,partFeeders:4,
     queue:512,maxTextLength:100000,maxAttempts:3,retryBaseMs:1000,retryMaxMs:30000,cooldownMs:30000});
-  const RULES = Object.freeze([
-    ["TR-01","请求额度","每秒启动次数与同时在途数量共同限制；排队等待不占在途名额。"],
-    ["TR-02","服务隔离","同一接口账号共同调度；不同接口账号分开，AI 按厂商分别配置。"],
-    ["TR-03","服务分块","按字符与 UTF-8 字节双重预算分块，保持原文完整；未知 AI 模型不宣称精确 Token 计数。"],
-    ["TR-04","有限重试","只有临时网络、超时、限流及服务端错误可重试；每个分片最多三次尝试，含首次。"],
-    ["TR-05","限流等待","遵守 Retry-After；没有提示时指数退避加随机抖动，同账号其他请求共同等待。"],
-    ["TR-06","优先级","Shift 与选中文字优先，其次最新视口；同优先级在页面间轮转，不突破服务限额。"],
-    ["TR-07","离开暂停","停止不可见页面的新网络请求；已发送请求完成并保留结果，返回继续。"],
-    ["TR-08","取消隔离","手动取消还原原文并停止本页会话；返回不恢复，Shift 不解除整页取消。"],
-    ["TR-09","结果校验","切换配置、原文变化或旧任务返回时校验代次，禁止插入过期译文。"],
-    ["TR-10","缓存与配置","复用近期的相同翻译以减少重复调用；请求参数保存在本机，恢复推荐不清除连接信息。"]
-  ]);
+  /**
+   * 生成服务配置键；AI 按具体厂商隔离设置。
+   * @returns {string} 普通引擎名或 ai:厂商。
+   */
   function id(engine,provider) { return engine==="ai"?"ai:"+(provider||"openai"):engine; }
+  /**
+   * 接受范围内整数，否则使用默认值，避免异常存储值破坏调度。
+   * @returns {number} 校验后的整数。
+   */
   function integer(value,min,max,fallback) {
     const n=Number(value);return Number.isInteger(n)&&n>=min&&n<=max?n:fallback;
   }
-  /** 归一化单服务配置；异常存储值回到保守默认值，表单则应明确提示错误。 */
+  /**
+   * 合并指定服务的推荐或手动策略；非法手动值回退到该服务默认值。
+   * @param {string} engine 翻译引擎。
+   * @param {string} provider AI 厂商。
+   * @param {Object} [policies={}] 按服务键保存的策略。
+   * @returns {Object} 生效模式、QPS、同时请求上限及固定分块预算。
+   */
   function resolve(engine,provider,policies={}) {
     const defaults=DEFAULTS[engine]||DEFAULTS.google, saved=policies[id(engine,provider)]||{};
     const manual=saved.mode==="manual";
@@ -35,13 +38,23 @@
       qps:manual?integer(saved.qps,1,LIMITS.maxQps,defaults.qps):defaults.qps,
       maxConcurrent:manual?integer(saved.maxConcurrent,1,LIMITS.maxConcurrent,defaults.maxConcurrent):defaults.maxConcurrent};
   }
+  /**
+   * 检查手动 QPS 和同时请求上限；推荐模式不要求填写数值。
+   * @param {Object} value 请求策略表单草稿。
+   * @returns {string} 校验错误说明，空字符串表示通过。
+   */
   function validate(value) {
     if(value.mode!=="manual")return "";
     if(!Number.isInteger(Number(value.qps))||Number(value.qps)<1||Number(value.qps)>LIMITS.maxQps)return "每秒请求数请输入 1～100 的整数";
     if(!Number.isInteger(Number(value.maxConcurrent))||Number(value.maxConcurrent)<1||Number(value.maxConcurrent)>LIMITS.maxConcurrent)return "同时请求上限请输入 1～32 的整数";
     return "";
   }
-  /** 在词句边界附近分块；按 Unicode 码点计字符，并用 UTF-8 字节预算保护接口。 */
+  /**
+   * 按 Unicode 码点数和 UTF-8 字节双重预算分块，优先词句边界，禁止切断保护标记。
+   * @param {string} text 完整任务文字。
+   * @param {string} engine 用于选择单片预算的引擎。
+   * @returns {string[]} 保持原文顺序的分片。
+   */
   function split(text,engine) {
     const limits=DEFAULTS[engine]||DEFAULTS.google, points=Array.from(text), chunks=[];
     const encoder=new TextEncoder(),offsets=[0];
@@ -70,7 +83,9 @@
     }
     return chunks;
   }
-  /** 调度按账号而不是模型分组；凭据只用于内存索引，不得记录此返回值。 */
+  /**
+   * 调度按账号而不是模型分组；凭据只用于内存索引，不得记录此返回值。
+   */
   function quotaScope(r) {
     if(r.engine==="baidu")return JSON.stringify(["baidu",r.baiduConfig?.baiduAppId||""]);
     if(r.engine==="ai") {
@@ -80,10 +95,17 @@
     }
     return r.engine;
   }
-  /** 临时故障采用结构化错误，避免靠错误文案猜测是否重试。 */
+  /**
+   * 临时故障采用结构化错误，避免靠错误文案猜测是否重试。
+   */
   function error(message,details={}) {
     const result=new Error(message);Object.assign(result,details);return result;
   }
+  /**
+   * 将 Retry-After 秒数或 HTTP 日期转换成剩余毫秒数。
+   * @param {Response} response 服务响应。
+   * @returns {number} 非负等待时间，缺失或无法解析时为 0。
+   */
   function retryAfter(response) {
     const raw=response?.headers?.get?.("Retry-After");
     if(!raw)return 0;
@@ -91,6 +113,12 @@
     if(Number.isFinite(seconds)&&seconds>=0)return Math.min(seconds*1000,Number.MAX_SAFE_INTEGER);
     const until=Date.parse(raw);return Number.isFinite(until)?Math.max(0,until-Date.now()):0;
   }
+  /**
+   * 根据 HTTP 状态生成统一错误分类，保留是否可重试及 Retry-After。
+   * @param {string} service 提示中使用的服务名。
+   * @param {Response} response HTTP 响应。
+   * @returns {Error} 带 code、status、retryable、permanent 等字段的异常。
+   */
   function httpError(service,response) {
     const status=response.status;
     const code=status===429?"RATE_LIMITED":status===401||status===403?"AUTH_REQUIRED":status>=500?"SERVICE_UNAVAILABLE":"SERVICE_REJECTED";
@@ -99,7 +127,9 @@
       retryAfterMs:retryAfter(response),permanent:status===401||status===403
     });
   }
-  /** 响应头与正文共用截止时间；取消可中止正文，不输出响应原文。 */
+  /**
+   * 响应头与正文共用截止时间；取消可中止正文，不输出响应原文。
+   */
   async function readJson(response,signal) {
     if(signal?.aborted)throw Object.assign(new Error("翻译已取消"),{name:"AbortError"});
     let timer,onAbort;
@@ -119,5 +149,5 @@
     }
     finally{clearTimeout(timer);signal?.removeEventListener("abort",onAbort);}
   }
-  global.BT_REQUEST_POLICY={VERSION,DEFAULTS,LIMITS,RULES,id,resolve,validate,split,quotaScope,error,retryAfter,httpError,readJson};
+  global.BT_REQUEST_POLICY={VERSION,DEFAULTS,LIMITS,id,resolve,validate,split,quotaScope,error,retryAfter,httpError,readJson};
 })(typeof self!=="undefined"?self:globalThis);

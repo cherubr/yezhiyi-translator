@@ -1,4 +1,9 @@
-// 语言回归：验证共享目录、浏览器语言解析、百度代码映射和 MyMemory 检测失败提示。
+/**
+ * 测试模块：语言目录与引擎映射。
+ * 隔离方式：VM 中模拟语言检测和 HTTP 响应。
+ * 验收范围：百度语码、MyMemory 自动检测及无法可靠识别时的提示。
+ * 执行：node tests/languages.cjs
+ */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
 let detection={isReliable:true,languages:[{language:'en',percentage:98}]},url;
 const context={URL,URLSearchParams,TextEncoder,setTimeout,clearTimeout,console,chrome:{i18n:{async detectLanguage(){return detection;}}}};
