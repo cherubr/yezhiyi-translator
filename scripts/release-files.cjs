@@ -1,9 +1,10 @@
-// 发布副本处理：白名单复制后强制关闭日志；源码开发配置不受影响。
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const RELEASE_FILES=Object.freeze(['manifest.json','background','content','core','settings','assets','PRIVACY.md']);
 const CONFIG_PATTERN=/const LOG_CONFIG = Object\.freeze\(\{[\s\S]*?\}\);/g;
 
-/** 只替换唯一的日志配置声明；找不到或出现多处时停止打包，不能悄悄发布开发日志。 */
+/**
+ * 只替换唯一的日志配置声明；找不到或出现多处时停止打包，不能悄悄发布开发日志。
+ */
 function productionConstants(source){
   if([...source.matchAll(CONFIG_PATTERN)].length!==1)throw Error('无法唯一定位日志配置，拒绝生成发布包');
   const newline=source.includes('\r\n')?'\r\n':'\n';
@@ -11,7 +12,9 @@ function productionConstants(source){
     '    environment: "production",','    level: "off"','  });'].join(newline));
 }
 
-/** 执行配置模块并实际调用各级日志，验证生产配置、不可启用与零控制台输出。 */
+/**
+ * 执行配置模块并实际调用各级日志，验证生产配置、不可启用与零控制台输出。
+ */
 function verifyReleaseLogging(source){
   const printed=[],context={console:Object.fromEntries(['log','debug','info','warn','error'].map(level=>[level,(...args)=>printed.push([level,...args])]))};
   context.self=context;context.window=context;vm.createContext(context);
@@ -26,7 +29,9 @@ function verifyReleaseLogging(source){
   if(printed.length)throw Error('发布包仍输出控制台日志');
 }
 
-/** 复制运行白名单，在副本中关闭日志，并验证本轮生成的配置。 */
+/**
+ * 复制运行白名单，在副本中关闭日志，并验证本轮生成的配置。
+ */
 function prepareRelease(root,stage){
   for(const file of RELEASE_FILES)fs.cpSync(path.join(root,file),path.join(stage,file),{recursive:true});
   const constants=path.join(stage,'core/constants.js');

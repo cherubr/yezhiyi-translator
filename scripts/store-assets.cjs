@@ -1,8 +1,9 @@
-// 从现有 SVG 和真实扩展界面导出商店图片；使用独立临时配置，不读取个人资料或访问外部翻译接口。
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
 const {chromium}=require('playwright');
 const root=path.resolve(__dirname,'..'),out=path.join(root,'.local','store-assets');
-/** 导出不同尺寸的品牌图标、宣传图及无个人配置的设置页截图。 */
+/**
+ * 导出不同尺寸的品牌图标、宣传图及无个人配置的设置页截图。
+ */
 async function main(){
  fs.mkdirSync(out,{recursive:true});
  const profile=fs.mkdtempSync(path.join(os.tmpdir(),'yezhiyi-assets-'));

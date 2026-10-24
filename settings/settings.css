@@ -1,6 +1,4 @@
-/* ============================================================
-   页知译 · 网页双语翻译 - 设置页样式
-   ============================================================ */
+
 
 * {
   box-sizing: border-box;
@@ -27,7 +25,7 @@ body {
   width: 100%;
 }
 
-/* ===== 左侧导航 ===== */
+/* 左侧导航 */
 .sidebar {
   width: 240px;
   flex: 0 0 240px;
@@ -118,7 +116,7 @@ body {
   border-top: 1px solid #f0f0f0;
 }
 
-/* ===== 右侧内容区 ===== */
+/* 右侧内容区 */
 .content {
   flex: 1;
   min-width: 0;
@@ -235,9 +233,7 @@ h3 {
   color: #22a06b;
 }
 
-/* ============================================================
-   服务列表
-   ============================================================ */
+/* 服务列表 */
 .service-grid {
   display: flex;
   flex-direction: column;
@@ -306,9 +302,7 @@ h3 {
   flex-shrink: 0;
 }
 
-/* ============================================================
-   服务详情
-   ============================================================ */
+/* 服务详情 */
 .back-btn {
   display: inline-flex;
   align-items: center;
@@ -406,9 +400,7 @@ h3 {
   color: #d64545;
 }
 
-/* ============================================================
-   开关行
-   ============================================================ */
+/* 开关行 */
 .switch-row {
   display: flex;
   justify-content: space-between;
@@ -488,9 +480,7 @@ h3 {
   transform: translateX(18px);
 }
 
-/* ============================================================
-   分段控件
-   ============================================================ */
+/* 分段控件 */
 .seg {
   display: inline-flex;
   background: #eef0f3;
@@ -523,25 +513,9 @@ h3 {
   border-radius: 8px;
   padding: 16px;
 }
-/* 与网页中的无装饰双语译文保持一致：字体、字号和颜色跟随原文。 */
-.bt-preview {
-  color: inherit;
-  font-family: inherit;
-  font-size: 1em;
-  font-weight: inherit;
-  font-style: normal;
-  opacity: 1;
-  text-shadow: none;
-  margin: 0.4em 0 0.6em;
-  background: transparent;
-  padding: 0;
-  border: 0;
-  line-height: inherit;
-}
+/* 预览使用 core/translation-style.css，避免与网页实际译文维护两套样式。 */
 
-/* ============================================================
-   关于页
-   ============================================================ */
+/* 关于页 */
 .about-row {
   display: flex;
   justify-content: space-between;
@@ -570,9 +544,7 @@ h3 {
   color: #007acc;
 }
 
-/* ============================================================
-   保存提示 Toast
-   ============================================================ */
+/* 保存提示 Toast */
 #save-tip {
   position: fixed;
   top: 24px;
@@ -598,9 +570,7 @@ h3 {
   transform: translateX(-50%) translateY(0);
 }
 
-/* ============================================================
-   AI 配置
-   ============================================================ */
+/* AI 配置 */
 .field select option.bt-unconfigured {
   color: #aaa;
 }
@@ -669,50 +639,6 @@ h3 {
   color: #007acc;
 }
 
-.current-using-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  background: linear-gradient(135deg, #e6f2fb, #f0f7ff);
-  border: 1px solid #cfe4f3;
-  border-radius: 10px;
-  margin-bottom: 16px;
-}
-.current-using-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: #007acc;
-}
-.current-using-icon {
-  font-size: 16px;
-}
-.current-using-text b {
-  color: #005f9e;
-  font-weight: 700;
-}
-.current-using-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 7px 14px;
-  background: #007acc;
-  color: #fff;
-  border: none;
-  border-radius: 7px;
-  cursor: pointer;
-  font-size: 12px;
-  font-family: inherit;
-  font-weight: 500;
-  transition: 0.15s;
-  white-space: nowrap;
-}
-.current-using-btn:hover {
-  background: #005f9e;
-}
 
 .provider-badge {
   display: inline-block;
@@ -732,9 +658,7 @@ h3 {
   color: #22a06b;
 }
 
-/* ============================================================
-   行为偏好
-   ============================================================ */
+/* 行为偏好 */
 .behavior-header {
   display: flex;
   justify-content: space-between;
@@ -789,9 +713,7 @@ h3 {
   margin-bottom: 12px;
 }
 
-/* ============================================================
-   快捷键列表
-   ============================================================ */
+/* 快捷键列表 */
 .shortcut-list {
   margin-top: 10px;
 }
@@ -960,9 +882,7 @@ h3 {
   text-align: right;
 }
 
-/* ============================================================
-   暗色模式
-   ============================================================ */
+/* 暗色模式 */
 @media (prefers-color-scheme: dark) {
   body {
     background: #1a1a1a;
@@ -1100,22 +1020,6 @@ h3 {
   .ai-section-title::before {
     background: #00a8e8;
   }
-  .current-using-bar {
-    background: linear-gradient(135deg, #1e2a35, #1e3a4d);
-    border-color: #2a4a5e;
-  }
-  .current-using-info {
-    color: #00a8e8;
-  }
-  .current-using-text b {
-    color: #4db8ff;
-  }
-  .current-using-btn {
-    background: #00a8e8;
-  }
-  .current-using-btn:hover {
-    background: #0090c8;
-  }
   .provider-badge-using {
     background: #00a8e8;
     color: #fff;
@@ -1246,3 +1150,12 @@ button.service-card { width:100%;font:inherit;text-align:left;color:inherit; }
 .service-connection-actions .test-result { flex-basis:100%;overflow-wrap:anywhere; }
 .service-connection-actions .btn-use-service:not(:disabled) { background:#007acc;color:#fff;border-color:#007acc; }
 .service-connection-actions .btn-use-service:not(:disabled):hover { background:#0069b0; }
+
+/* 样式编辑控件布局；预览外观由共享 translation-style.css 定义。 */
+.translation-style-controls { margin-bottom: 22px; }
+.translation-style-controls > .hint { margin-top: 0; margin-bottom: 12px; }
+.translation-color-row { display: flex; align-items: center; gap: 10px; }
+.translation-color-row select { flex: 1; min-width: 0; }
+.translation-color-row input[type="color"] { flex: 0 0 44px; width: 44px; height: 38px; padding: 3px; border: 1px solid #d8dee7; border-radius: 6px; background: transparent; }
+.translation-color-row input:disabled { opacity: .4; }
+.style-preview { overflow-wrap: anywhere; }

@@ -1,17 +1,16 @@
-// ============================================================
-// 共享常量 —— 所有上下文统一使用
-// ============================================================
 (function (global) {
   "use strict";
 
+  // 允许读取和同步更新的配置字段目录，设置页与内容脚本共用。
   const STORAGE_KEYS = [
-    "engine", "aiProvider", "aiKeys", "from", "to", "mode", "concurrency",
+    "engine", "aiProvider", "aiKeys", "from", "to", "mode", "translationStyle", "concurrency",
     "autoTranslate", "hoverPanel",
     "hoverTranslate", "hoverRequireShift",
-    "shortcutTranslate", "shortcutKey",
+    "shortcutTranslate",
     "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion"
   ];
 
+  // 配置缺失时的默认值；concurrency 仅作旧版兼容，实际限额取 requestPolicies。
   const DEFAULTS = {
     engine: "google",
     aiProvider: "openai",
@@ -19,6 +18,7 @@
     from: "auto",
     to: "browser",
     mode: "bilingual",
+    translationStyle: {}, // 普通同步偏好；安全默认值与校验由 translation-style.js 统一维护。
     concurrency: 4, // 仅保留旧版配置兼容，不再控制网络或页面调度。
     requestPolicies: {},
     requestPolicyVersion: 1,
@@ -27,7 +27,6 @@
     hoverTranslate: true,
     hoverRequireShift: true,
     shortcutTranslate: true,
-    shortcutKey: "Alt+A",
     baiduAppId: "",
     baiduKey: "",
     baiduVerification: null
@@ -44,7 +43,9 @@
   const logThreshold = LOG_CONFIG.environment === "development"
     ? (LOG_LEVELS[LOG_CONFIG.level] ?? 0) : 0;
 
-  /** 统一检查日志门槛；非法级别/环境默认静默，生产环境不能通过提高级别重新打开。 */
+  /**
+   * 统一检查日志门槛；非法级别/环境默认静默，生产环境不能通过提高级别重新打开。
+   */
   function isLogEnabled(level) {
     return Object.prototype.hasOwnProperty.call(LOG_LEVELS,level) &&
       LOG_LEVELS[level] > 0 && LOG_LEVELS[level] <= logThreshold;
@@ -70,7 +71,6 @@
     debug:(...args)=>writeLog("debug",args)
   });
 
-  const ENGINES = ["google", "baidu", "ai", "mymemory"];
 
   const MSG = {
     TRANSLATE: "TRANSLATE",
@@ -145,7 +145,6 @@
     to: [{value:"browser",label:"跟随浏览器"},...LANGUAGE_OPTIONS]
   };
 
-  // 使用浏览器界面语言；地区变体归并到接口支持的语言代码。
   /**
    * 把跟随浏览器选项解析为受支持的目标语言；保留手动选择，未知浏览器语言回退为英语。
    *
@@ -190,12 +189,10 @@
     select.replaceChildren(...nodes);select.value = current;
   }
 
-  const SHORTCUT_KEYS = [
-    "Alt+A", "Alt+W", "Alt+Q", "Alt+E", "Alt+S",
-    "Ctrl+Shift+A", "Ctrl+Shift+Z"
-  ];
 
-  /** 生成凭据一致性指纹，仅用于匹配测试记录，不作为安全认证或密钥加密。 */
+  /**
+   * 生成凭据一致性指纹，仅用于匹配测试记录，不作为安全认证或密钥加密。
+   */
   function getBaiduCredentialFingerprint(config = {}) {
     const appId = typeof config.baiduAppId === "string" ? config.baiduAppId.trim() : "";
     const key = typeof config.baiduKey === "string" ? config.baiduKey.trim() : "";
@@ -203,21 +200,26 @@
     return global.md5(JSON.stringify([appId, key]));
   }
 
-  /** 只有当前这一份 AppID 和密钥通过连接测试，百度才可供选择。 */
+  /**
+   * 只有当前这一份 AppID 和密钥通过连接测试，百度才可供选择。
+   */
   function hasVerifiedBaiduCredentials(config = {}) {
     const fingerprint = getBaiduCredentialFingerprint(config);
     return !!fingerprint && config.baiduVerification?.fingerprint === fingerprint;
   }
 
-  const BT_CONST = { LOG_CONFIG, STORAGE_KEYS, DEFAULTS, ENGINES, MSG, LANGUAGES, SHORTCUT_KEYS, fillLanguageSelect, resolveTargetLanguage, getBaiduCredentialFingerprint, hasVerifiedBaiduCredentials };
+  const BT_CONST = { LOG_CONFIG, STORAGE_KEYS, DEFAULTS, MSG, LANGUAGES, fillLanguageSelect, resolveTargetLanguage, getBaiduCredentialFingerprint, hasVerifiedBaiduCredentials };
 
   // 服务配置包含密钥，只保存在本机；语言和显示模式等普通偏好仍使用同步存储。
   const LOCAL_KEYS = ["aiKeys", "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion"];
+  // 旧版单 AI 服务字段，迁移成功后从同步区移除。
   const LEGACY_KEYS = ["openaiKey", "openaiBase", "openaiModel"];
+  // 当前上下文共用的迁移 Promise，失败时清空以允许重试。
   let migration;
-  // 同一上下文共享迁移任务；失败后允许重试，避免重复初始化时重复搬运数据。
   /**
-   * 将同步区旧密钥迁入本机；本机数据优先，写入成功后才删除同步区旧字段，失败可重试。
+   * 将旧同步区凭据迁至本机，保留本机已有值；本机写入成功后才删除旧字段。
+   * 同一上下文复用迁移 Promise；失败后允许重试。
+   * @returns {Promise<void>} 迁移结束；读写失败向调用方传播。
    */
   function migrateCredentials() {
     if (migration) return migration;
@@ -247,9 +249,10 @@
   }
   const BT_STORAGE = {
     migrateCredentials,
-    /** 先完成旧密钥迁移，再按 keys 读取并合并同步偏好与本机凭据。 */
+    /**
+     * 先完成旧密钥迁移，再按 keys 读取并合并同步偏好与本机凭据。
+     */
     async get(keys = STORAGE_KEYS) {
-      // 调用方无需关心存储位置，迁移后合并两类配置返回。
       await migrateCredentials();
       const [synced, local] = await Promise.all([
         chrome.storage.sync.get(keys.filter(key => !LOCAL_KEYS.includes(key))),
@@ -257,9 +260,10 @@
       ]);
       return { ...synced, ...local };
     },
-    /** 按字段分流写入配置；不保证跨存储区事务，任一写入失败会向调用方抛出异常。 */
+    /**
+     * 按字段分流写入配置；不保证跨存储区事务，任一写入失败会向调用方抛出异常。
+     */
     async set(config) {
-      // 按字段分流写入，防止设置页保存完整配置时把密钥重新写回同步区。
       await migrateCredentials();
       const synced = {}, local = {};
       for (const [key, value] of Object.entries(config)) {

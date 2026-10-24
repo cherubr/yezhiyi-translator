@@ -1,9 +1,10 @@
-// 发布打包：只复制运行文件，在临时副本强制关闭日志，验证 ZIP 后再报告成功。
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{execFileSync}=require('node:child_process');
 const {RELEASE_FILES,prepareRelease,verifyReleaseLogging}=require('./release-files.cjs');
 const quote=s=>"'"+s.replace(/'/g,"''")+"'";
 
-/** 创建发布 ZIP；已有同名包直接拒绝覆盖，不修改本地开发配置或历史包。 */
+/**
+ * 创建发布 ZIP；已有同名包直接拒绝覆盖，不修改本地开发配置或历史包。
+ */
 function packageRelease(root=path.resolve(__dirname,'..')){
   const manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.json')));
   if(!/^\d+\.\d+\.\d+$/.test(manifest.version))throw Error('无效版本');

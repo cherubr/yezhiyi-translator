@@ -1,4 +1,9 @@
-// 真实调度规则回归：不访问外部接口，使用可控本地执行器观察发送顺序与额度。
+/**
+ * 测试模块：请求预算与统一调度。
+ * 隔离方式：真实策略/运行时加本地可控执行器。
+ * 验收范围：字符/字节、频率、并发、公平性、诊断隐私与保护标记；等待不依赖外部网络。
+ * 执行：node tests/request-policy.cjs
+ */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
 const context={TextEncoder,URL,setTimeout,clearTimeout,AbortController,console};vm.createContext(context);
 for(const file of ['translation-units.js','request-policy.js','translation-runtime.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../core',file),'utf8'),context);
@@ -144,7 +149,7 @@ const manual=(qps,maxConcurrent)=>({mode:'manual',qps,maxConcurrent});
  for(const secret of ['PRIVATE_SOURCE','PRIVATE_TRANSLATED','PRIVATE_CREDENTIAL','PRIVATE_MODEL','PRIVATE_OWNER','private-host'])assert.ok(!serialized.includes(secret));
  // 回调只是观察者：日志消费者失败不会改变翻译结果。
  assert.equal(await measured.runText({...sensitive,text:'another task',onDiagnostic(){throw Error('logger failed');}}),'PRIVATE_TRANSLATED_RESULT');
- // 诊断显示真实账号限制，而不是只重复当前入口的推荐设置；此测试不修改旧入口取最小值的既有规则。
+ // 同账号入口配置不同限制时，诊断必须反映实际取用的较小限额。
  const restrictions=[];
  const restricted=create(async()=> 'ok',{interval:0});
  restricted.updatePolicies({'ai:custom':manual(100,1)});

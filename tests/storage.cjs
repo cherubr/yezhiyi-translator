@@ -1,11 +1,22 @@
-// 存储回归：检查旧密钥迁移、本机配置优先、分区写入及迁移失败时保留旧数据。
+/**
+ * 测试模块：共享存储与旧配置迁移。
+ * 隔离方式：内存 sync/local 分区及可注入写入失败。
+ * 验收范围：本机密钥优先、迁移成功后删除旧值、失败保留、普通样式偏好同步。
+ * 执行：node tests/storage.cjs
+ */
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../core/constants.js'), 'utf8');
+/**
+ * 创建隔离的 sync/local 内存存储，记录写入顺序并按场景注入迁移失败。
+ */
 function setup(syncData, localData = {}, failWrite = false) {
   const sync = structuredClone(syncData), local = structuredClone(localData);
   const writes = [];
+  /**
+   * 生成单个存储区的 get/set/remove 模拟接口，记录操作以检查分流顺序。
+   */
   function area(data, name) {
     return {
       async get(keys) { return Object.fromEntries(keys.filter(k => Object.hasOwn(data, k)).map(k => [k, structuredClone(data[k])])); },
@@ -51,6 +62,11 @@ function setup(syncData, localData = {}, failWrite = false) {
   assert.equal(policies.local.requestPolicyVersion,1);
   assert.equal(policies.sync.requestPolicyVersion,undefined);
   const noPolicy=setup({concurrency:10});await noPolicy.storage.get();assert.equal(noPolicy.local.requestPolicies,undefined,'没有策略则用默认值，不从旧并发换算');
+ const styleStorage=setup({},{});
+ await styleStorage.storage.set({translationStyle:{fontSize:120,color:'#cc3300'}});
+ assert.equal(styleStorage.sync.translationStyle.fontSize,120,'样式随普通偏好同步');
+ assert.equal(styleStorage.local.translationStyle,undefined,'不混入本机凭据分区');
+ assert.equal((await styleStorage.storage.get()).translationStyle.color,'#cc3300');
   console.log('PASS: 请求策略迁移、本机分流及旧并发不换算');
   console.log('PASS: credential migration, local precedence, legacy migration, split writes, failed migration preservation');
 })().catch(error => { console.error(error); process.exitCode = 1; });

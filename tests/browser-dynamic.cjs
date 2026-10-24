@@ -1,7 +1,15 @@
-// 浏览器动态回归：验证追加与替换节点、弹框、混合控件、取消暂停及局部补翻。
+/**
+ * 测试模块：动态页面与单段交互。
+ * 隔离方式：独立 Chromium 和可控制延迟/错误的消息响应。
+ * 验收范围：滚动补翻、取消、Shift 实际 DOM 判定、动态替换、长页面局部采集和 AI 投递背压。
+ * 执行：node tests/browser-dynamic.cjs
+ */
 const {chromium}=require('playwright');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'..');
+/**
+ * 重建页面夹具与模拟 Chrome API，控制消息响应的延迟、错误和返回文字。
+ */
 async function setup(browser,html,preferences={}) {
  const page=await browser.newPage({viewport:{width:1280,height:900}});
  await page.setContent(html);
@@ -19,8 +27,8 @@ async function setup(browser,html,preferences={}) {
      setTimeout(()=>cb(window.languageMode?{ok:false,error:'需要指定源语言',code:'NEED_SOURCE_LANGUAGE'}:window.failMode?{ok:false,error:'模拟网络失败'}:{ok:true,data:window.returnSameText?request.text:'译：'+request.text}),window.responseDelay);
    }},storage:{sync:storage,local:{async get(){return {}},async set(){}},onChanged:{addListener(fn){window.storageChange=fn;}}}};
  },preferences);
- for(const file of ['core/constants.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
- await page.addStyleTag({content:fs.readFileSync(path.join(root,'content/content.css'),'utf8')});
+ for(const file of ['core/constants.js','core/translation-style.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
+ await page.addStyleTag({content:fs.readFileSync(path.join(root,'core/translation-style.css'),'utf8')+'\n'+fs.readFileSync(path.join(root,'content/content.css'),'utf8')});
  const source=fs.readFileSync(path.join(root,'content/content.js'),'utf8').replace('  bootstrap();',
  '  window.test={STATE,openControlPanel,changeTranslationSetting,translatePage,cancelTranslation,collectBlocks,translatedElements,insertTranslation,clearTranslations,createFab,observeDynamicContent,scheduleVisibleTranslation,bindHoverTranslate,bindPageLifecycle};');
  await page.addScriptTag({content:source});
@@ -472,6 +480,9 @@ async function setup(browser,html,preferences={}) {
    {target:'#contentsHover',host:'#contentsHover'}
  ];
  // 混合控件必须命中文字；定位整个 label 的中心可能落在复选框或空白处。
+ /**
+  * 将鼠标移至候选文字并触发 Shift，验证整页与单段命中同一翻译单元。
+  */
  async function hoverCase(item){
    if(!item.text){await generic.locator(item.target).hover();return;}
    await generic.locator(item.target).scrollIntoViewIfNeeded();

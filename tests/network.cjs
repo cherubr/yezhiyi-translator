@@ -1,4 +1,9 @@
-// 网络回归：验证超时与主动取消的区别、中文错误提示以及敏感查询信息保护。
+/**
+ * 测试模块：网络超时与主动取消。
+ * 隔离方式：替换 fetch 和定时器，执行真实网络封装函数。
+ * 验收范围：错误分类、定时器释放和敏感参数不外泄；不连接真实厂商。
+ * 执行：node tests/network.cjs
+ */
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
