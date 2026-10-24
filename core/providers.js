@@ -1,9 +1,7 @@
-// ============================================================
-// AI 厂商列表 —— 全局唯一来源
-// ============================================================
 (function (global) {
   "use strict";
 
+  // AI 厂商预设：name 为名称、base 为基础地址、model 为默认模型、hint 为界面提示。
   const AI_PROVIDERS = {
     openai:      { name: "OpenAI",         base: "https://api.openai.com/v1",                             model: "gpt-4o-mini",              hint: "官方 API，需科学上网" },
     deepseek:    { name: "DeepSeek",       base: "https://api.deepseek.com/v1",                           model: "deepseek-chat",            hint: "性价比高，国内直连" },
@@ -21,9 +19,11 @@
     custom:      { name: "自定义",           base: "",                                                       model: "",                         hint: "手动填写" }
   };
 
-  // 统一解析请求地址和授权域名，保证设置页申请的权限与后台实际访问地址一致。
   /**
-   * 校验并规范化接口基础地址，返回实际 base、权限匹配 origin 及提示用 host。
+   * 校验基础地址并生成与实际请求一致的域名权限范围；远程接口只允许 HTTPS。
+   * @param {string} provider 厂商标识，用于读取预设地址。
+   * @param {Object} [config={}] 用户配置，base 优先于预设。
+   * @returns {{base:string,origin:string,host:string}} 规范化地址、权限匹配模式和提示域名。
    */
   function getAIEndpoint(provider, config = {}) {
     const defaults = AI_PROVIDERS[provider] || {};
@@ -41,7 +41,10 @@
   }
 
   /**
-   * 从用户点击调用链申请当前接口域名权限，返回解析后的地址；拒绝授权时抛出中文错误。
+   * 在用户点击调用链中请求当前接口域名授权；不得先等待其他异步操作。
+   * @param {string} provider 当前厂商。
+   * @param {Object} config 当前连接配置。
+   * @returns {Promise<Object>} 获得授权后的端点信息；拒绝授权时抛出错误。
    */
   function requestAIAccess(provider, config) {
     const endpoint = getAIEndpoint(provider, config);
@@ -56,25 +59,43 @@
   if (typeof self !== "undefined") self.BT_AI_ACCESS = BT_AI_ACCESS;
   if (typeof window !== "undefined") window.BT_AI_ACCESS = BT_AI_ACCESS;
 
-  /** 统一编码服务选项；AI 厂商不是独立的翻译引擎，保存时仍拆为 engine 与 aiProvider。 */
+  /**
+   * 统一编码服务选项；AI 厂商不是独立的翻译引擎，保存时仍拆为 engine 与 aiProvider。
+   */
   function serviceValue(engine,provider) {return engine==="ai"?"ai:"+(provider||"openai"):engine;}
+  /**
+   * 把 ai:厂商 选项拆回 engine 与 aiProvider；普通引擎保留现有 AI 厂商选择。
+   * @param {string} value 服务下拉值。
+   * @param {string} [currentProvider="openai"] 普通引擎选项下保留的厂商。
+   * @returns {Object} 用于保存的引擎和厂商组合。
+   */
   function parseServiceValue(value,currentProvider="openai") {
     return typeof value==="string"&&value.startsWith("ai:")
       ?{engine:"ai",aiProvider:value.slice(3)}:{engine:value,aiProvider:currentProvider};
   }
-  /** 仅表示连接配置是否齐全；AI 密钥是否有效仍由实际测试判定。 */
+  /**
+   * 仅表示连接配置是否齐全；AI 密钥是否有效仍由实际测试判定。
+   */
   function isProviderReady(provider,config={}) {
     if(!Object.hasOwn(AI_PROVIDERS,provider))return false;
     if(provider==="ollama")return true;
     return !!String(config.aiKeys?.[provider]?.key||"").trim();
   }
+  /**
+   * 判断服务是否满足界面选择条件：免配置服务直接可选，百度要求验证，AI 检查连接配置。
+   * @param {string} value 普通引擎或 ai:厂商 形式的选项值。
+   * @param {Object} [config={}] 当前保存配置。
+   * @returns {boolean} 是否可选择，不代表网络和账号额度实时可用。
+   */
   function isServiceReady(value,config={}) {
     if(value==="google"||value==="mymemory")return true;
     if(value==="baidu")return !!global.BT_CONST?.hasVerifiedBaiduCredentials(config);
     const provider=value==="ai"?config.aiProvider||"openai":typeof value==="string"&&value.startsWith("ai:")?value.slice(3):null;
     return provider?isProviderReady(provider,config):false;
   }
-  /** 设置页和控制面板共用目录、就绪判断及状态文案，避免只列出当前 AI 厂商。 */
+  /**
+   * 设置页和控制面板共用目录、就绪判断及状态文案，避免只列出当前 AI 厂商。
+   */
   function serviceOptions(config={}) {
     const items=[{value:"google",label:"Google 翻译"},{value:"mymemory",label:"MyMemory"},{value:"baidu",label:"百度翻译"},
       ...Object.entries(AI_PROVIDERS).map(([provider,item])=>({value:"ai:"+provider,label:item.name+(provider==="ollama"?" · 本地":" · AI")}))];
@@ -85,7 +106,9 @@
       return {...item,ready,status,text:ready?"✓ "+item.label+"（"+status+"）":status+" · "+item.label};
     });
   }
-  /** 原生下拉保留键盘操作；未就绪选项真正禁用，不能仅靠颜色表示不可用。 */
+  /**
+   * 原生下拉保留键盘操作；未就绪选项真正禁用，不能仅靠颜色表示不可用。
+   */
   function renderServiceSelect(select,config={}) {
     if(!select)return;
     const doc=select.ownerDocument,items=serviceOptions(config);select.replaceChildren();
@@ -103,16 +126,11 @@
   if(typeof self!=="undefined")self.BT_SERVICES=BT_SERVICES;
   if(typeof window!=="undefined")window.BT_SERVICES=BT_SERVICES;
 
-  const AI_PROVIDER_NAMES = Object.fromEntries(
-    Object.entries(AI_PROVIDERS).map(([k, v]) => [k, v.name])
-  );
 
   if (typeof self !== "undefined") {
     self.AI_PROVIDERS = AI_PROVIDERS;
-    self.AI_PROVIDER_NAMES = AI_PROVIDER_NAMES;
   }
   if (typeof window !== "undefined") {
     window.AI_PROVIDERS = AI_PROVIDERS;
-    window.AI_PROVIDER_NAMES = AI_PROVIDER_NAMES;
   }
 })(typeof self !== "undefined" ? self : this);

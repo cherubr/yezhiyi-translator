@@ -1,4 +1,9 @@
-// 调度回归：检查缓存、并发合并、消费者取消隔离、队列限流、失败冷却和熔断。
+/**
+ * 测试模块：共享翻译运行时。
+ * 隔离方式：可控执行器、取消信号和模拟时间。
+ * 验收范围：缓存、并发合并、消费者隔离、冷却和熔断；不测实际厂商吞吐。
+ * 执行：node tests/runtime.cjs
+ */
 const vm=require('node:vm'),fs=require('node:fs'),assert=require('node:assert/strict'),path=require('node:path');
 const context={setTimeout,clearTimeout,AbortController,TextEncoder,URL,console};vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname,'../core/request-policy.js'),'utf8'),context);

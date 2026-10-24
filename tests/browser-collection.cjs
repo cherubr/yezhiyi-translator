@@ -1,6 +1,14 @@
-// 真实 DOM 翻译单元验收：不请求厂商接口，三种引擎使用相同的模拟响应。
+/**
+ * 测试模块：共享翻译单元采集。
+ * 隔离方式：相同构造 DOM 分别模拟 AI/Google/百度响应。
+ * 验收范围：完整句子、混合控件、禁译/代码保护、节点身份与保护标记异常阻断。
+ * 执行：node tests/browser-collection.cjs
+ */
 const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const root=path.resolve(__dirname,'..');
+/**
+ * 为当前真实浏览器页面安装模拟消息和共享采集模块；接口不连接厂商。
+ */
 async function setup(browser,engine){
  const page=await browser.newPage({viewport:{width:1280,height:1000}});
  await page.setContent(`<style>body{font:16px/24px Arial}p{margin:12px 0}nav a{display:block;white-space:nowrap}code{font:14px monospace}</style>
@@ -28,8 +36,8 @@ async function setup(browser,engine){
     },responseDelay);
   }},storage:{sync:storage,local:storage,onChanged:{addListener(){}}}};
  },engine);
- for(const file of ['core/constants.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
- await page.addStyleTag({content:fs.readFileSync(path.join(root,'content/content.css'),'utf8')});
+ for(const file of ['core/constants.js','core/translation-style.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
+ await page.addStyleTag({content:fs.readFileSync(path.join(root,'core/translation-style.css'),'utf8')+'\n'+fs.readFileSync(path.join(root,'content/content.css'),'utf8')});
  const source=fs.readFileSync(path.join(root,'content/content.js'),'utf8').replace('  bootstrap();',
   '  window.test={STATE,collectBlocks,translatePage,cancelTranslation,applyMode,createFab,observeDynamicContent,bindHoverTranslate,bindPageLifecycle};');
  await page.addScriptTag({content:source});

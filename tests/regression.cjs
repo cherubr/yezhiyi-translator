@@ -1,4 +1,9 @@
-// 内容脚本回归：在模拟页面与扩展消息环境中检查采集、分块、插入、还原及取消行为。
+/**
+ * 测试模块：内容脚本基础回归。
+ * 隔离方式：VM 与轻量 DOM/Chrome 消息桩。
+ * 验收范围：采集入口、原节点插入还原、显示模式、取消与迟到结果；不代表真实浏览器排版。
+ * 执行：node tests/regression.cjs
+ */
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
@@ -8,9 +13,9 @@ const context = { window: { addEventListener() {}, getComputedStyle:()=>({displa
 context.self = context.window;
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(root + '/core/constants.js', 'utf8'), context);
+vm.runInContext(fs.readFileSync(root + '/core/translation-style.js', 'utf8'), context);
 vm.runInContext(fs.readFileSync(root + '/core/translation-units.js', 'utf8'), context);
 vm.runInContext(fs.readFileSync(root + '/core/request-policy.js', 'utf8'), context);
-context.window.AI_PROVIDER_NAMES = {};
 let source = fs.readFileSync(root + '/content/content.js', 'utf8');
 source = source.replace('  bootstrap();', '  window.test = { STATE, requestTranslate, sameTranslation, translatePage, bindHoverTranslate, handleBlock, isMostlyChinese, applyMode, translatedElements, cancelTranslation, insertTranslation, setFabBusy, setFabTranslated, createFab, collectBlocks, scheduleVisibleTranslation, observeDynamicContent, mountFab: (wrap, el) => { fabWrap = wrap; fabEl = el; } };');
 vm.runInContext(source, context);
@@ -34,7 +39,7 @@ t.STATE.from='zh-CN';t.STATE.to='zh-TW';
 assert.equal(t.isMostlyChinese('简体中文转换'),false,'显式简繁转换不跳过');
 t.STATE.from='auto';t.STATE.to='zh-CN';
 class Element {
- constructor(tag='span') { this.nodeType=1; this.tagName=tag.toUpperCase(); this.children=[]; this.style={}; this.attrs={}; this.isConnected=true; this.className=''; this.classList={contains: name=>this.className.split(' ').includes(name),toggle:(name,on)=>{const names=new Set(this.className.split(' ').filter(Boolean));on?names.add(name):names.delete(name);this.className=[...names].join(' ');},add:name=>{this.className+=' '+name;}}; }
+ constructor(tag='span') { this.nodeType=1; this.tagName=tag.toUpperCase(); this.children=[]; this.style={setProperty(name,value){this[name]=value;}}; this.attrs={}; this.isConnected=true; this.className=''; this.classList={contains: name=>this.className.split(' ').includes(name),toggle:(name,on)=>{const names=new Set(this.className.split(' ').filter(Boolean));on?names.add(name):names.delete(name);this.className=[...names].join(' ');},add:name=>{this.className+=' '+name;}}; }
  get parentElement(){return this.parentNode||null;}
  get childNodes(){return this.children;}
  getBoundingClientRect(){return {width:200,height:20,top:0,bottom:20,left:0,right:200};}
@@ -85,9 +90,12 @@ assert.equal(fabWrap.classList.contains('bt-translated'),true);
 assert.equal(fab.classList.contains('bt-busy'),false);
 console.log('PASS: 默认语言、混合语言、段落/列表/表格/标题内部插入、模式切换、DOM还原、取消暂停');
 
-// Dialog/form selection and visibility without requesting a real provider.
+// 验证弹框、表单候选及可见性，不调用真实翻译接口。
 context.window.innerHeight=900;context.window.innerWidth=1200;
 context.window.getComputedStyle=()=>({display:'block',visibility:'visible'});
+/**
+ * 构造带可见性和控件边界的候选节点，供无浏览器采集断言使用。
+ */
 function candidate(text,{compact=false,hidden=false,control=false}={}) {
  const el={textContent:text,tagName:compact?'LABEL':'DIV',children:[],childNodes:[],querySelectorAll:()=>[],closest(sel){
    if(sel.includes('[hidden]'))return hidden?{}:null;
@@ -117,7 +125,7 @@ t.STATE.pagePaused=true;t.scheduleVisibleTranslation();
 assert.equal(scheduled,1,'cancelled page stays paused');
 console.log('PASS: 短表单标签、隐藏弹框排除、控件保护、动态弹框触发、插件自身变动去重、取消后不重启');
 
-// Sidebar fields must be collected without selecting the enclosing layout.
+// 收集侧栏文字，避免把整个布局容器作为翻译单元。
 t.STATE.pagePaused=false;
 const title=candidate('Decisions API'), description=candidate('Turn text and images into decisions'),
  date=candidate('10 days ago'), phrase=candidate('Read the API guide'), inline=candidate('API'),

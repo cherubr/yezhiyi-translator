@@ -1,7 +1,15 @@
-// 日志配置/发布边界回归：开发等级过滤，生产强制静默，实际发布副本不可回开。
+/**
+ * 测试模块：日志级别与发布静默边界。
+ * 隔离方式：VM 记录控制台调用，在独立临时目录生成发布副本。
+ * 验收范围：等级过滤、生产强制静默、不改源码和运行代码无旁路打印。
+ * 执行：node tests/logging.cjs
+ */
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path'),os=require('node:os');
 const {productionConstants,verifyReleaseLogging,prepareRelease}=require('../scripts/release-files.cjs');
 const root=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(root,'core/constants.js'),'utf8');
+/**
+ * 按指定环境和级别加载日志模块，捕获输出以验证过滤，不修改被测源码文件。
+ */
 function load(environment,level,throwing=false){
   const printed=[];
   const context={console:Object.fromEntries(['debug','info','warn','error'].map(l=>[l,(...args)=>{if(throwing)throw Error('console unavailable');printed.push({level:l,args});}]))};

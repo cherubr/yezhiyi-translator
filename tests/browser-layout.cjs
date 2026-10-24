@@ -1,4 +1,9 @@
-// 浏览器布局回归：验证真实渲染下的排版、显示模式、节点还原及链接事件保留。
+/**
+ * 测试模块：真实浏览器布局。
+ * 隔离方式：独立 Chromium 页面与模拟扩展 API。
+ * 验收范围：正文/导航/表格/网格、模式切换、原节点与事件保留、悬浮球状态。
+ * 执行：node tests/browser-layout.cjs
+ */
 const {chromium}=require('playwright');
 const fs=require('fs');const assert=require('assert/strict');
 (async()=>{
@@ -7,8 +12,8 @@ const page=await browser.newPage({viewport:{width:1280,height:900}});
 await page.setContent(`<style>main{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:20px} article{min-width:0} table{width:100%}</style><main><article><p id="p">Original paragraph with <a href="#">a link</a>.</p><ul><li id="li">List text</li></ul><table><tbody><tr><td id="td">Cell text</td></tr></tbody></table></article><aside>Table of contents</aside></main>`);
 await page.evaluate(()=>{window.self=window;window.chrome={runtime:{onMessage:{addListener(){}},sendMessage(){}},storage:{onChanged:{addListener(){}},local:{async get(){return {}},async set(){}},sync:{async get(keys,cb){const cfg={autoTranslate:false};if(cb)cb(cfg);return cfg},async set(){},async remove(){}}}}});
 const root=require('node:path').resolve(__dirname, '..');
-await page.addStyleTag({content:fs.readFileSync(root+'/content/content.css','utf8')});
-for(const f of ['core/constants.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(root+'/'+f,'utf8')});
+await page.addStyleTag({content:fs.readFileSync(root+'/core/translation-style.css','utf8')+'\n'+fs.readFileSync(root+'/content/content.css','utf8')});
+for(const f of ['core/constants.js','core/translation-style.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(root+'/'+f,'utf8')});
 let s=fs.readFileSync(root+'/content/content.js','utf8').replace('  bootstrap();','  window.test = { STATE, collectBlocks, insertTranslation, applyMode, clearTranslations, createFab, setFabBusy, setFabTranslated, isMostlyChinese }; bootstrap();');
 await page.addScriptTag({content:s});
 const result=await page.evaluate(()=>{
@@ -17,6 +22,9 @@ const result=await page.evaluate(()=>{
  sidebar.innerHTML='<div style="display:flex;gap:12px"><span aria-hidden="true">◆</span><div><time id="date">10 days ago</time><div id="update-title">Decisions API</div><div id="update-desc">Turn text and <a href="#">images</a> into decisions.</div></div></div>';
  const collected=t.collectBlocks().map(x=>x.el.id);
  for(const id of ['date','update-title','update-desc'])assertCollected(id);
+ /**
+  * 断言指定侧栏节点已进入候选，发现遗漏时报告具体节点 ID。
+  */
  function assertCollected(id){if(!collected.includes(id))throw new Error('Missing sidebar text: '+id);}
  const before=document.querySelector('article').getBoundingClientRect().width;
  const sidebarBefore=sidebar.getBoundingClientRect().width;
@@ -50,7 +58,7 @@ await page.setContent(`<style>
 .truncate{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .tabs{width:300px;display:flex;height:32px;font:14px/20px Arial}.tab{display:flex;min-width:0;flex:1;height:32px;overflow:hidden;align-items:center;border:0;padding:0 8px}
 </style><div class="menu"><a href="#keys" class="row" id="compactMenu"><span class="icon">◆</span><span class="label"><span id="compactText" class="truncate">API Keys</span></span></a><div class="row"><span class="icon">◆</span><span class="label"><span id="compactAgent" class="truncate">Agent development</span></span></div></div><div class="tabs"><button class="tab" id="compactTab">Agent credits</button><button class="tab">Coupon</button></div>`);
-await page.addStyleTag({content:fs.readFileSync(root+'/content/content.css','utf8')});
+await page.addStyleTag({content:fs.readFileSync(root+'/core/translation-style.css','utf8')+'\n'+fs.readFileSync(root+'/content/content.css','utf8')});
 const compact=await page.evaluate(()=>{
  const t=test,link=document.getElementById('compactMenu'),icon=link.querySelector('.icon');
  const iconBefore=icon.getBoundingClientRect().y,styleBefore=link.getAttribute('style');let clicks=0;link.onclick=()=>clicks++;
@@ -77,7 +85,7 @@ await page.setContent(`<style>
 .news-nav a{display:block;padding:12px 8px;line-height:18px;white-space:nowrap;box-sizing:border-box}
 .news-nav .transparent{display:contents}
 </style><section class="news-shell"><nav class="news-nav"><ul><li><div id="newsOuter"><a id="newsLink" href="#news">News</a></div></li><li><div id="sportOuter"><span id="sportBlock" style="display:block;line-height:18px;padding:12px 8px">Sport</span></div></li></ul></nav></section><p id="newsBody">Read the <a id="inlineBodyLink" href="#report">full report</a> for more details.</p>`);
-await page.addStyleTag({content:fs.readFileSync(root+'/content/content.css','utf8')});
+await page.addStyleTag({content:fs.readFileSync(root+'/core/translation-style.css','utf8')+'\n'+fs.readFileSync(root+'/content/content.css','utf8')});
 const news=await page.evaluate(()=>{
  const t=test,link=document.getElementById('newsLink'),nav=document.querySelector('.news-nav');
  const collected=t.collectBlocks(),ids=collected.map(item=>item.el.id);

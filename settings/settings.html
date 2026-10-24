@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>页知译 · 网页双语翻译 · 设置</title>
+  <link rel="stylesheet" href="../core/translation-style.css" />
   <link rel="stylesheet" href="settings.css" />
 </head>
 <body>
@@ -31,7 +32,7 @@
     <main class="content">
       <div class="content-inner">
 
-        <!-- 基本设置 -->
+
         <section class="tab-panel active" data-panel="general">
           <h1>基本设置</h1>
           <p class="desc">选择默认翻译服务与语言方向。连接和请求设置分别管理。</p>
@@ -60,7 +61,7 @@
           <p class="hint">页面文字任务由程序管理；每秒请求数和同时请求上限在各服务详情中配置。</p>
         </section>
 
-        <!-- 显示样式 -->
+
         <section class="tab-panel" data-panel="display">
           <h1>显示样式</h1>
           <p class="desc">控制译文在页面中的呈现方式。</p>
@@ -72,16 +73,32 @@
             </div>
             <div class="hint">"仅显示译文"会隐藏原文，只保留翻译结果。</div>
           </div>
+          <div class="translation-style-controls" id="translationStyleFields">
+            <div class="field-row">
+              <div class="field"><label for="translationFontFamily">译文字体</label><select id="translationFontFamily"><option value="inherit">跟随网页</option><option value="system">系统默认</option><option value="sans">无衬线字体</option><option value="serif">衬线字体</option><option value="monospace">等宽字体</option></select></div>
+              <div class="field"><label for="translationFontSize">字号比例</label><select id="translationFontSize"><option value="80">80%</option><option value="90">90%</option><option value="100">100%（跟随网页字号）</option><option value="110">110%</option><option value="120">120%</option><option value="140">140%</option><option value="160">160%</option><option value="200">200%</option></select></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="translationColorMode">译文颜色</label><div class="translation-color-row"><select id="translationColorMode"><option value="inherit">跟随网页</option><option value="custom">自定义颜色</option></select><input type="color" id="translationColor" value="#333333" aria-label="选择译文颜色" /></div></div>
+              <div class="field"><label for="translationFontWeight">字重</label><select id="translationFontWeight"><option value="inherit">跟随网页</option><option value="normal">常规</option><option value="bold">加粗</option></select></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label for="translationLineHeight">正文行高</label><select id="translationLineHeight"><option value="0">跟随网页</option><option value="1.2">1.2（紧凑）</option><option value="1.4">1.4</option><option value="1.6">1.6</option><option value="1.8">1.8</option><option value="2">2.0（宽松）</option><option value="2.4">2.4</option></select></div>
+              <div class="field"><label for="translationParagraphSpacing">正文段落间距</label><select id="translationParagraphSpacing"><option value="0">无间距</option><option value="0.2">较小</option><option value="0.4">默认</option><option value="0.6">较大</option><option value="0.8">宽松</option><option value="1.2">更宽松</option></select></div>
+            </div>
+            <p class="hint">仅调整译文，保存后已有译文即时生效。字号相对于网页原字号；行高与段落间距用于正文，导航和按钮保持紧凑排版。</p>
+            <button type="button" class="request-secondary" id="resetTranslationStyle">恢复默认样式</button>
+          </div>
           <div class="field">
             <label>译文样式预览</label>
             <div class="style-preview" style="line-height: 1.6">
               <div>This is a preview of translated text.</div>
-              <div class="bt-preview">这是译文样式预览，让双语阅读更自然。</div>
+              <div class="bt-translation-text bt-preview" id="translationStylePreview">这是译文样式预览，让双语阅读更自然。</div>
             </div>
           </div>
         </section>
 
-        <!-- 翻译服务 -->
+
         <section class="tab-panel" data-panel="service">
           <div class="service-list-view" id="serviceListView">
             <h1>翻译服务</h1>
@@ -95,7 +112,7 @@
           </div>
         </section>
 
-        <!-- 行为偏好 -->
+
         <section class="tab-panel" data-panel="behavior">
           <div class="behavior-header">
             <div class="behavior-header-text">
@@ -105,7 +122,7 @@
             <button class="btn-reset-default" id="btnResetDefault">恢复默认</button>
           </div>
 
-          <!-- 组 1：翻译触发 -->
+
           <div class="settings-group">
             <div class="settings-group-title">翻译触发</div>
 
@@ -136,7 +153,7 @@
             <p class="hint">用户点击取消后，返回页面也不会自动恢复。Shift 单段翻译不解除整页取消状态；返回不会清空限流等待和重试记录。</p>
           </div>
 
-          <!-- 组 2：悬浮球 -->
+
           <div class="settings-group">
             <div class="settings-group-title">悬浮球</div>
 
@@ -149,7 +166,7 @@
             </div>
           </div>
 
-          <!-- 组 3：快捷键 -->
+
           <div class="settings-group">
             <div class="settings-group-title">快捷键</div>
 
@@ -162,7 +179,7 @@
             </div>
 
             <div class="shortcut-list" id="shortcutList">
-              <!-- 快捷键卡片：翻译 / 取消翻译 -->
+
               <div class="shortcut-item" data-command="toggle-translation">
                 <div class="shortcut-item-text">
                   <div class="shortcut-item-label">翻译 / 取消翻译</div>
@@ -173,11 +190,11 @@
                 </div>
                 <button class="btn-set-shortcut" data-command="toggle-translation">设置快捷键</button>
               </div>
-              <!-- 未来加更多快捷键，在此追加 .shortcut-item -->
+
             </div>
           </div>
 
-          <!-- 可折叠：操作指南 -->
+
           <div class="collapsible-group" id="guideGroup">
             <button class="collapsible-header" id="guideToggle">
               <span class="collapsible-icon">📖</span>
@@ -231,7 +248,7 @@
           </div>
         </section>
 
-        <!-- 关于 -->
+
         <section class="tab-panel" data-panel="about">
           <h1>关于</h1>
           <p class="desc">页知译 · 网页双语翻译</p>
@@ -262,6 +279,7 @@
 
   <script src="../core/md5.js"></script>
   <script src="../core/constants.js"></script>
+  <script src="../core/translation-style.js"></script>
   <script src="../core/request-policy.js"></script>
   <script src="../core/providers.js"></script>
   <script src="settings.js"></script>

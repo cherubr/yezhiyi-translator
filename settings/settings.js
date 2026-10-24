@@ -1,26 +1,35 @@
-// ============================================================
-// 设置页逻辑 —— 依赖 core/constants.js 和 core/providers.js
-// ============================================================
 
 const { STORAGE_KEYS: KEYS, DEFAULTS: DEFAULT } = window.BT_CONST;
 const PROVIDERS = window.AI_PROVIDERS;
 // 与共享存储的分流保持一致，避免旧同步区密钥删除事件覆盖本机有效凭据。
 const LOCAL_CONFIG_KEYS = new Set(["aiKeys", "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion"]);
 
+// 当前设置页的配置草稿，由自动保存或独立请求设置入口写入。
 let cfg = { ...DEFAULT };
+// 当前服务详情类型；null 表示服务列表。
 let currentService = null;
+// 正在编辑的 AI 厂商，与实际默认服务 cfg.aiProvider 分开。
 let editingProvider = null;
 
-// ---------- 工具 ----------
 /**
  * 将引擎和 AI 厂商编码为下拉选项值，例如 ai:openai。
  */
 function engineToSelectValue(engine,provider) {return window.BT_SERVICES.value(engine,provider);}
-/** 将下拉值拆为实际引擎与 AI 厂商。 */
+/**
+ * 将下拉值拆为实际引擎与 AI 厂商。
+ */
 function selectValueToEngine(value) {return window.BT_SERVICES.parse(value,cfg.aiProvider);}
-/** 两个界面统一使用相同的就绪规则。 */
+/**
+ * 按共享服务目录判断是否允许选择；百度要求测试通过，AI 仅检查配置，不探测网络。
+ * @param {string} value 服务选项值，例如 baidu 或 ai:deepseek。
+ * @returns {boolean} 当前配置是否满足选择条件。
+ */
 function isEngineConfigured(value) {return window.BT_SERVICES.isConfigured(value,cfg);}
-/** AI 配置入口不等于启用操作，未配置厂商仍可进入详情填写密钥。 */
+/**
+ * 判断指定 AI 厂商是否有连接配置；不代表密钥有效或模型可访问。
+ * @param {string} provider AI 厂商标识。
+ * @returns {boolean} Ollama 不要求 Key，其他已知厂商要求非空 Key。
+ */
 function isProviderConfigured(provider) {return window.BT_SERVICES.isProviderConfigured(provider,cfg);}
 
 /**
@@ -111,7 +120,7 @@ function refreshAllProviderBadges() {
  * 在密钥区域显示正在配置的厂商，并更新就近的默认服务按钮。
  */
 
-function refreshCurrentUsingBar() {
+function refreshProviderConfigHeading() {
   const heading=document.getElementById("providerConfigTitle");
   const editing=editingProvider||cfg.aiProvider||"openai";
   if(heading)heading.textContent="2. 配置 "+((PROVIDERS[editing]||{}).name||editing);
@@ -128,7 +137,7 @@ function getHoverTranslateMode() {
 }
 
 /**
- * 将悬停模式还原为对应配置字段，更新提示并保存。
+ * 将悬停模式还原为配置字段并更新提示；保存由调用方负责。
  */
 function setHoverTranslateMode(mode) {
   if (mode === "off") {
@@ -159,7 +168,6 @@ function updateHoverTranslateHint(mode) {
   }
 }
 
-// ---------- 快捷键 ----------
 /**
  * 读取浏览器扩展快捷键，失败时保留可用的默认界面。
  */
@@ -220,16 +228,13 @@ async function refreshShortcutDisplay() {
   }
 }
 
-// ---------- 迁移旧数据 ----------
 /**
  * 通过共享迁移层兼容旧版服务配置，避免要求用户重复填写密钥。
  */
 async function migrateOldData() {
-  // 使用共享迁移逻辑，先落盘本机密钥，再清理同步区旧字段。
   await window.BT_STORAGE.migrateCredentials();
 }
 
-// ---------- 初始化 ----------
 /**
  * 读取设置、处理迁移并初始化版本展示、表单和事件绑定。
  */
@@ -247,6 +252,7 @@ async function init() {
   renderAll();
   bindNav();
   bindFields();
+  bindTranslationStyle();
   bindBackButton();
   renderServiceList();
   bindBehaviorExtras();
@@ -257,7 +263,6 @@ async function init() {
   await refreshShortcutDisplay();
 }
 
-// ---------- 渲染 ----------
 /**
  * 把当前配置渲染到语言、行为和翻译服务等设置控件。
  */
@@ -266,6 +271,7 @@ function renderAll() {
   window.BT_CONST.fillLanguageSelect(document.getElementById("from"),"from",cfg.from);
   window.BT_CONST.fillLanguageSelect(document.getElementById("to"),"to",cfg.to);
   setSegment("mode-seg", cfg.mode);
+  renderTranslationStyle();
   setSwitch("autoTranslate", cfg.autoTranslate);
   setSwitch("hoverPanel", cfg.hoverPanel);
   setSwitch("shortcutTranslate", cfg.shortcutTranslate);
@@ -560,7 +566,8 @@ function buildServiceDetailHTML(id) {
 }
 
 /**
- * 绑定免费服务详情中的测试与启用操作。
+ * 绑定免配置服务的连接测试；默认服务选择使用独立按钮。
+ * @param {string} id 当前服务标识。
  */
 function bindFreeDetail(id) {
   const btnId = id === "google" ? "testGoogle" : "testMymemory";
@@ -571,7 +578,7 @@ function bindFreeDetail(id) {
 }
 
 /**
- * 绑定百度凭据输入、接口测试和服务启用操作。
+ * 绑定百度凭据输入和连接测试；凭据变化立即使旧验证状态失效。
  */
 function bindBaiduDetail() {
   setValue("baiduAppId", cfg.baiduAppId);
@@ -607,14 +614,15 @@ function bindBaiduDetail() {
 }
 
 /**
- * 绑定 AI 厂商编辑、域名授权、测试及启用流程，避免未授权时发送请求。
+ * 绑定 AI 厂商编辑与连接测试；编辑厂商不会自动切换默认服务。
+ * 测试或设为默认时，通过用户操作链申请对应接口域名权限。
  */
 function bindAIDetail() {
   editingProvider = cfg.aiProvider || "openai";
   renderProviderInputs(editingProvider);
   updateProviderGrid(editingProvider);
   updateProviderUI(editingProvider);
-  refreshCurrentUsingBar();
+  refreshProviderConfigHeading();
 
   const providerEl = document.getElementById("aiProvider");
   if (providerEl) {
@@ -636,9 +644,8 @@ function bindAIDetail() {
 
       window.BT_STORAGE.set({ aiKeys: cfg.aiKeys });
       refreshAllProviderBadges();
-      refreshCurrentUsingBar();
+      refreshProviderConfigHeading();
 
-      // 清空上一次的测试结果
       const testResultEl = document.getElementById("aiTestResult");
       if (testResultEl) {
         testResultEl.textContent = "";
@@ -670,7 +677,7 @@ function bindAIDetail() {
     setCurrentProviderData({ key: keyEl.value.trim() });
     save();
     refreshAllProviderBadges();
-    refreshCurrentUsingBar();
+    refreshProviderConfigHeading();
   });
   if (baseEl) baseEl.addEventListener("input", () => {
     setCurrentProviderData({ base: baseEl.value.trim() });
@@ -808,7 +815,6 @@ async function runTest(engine, resultId, btn) {
   }
 }
 
-// ---------- 导航 ----------
 /**
  * 绑定设置页导航项，切换当前可见的设置区域。
  */
@@ -834,7 +840,38 @@ function bindBackButton() {
   if (btn) btn.addEventListener("click", closeServiceDetail);
 }
 
-// ---------- 字段绑定 ----------
+const STYLE_FIELDS={fontFamily:"translationFontFamily",fontSize:"translationFontSize",fontWeight:"translationFontWeight",lineHeight:"translationLineHeight",paragraphSpacing:"translationParagraphSpacing"};
+/**
+ * 将安全配置回填到控件，预览与网页通过同一套样式模块渲染。
+ */
+function renderTranslationStyle(){
+  cfg.translationStyle=window.BT_TRANSLATION_STYLE.normalize(cfg.translationStyle);
+  const style=cfg.translationStyle;
+  for(const [key,id]of Object.entries(STYLE_FIELDS))setValue(id,String(style[key]));
+  setValue("translationColorMode",style.color==="inherit"?"inherit":"custom");
+  setValue("translationColor",style.color==="inherit"?"#333333":style.color);
+  document.getElementById("translationColor").disabled=style.color==="inherit";
+  window.BT_TRANSLATION_STYLE.apply(document.getElementById("translationStylePreview"),style);
+}
+/**
+ * 样式保存复用普通偏好的防抖入口，不触发引擎切换、取消或翻译请求。
+ */
+function bindTranslationStyle(){
+  const readControls=()=>{
+    const value={};
+    for(const [key,id]of Object.entries(STYLE_FIELDS))value[key]=["fontSize","lineHeight","paragraphSpacing"].includes(key)
+      ?Number(document.getElementById(id).value):document.getElementById(id).value;
+    value.color=document.getElementById("translationColorMode").value==="inherit"?"inherit":document.getElementById("translationColor").value;
+    cfg.translationStyle=window.BT_TRANSLATION_STYLE.normalize(value);
+    renderTranslationStyle();save();
+  };
+  for(const id of [...Object.values(STYLE_FIELDS),"translationColorMode","translationColor"])
+    document.getElementById(id).addEventListener("change",readControls);
+  document.getElementById("resetTranslationStyle").onclick=()=>{
+    cfg.translationStyle=window.BT_TRANSLATION_STYLE.normalize();renderTranslationStyle();save();
+  };
+}
+
 /**
  * 绑定语言、显示方式和行为表单，使修改写入配置并保存。
  */
@@ -904,7 +941,6 @@ function bindSwitch(id, onChange) {
   });
 }
 
-// ---------- 行为偏好：折叠 / 恢复默认 / 快捷键设置按钮 ----------
 /**
  * 绑定悬停与快捷键等附加行为设置的交互。
  */
@@ -969,13 +1005,11 @@ function updateBehaviorSubStates() {
   }
 }
 
-// ---------- 保存 ----------
 let saveTimer = null;
 /**
  * 延迟 200 毫秒合并连续修改，使用共享存储分流配置与密钥；失败时展示保存失败。
  */
 function save() {
-  // 合并连续输入产生的保存请求；共享存储层负责将密钥和普通偏好分别保存。
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
     try {
@@ -1033,6 +1067,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (applied.from) window.BT_CONST.fillLanguageSelect(document.getElementById("from"), "from", cfg.from);
   if (applied.to) window.BT_CONST.fillLanguageSelect(document.getElementById("to"), "to", cfg.to);
   if (applied.mode) setSegment("mode-seg", cfg.mode);
+  if (applied.translationStyle) renderTranslationStyle();
   for (const key of ["autoTranslate", "hoverPanel", "shortcutTranslate"]) {
     if (applied[key]) setSwitch(key, cfg[key]);
   }
@@ -1043,7 +1078,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   // 只更新服务状态，不覆盖正在编辑的密钥、模型和接口地址。
   if (currentService === "ai") {
     refreshAllProviderBadges();
-    refreshCurrentUsingBar();
+    refreshProviderConfigHeading();
   }
   if (currentService === null) renderServiceList();
   if(applied.requestPolicies)refreshRequestSettings();
@@ -1056,13 +1091,21 @@ window.addEventListener("focus", () => {
 });
 
 // 请求设置与系统规则说明共用 core/request-policy.js，界面不维护另一套默认值。
+// 按服务隔离未保存的请求设置，刷新其他控件时保留编辑草稿。
 const requestDrafts = new Map();
+// 默认服务选择代次，忽略异步流程中的旧选择。
 let serviceSelectionVersion = 0;
 
-/** 返回当前编辑的具体服务；编辑 AI 厂商不会隐式切换默认服务。 */
+/**
+ * 返回当前编辑的具体服务；编辑 AI 厂商不会隐式切换默认服务。
+ */
 function currentRequestService() {
   return {engine:currentService,provider:editingProvider || cfg.aiProvider || "openai"};
 }
+/**
+ * 生成请求策略表单；QPS 和同时请求上限按当前编辑服务分别保存。
+ * @returns {string} 请求区域 HTML，不包含连接凭据输入。
+ */
 function requestSettingsHTML() {
   return '<section class="card request-settings" aria-labelledby="requestSettingsTitle">'+
     '<h3 id="requestSettingsTitle">请求设置</h3><p class="hint">只影响当前服务；同一账号的多个网页共同遵守限制。AI 按厂商分别保存配置。</p>'+
@@ -1076,7 +1119,9 @@ function requestSettingsHTML() {
     '<p id="requestPolicyResult" class="request-result" role="status" aria-live="polite"></p></form></details>'+
     '</section>';
 }
-/** 保存专用字段，不让普通自动保存覆盖另一个窗口刚更新的请求策略。 */
+/**
+ * 保存专用字段，不让普通自动保存覆盖另一个窗口刚更新的请求策略。
+ */
 async function saveRequestSettings(value) {
   const {engine,provider}=currentRequestService(),key=window.BT_REQUEST_POLICY.id(engine,provider);
   const message=window.BT_REQUEST_POLICY.validate(value);
@@ -1088,7 +1133,9 @@ async function saveRequestSettings(value) {
   await window.BT_STORAGE.set({requestPolicies:policies,requestPolicyVersion:window.BT_REQUEST_POLICY.VERSION});
   cfg.requestPolicies=policies;requestDrafts.delete(key);
 }
-/** 只更新请求区域；凭据、地址和模型输入不重建。 */
+/**
+ * 只更新请求区域；凭据、地址和模型输入不重建。
+ */
 function refreshRequestSettings() {
   const mode=document.getElementById("requestMode");
   if(!mode||!currentService)return;
@@ -1126,7 +1173,10 @@ function refreshRequestSettings() {
     catch(error){status.textContent="保存失败："+error.message;}
   };
 }
-/** 只有显式选择才修改默认服务；测试或编辑不会自动替换。 */
+/**
+ * 根据当前服务的就绪和使用状态更新“设为默认服务”按钮，并绑定显式切换操作。
+ * 选择版本号防止较早的异步授权或保存回调覆盖新选择。
+ */
 function refreshDefaultServiceButton() {
   const button=document.getElementById("useServiceButton");if(!button||!currentService)return;
   const {engine,provider}=currentRequestService(),key=engineToSelectValue(engine,provider);
@@ -1148,7 +1198,7 @@ function refreshDefaultServiceButton() {
       if(engine==="ai")value.aiKeys=aiKeys;
       await window.BT_STORAGE.set(value);
       if(revision!==serviceSelectionVersion)return;
-      Object.assign(cfg,value);renderEngineSelect();refreshAllProviderBadges();refreshCurrentUsingBar();
+      Object.assign(cfg,value);renderEngineSelect();refreshAllProviderBadges();refreshProviderConfigHeading();
       showSaveTip("✓ 已设为默认翻译服务");
     }catch(error){showSaveTip("✗ "+error.message);}
     finally{refreshDefaultServiceButton();}
