@@ -1,0 +1,83 @@
+name: 上传 Chrome 商店草稿
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已合入 main 的版本标签，例如 v1.0.1；仅上传草稿'
+        required: true
+        type: string
+      run_tests:
+        description: '运行自动化测试；本次试传关闭此项'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# 同一仓库的上传串行执行，避免两个版本同时覆盖商店草稿。
+concurrency:
+  group: chrome-store-draft
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: 检出版本标签及完整历史
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 准备 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 核对标签、版本与 main 历史
+        run: node scripts/upload-store.cjs --check-release
+
+      - name: 检查上传凭据格式
+        env:
+          CWS_SERVICE_ACCOUNT_JSON: ${{ secrets.CWS_SERVICE_ACCOUNT_JSON }}
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+        run: node scripts/upload-store.cjs --check-config
+
+      - run: npm ci
+      - run: npm run check
+      - if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+        run: npm test
+      - if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+        run: npx playwright install chromium
+      - if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
+        run: npm run test:browser
+
+      - name: 生成并校验商店安装包
+        run: npm run package
+
+      - name: 保留本次安装包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-store-${{ env.RELEASE_TAG }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: 仅上传到 Chrome 商店草稿
+        env:
+          CWS_SERVICE_ACCOUNT_JSON: ${{ secrets.CWS_SERVICE_ACCOUNT_JSON }}
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+        run: node scripts/upload-store.cjs

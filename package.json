@@ -1,9 +1,9 @@
 {
   "name": "yezhiyi-translator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "scripts": {
-    "test": "node tests/translation-style.cjs && node tests/logging.cjs && node tests/regression.cjs && node tests/storage.cjs && node tests/network.cjs && node tests/permissions.cjs && node tests/runtime.cjs && node tests/request-policy.cjs && node tests/languages.cjs && node tests/baidu-verification.cjs",
+    "test": "node tests/translation-style.cjs && node tests/logging.cjs && node tests/regression.cjs && node tests/storage.cjs && node tests/network.cjs && node tests/permissions.cjs && node tests/runtime.cjs && node tests/request-policy.cjs && node tests/languages.cjs && node tests/baidu-verification.cjs && node tests/store-upload.cjs",
     "test:browser": "node tests/browser-layout.cjs && node tests/browser-dynamic.cjs && node tests/browser-collection.cjs && node tests/browser-extension.cjs",
     "check": "node scripts/check.cjs",
     "package": "node scripts/package.cjs",
