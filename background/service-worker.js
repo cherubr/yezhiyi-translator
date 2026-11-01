@@ -8,7 +8,8 @@ importScripts(
   "../core/providers.js",
   "../core/md5.js",
   "../core/languages.js",
-  "../core/translation-runtime.js"
+  "../core/translation-runtime.js",
+  "../core/pdf-document.js"
 );
 
 // 消息动作常量，供后台与内容脚本使用同一套指令名。
@@ -30,6 +31,7 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "页知译 · 翻译选中文字",
       contexts: ["selection"]
     });
+    chrome.contextMenus.create({id:"translatePdf",title:"用页知译打开 PDF 双语阅读",contexts:["page","link","action"]});
   });
 });
 
@@ -39,6 +41,7 @@ chrome.runtime.onInstalled.addListener(() => {
  */
 chrome.action.onClicked.addListener((tab) => {
   if (!tab || !tab.id) return;
+  if(self.BT_PDF_DOCUMENT.isPdfUrl(tab.url)){openPdfReader(tab.url);return;}
 
   safeSendToTab(tab.id, { action: MSG.OPEN_PANEL, toggle: true });
 });
@@ -49,6 +52,7 @@ chrome.action.onClicked.addListener((tab) => {
  * @param {Object} tab 触发菜单的标签页。
  */
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if(info.menuItemId==="translatePdf"){openPdfReader(info.linkUrl||info.pageUrl||tab?.url);return;}
   if (info.menuItemId === "translatePage") {
     safeSendToTab(tab.id, { action: MSG.START_TRANSLATION });
   } else if (info.menuItemId === "translateSelection") {
@@ -98,14 +102,22 @@ async function safeSendToTab(tabId, message) {
  */
 function openExtensionPage(relativePath) {
   const url = chrome.runtime.getURL(relativePath);
-  chrome.tabs.query({ url }, (tabs) => {
-    if (tabs && tabs.length > 0) {
-      chrome.tabs.update(tabs[0].id, { active: true });
-      chrome.windows.update(tabs[0].windowId, { focused: true });
+  chrome.tabs.query({ url:url.split("#")[0] }, (tabs) => {
+    const existing=tabs?.find(tab=>tab.url===url);
+    if (existing) {
+      chrome.tabs.update(existing.id, { active: true });
+      chrome.windows.update(existing.windowId, { focused: true });
     } else {
       chrome.tabs.create({ url });
     }
   });
+}
+
+/** PDF 单独打开阅读页，不修改或接管原 PDF 标签页；来源无效时仍可手动选文件。 */
+function openPdfReader(value) {
+  let hash="";
+  try{hash="#url="+encodeURIComponent(self.BT_PDF_DOCUMENT.sourceUrl(value).href);}catch(_){}
+  openExtensionPage("pdf/reader.html"+hash);
 }
 
 // 批次表：key 对应 owner、cancelled 和消费者控制器集合；属于本轮后台内存。
@@ -267,6 +279,17 @@ function cancelRequestGroup(request,sender) {
  */
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   const { action } = request;
+
+  if(action==="OPEN_PDF_READER"){
+    openPdfReader(request.url||sender.tab?.url);sendResponse({ok:true});return false;
+  }
+  if(action==="GET_TRANSLATION_STYLES"){
+    Promise.all(["core/translation-style.css","content/content.css"].map(file=>
+      fetch(chrome.runtime.getURL(file)).then(response=>response.text())))
+      .then(parts=>sendResponse({ok:true,data:parts.join("\n")}))
+      .catch(()=>sendResponse({ok:false}));
+    return true;
+  }
 
   if(action===MSG.SET_PAGE_STATE) {
     try {

@@ -41,6 +41,8 @@ t.STATE.from='auto';t.STATE.to='zh-CN';
 class Element {
  constructor(tag='span') { this.nodeType=1; this.tagName=tag.toUpperCase(); this.children=[]; this.style={setProperty(name,value){this[name]=value;}}; this.attrs={}; this.isConnected=true; this.className=''; this.classList={contains: name=>this.className.split(' ').includes(name),toggle:(name,on)=>{const names=new Set(this.className.split(' ').filter(Boolean));on?names.add(name):names.delete(name);this.className=[...names].join(' ');},add:name=>{this.className+=' '+name;}}; }
  get parentElement(){return this.parentNode||null;}
+ get localName(){return this.tagName.toLowerCase();}
+ getRootNode(){return this.parentNode?.getRootNode?.()||context.document;}
  get childNodes(){return this.children;}
  getBoundingClientRect(){return {width:200,height:20,top:0,bottom:20,left:0,right:200};}
  closest(){return null;}
@@ -56,7 +58,7 @@ class Element {
  setAttribute(k,v){this.attrs[k]=v;}
  removeAttribute(k){delete this.attrs[k];}
 }
-context.document={createElement:tag=>new Element(tag),querySelectorAll:()=>[]};
+context.document={nodeType:9,isConnected:true,createElement:tag=>new Element(tag),querySelectorAll:()=>[]};
 const parents=[];
 for (const tag of ['p','li','td','h2']) {
  const parent=new Element('div'),el=new Element(tag),link=new Element('a');
@@ -97,7 +99,7 @@ context.window.getComputedStyle=()=>({display:'block',visibility:'visible'});
  * 构造带可见性和控件边界的候选节点，供无浏览器采集断言使用。
  */
 function candidate(text,{compact=false,hidden=false,control=false}={}) {
- const el={textContent:text,tagName:compact?'LABEL':'DIV',children:[],childNodes:[],querySelectorAll:()=>[],closest(sel){
+ const el={nodeType:1,isConnected:true,getRootNode:()=>context.document,textContent:text,tagName:compact?'LABEL':'DIV',children:[],childNodes:[],querySelectorAll:()=>[],closest(sel){
    if(sel.includes('[hidden]'))return hidden?{}:null;
    return null;
  },hasAttribute(){return false;},querySelector(sel){return control&&sel.startsWith('input,')?{}:null;},

@@ -110,6 +110,28 @@
     return sourceOf(unit)===(unit.sourceText??unit.text);
   }
 
+  /** 沿实际父元素及开放组件宿主查找祖先；不访问封闭组件或 iframe。 */
+  function parentElement(el) {return el?.parentElement || el?.getRootNode?.()?.host || null;}
+  function closestComposed(el,selector) {
+    for(let node=el;node;node=parentElement(node))if(node.matches?.(selector))return node;
+    return null;
+  }
+
+  /** 发现开放组件根。每次只遍历给定子树，插件、输入及禁译子树由调用方排除。 */
+  function visitRoots(root,visit,exclude=()=>false) {
+    const pending=[root],seen=new Set();
+    while(pending.length){
+      const current=pending.pop();
+      if(!current||seen.has(current)||exclude(current))continue;
+      seen.add(current);visit(current);
+      const elements=[...(current.nodeType===1?[current]:[]),...(current.querySelectorAll?.("*")||[])];
+      for(const el of elements){
+        if(exclude(el))continue;
+        if(el.shadowRoot)pending.push(el.shadowRoot);
+      }
+    }
+  }
+
   /**
    * 采集器只返回单元，不移动节点、不请求接口。style 与行内子树分析缓存仅存活于本次扫描。
    * 整页、局部补翻和 Shift 都通过同一个入口；状态兼容判断由内容脚本回调提供。
@@ -129,11 +151,14 @@
       const boundary=el=>el.matches(BLOCK_TEXT)||BLOCK_DISPLAY.test(style(el).display);
       const control=el=>el.matches(CONTROLS+", "+INPUTS);
       const addRoot=root=>{
-        if(!root?.isConnected||root.closest(excluded))return;
-        if(root.matches(options.selector))candidates.add(root);
-        root.querySelectorAll(options.selector).forEach(el=>candidates.add(el));
+        if(!root?.isConnected||closestComposed(root.host||root,excluded))return;
+        visitRoots(root,current=>{
+          if(current.host)options.onShadowRoot?.(current);
+          if(current.matches?.(options.selector))candidates.add(current);
+          current.querySelectorAll(options.selector).forEach(el=>candidates.add(el));
+        },el=>!!closestComposed(el.host||el,excluded));
       };
-      if(!roots)doc.querySelectorAll(options.selector).forEach(el=>candidates.add(el));
+      if(!roots)addRoot(doc);
       else for(const root of roots){
         // 内联文字变动时归并到所属正文段落，避免只补翻句中一个 span。
         addRoot(root?.closest?.(BLOCK_TEXT)||root);
@@ -146,7 +171,7 @@
         if(depth>64)return null;
         if(inlineCache.has(el))return inlineCache.get(el);
         let result=null;
-        if(!hidden(el)&&!boundary(el)&&!control(el)){
+        if(!el.shadowRoot&&!el.localName?.includes("-")&&!hidden(el)&&!boundary(el)&&!control(el)){
           if(el.matches(OPAQUE)){
             const unsafe=el.querySelector("pre, script, style, noscript, iframe, svg, math, canvas, "+INPUTS+", "+HIDDEN);
             const descendants=[...el.querySelectorAll("*")];
@@ -169,7 +194,7 @@
 
       const units=[];
       for(const el of candidates){
-        if(el.closest(excluded)||options.ownedByAncestor?.(el)||!options.acceptElement(el,scan))continue;
+        if(closestComposed(el,excluded)||options.ownedByAncestor?.(el)||!options.acceptElement(el,scan))continue;
         const runs=[];let nodes=[],segments=[],prose="",hasBoundary=false,hasControl=false;
         const flush=()=>{if(nodes.length)runs.push({nodes,segments,prose});nodes=[];segments=[];prose="";};
         for(const child of el.childNodes||[]){
@@ -214,5 +239,5 @@
     }
     return {collect};
   }
-  global.BT_TRANSLATION_UNITS={createCollector,encode,decode,protectedRanges,nodesOf,sourceOf,isCurrent};
+  global.BT_TRANSLATION_UNITS={createCollector,encode,decode,protectedRanges,nodesOf,sourceOf,isCurrent,parentElement,closestComposed,visitRoots};
 })(typeof self!=="undefined"?self:globalThis);

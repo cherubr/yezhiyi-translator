@@ -29,9 +29,11 @@
   ],
   "optional_host_permissions": [
     "https://*/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+    "http://*/*"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
   "background": {
     "service_worker": "background/service-worker.js"
   },
@@ -71,6 +73,7 @@
         "core/translation-units.js",
         "core/request-policy.js",
         "core/providers.js",
+        "core/pdf-document.js",
         "content/content.js"
       ],
       "css": [

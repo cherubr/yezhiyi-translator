@@ -7,8 +7,8 @@ function check(file){const r=spawnSync(process.execPath,['--check',file],{stdio:
 /**
  * 递归检查指定源码目录中的 JavaScript 文件，不遍历依赖目录。
  */
-function walk(dir){for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,entry.name);if(entry.isDirectory())walk(p);else if(/\.(c?js)$/.test(p))check(p);}}
-for(const dir of ['background','content','core','settings','scripts','tests'])walk(path.join(root,dir));
+function walk(dir){for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const p=path.join(dir,entry.name);if(entry.isDirectory())walk(p);else if(/\.(c?js|mjs)$/.test(p))check(p);}}
+for(const dir of ['background','content','core','settings','pdf','scripts','tests'])walk(path.join(root,dir));
 for(const ref of [manifest.background.service_worker,...manifest.content_scripts.flatMap(x=>[...x.js,...x.css]),...Object.values(manifest.icons),...Object.values(manifest.action.default_icon)])
  if(!fs.existsSync(path.join(root,ref)))throw Error('缺少扩展文件：'+ref);
 const pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json')));

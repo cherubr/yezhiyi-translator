@@ -1,0 +1,16 @@
+const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
+const context={URL};context.self=context;vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(__dirname,'../core/pdf-document.js'),'utf8'),context);
+const api=context.BT_PDF_DOCUMENT;
+assert.equal(api.isPdfUrl('https://example.org/a.PDF?download=1#page=2'),true);
+assert.equal(api.isPdfUrl('https://example.org/page?file=a.pdf'),false);
+for(const url of ['file:///private/secret.pdf','javascript:alert(1)','https://user:secret@example.org/a.pdf','chrome://settings'])assert.throws(()=>api.sourceUrl(url));
+assert.equal(api.sourceUrl('https://example.org/a.pdf#page=2').href,'https://example.org/a.pdf');
+const item=(str,x,y,eol=false)=>({str,transform:[12,0,0,12,x,y],width:str.length*6,height:12,hasEOL:eol});
+assert.deepEqual(Array.from(api.paragraphs([item('Hello',10,100),item('world',46,100,true),item('Another paragraph.',10,60,true)])),['Hello world','Another paragraph.']);
+assert.deepEqual(Array.from(api.paragraphs([item('Left column.',10,100,true),item('Right column.',300,100,true)])),['Left column.','Right column.']);
+assert.equal(api.paragraphs([item('12345',0,0,true)]).length,0);
+assert.ok(api.paragraphs([item('a'.repeat(20000),0,0,true)]).every(text=>text.length<=6000));
+assert.equal(api.isPdfDocument({contentType:'application/pdf'}),true);
+assert.equal(api.isPdfDocument({contentType:'text/html',body:{innerText:'Ordinary article'},querySelector:()=>({})}),false);
+console.log('PASS: PDF 来源校验、页内文字分段/分栏、超长单元及普通网页内嵌 PDF 边界');

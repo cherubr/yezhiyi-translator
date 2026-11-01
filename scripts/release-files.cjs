@@ -1,5 +1,5 @@
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const RELEASE_FILES=Object.freeze(['manifest.json','background','content','core','settings','assets','PRIVACY.md']);
+const RELEASE_FILES=Object.freeze(['manifest.json','background','content','core','settings','pdf','assets','PRIVACY.md']);
 const CONFIG_PATTERN=/const LOG_CONFIG = Object\.freeze\(\{[\s\S]*?\}\);/g;
 
 /**

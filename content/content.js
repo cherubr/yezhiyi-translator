@@ -358,6 +358,9 @@ function init() {
   // null/wholePageScan 表示重新检查文档候选，dirtyRoots 表示仅需扫描的局部区域。
   // “全页扫描”仍受 isVisibleBlock 过滤，不表示立即发送屏幕外所有文字。
   const dirtyRoots = new Set();
+  // 开放组件共享一个观察器；根节点移除时清理强引用，不对每次变动全页重扫。
+  const shadowRoots = new Set(), pendingShadowHosts = new Set(), boundShadowRoots = new WeakSet();
+  let dynamicObserver = null, shadowStylesPromise = null, rootDiscoveryTimer = null;
   /**
    * 生成失败/未变化记录的配置作用域，切换引擎、AI 配置或语言后可重新处理。
    * 该内部比较值可能包含 AI 凭据，不能作为日志字段或可见错误消息输出。
@@ -396,7 +399,11 @@ function init() {
    * @returns {boolean} 是否满足当前可见性采集条件。
    */
   function isVisibleBlock(el) {
-    if (el.closest("[hidden], [aria-hidden='true']")) return false;
+    if (window.BT_TRANSLATION_UNITS.closestComposed(el,"[hidden], [aria-hidden='true']")) return false;
+    for(let host=el.getRootNode()?.host;host;host=host.getRootNode()?.host){
+      const hostStyle=window.getComputedStyle(host);
+      if(hostStyle.display==="none"||hostStyle.visibility==="hidden"||hostStyle.visibility==="collapse")return false;
+    }
     const style = window.getComputedStyle(el);
     if (style.visibility === "hidden" || style.visibility === "collapse" || style.display === "none") return false;
     const rect = el.getBoundingClientRect();
@@ -407,6 +414,7 @@ function init() {
   const translationUnits=window.BT_TRANSLATION_UNITS;
   // 状态判断与 DOM 结构划分分别管理；三个翻译入口共用同一个采集器。
   const unitCollector=translationUnits.createCollector({
+    onShadowRoot:registerShadowRoot,
     getDocument:()=>document,
     selector:BLOCK_SELECTOR+", "+FORM_SELECTOR+", "+TEXT_SELECTOR,
     getStyle:el=>window.getComputedStyle(el),
@@ -417,7 +425,7 @@ function init() {
      */
     ownedByAncestor(el) {
       // 整段已在请求、已完成或被手动还原时，不能再向其链接/span 发起重复请求。
-      for(let parent=el.parentElement;parent;parent=parent.parentElement)
+      for(let parent=translationUnits.parentElement(el);parent;parent=translationUnits.parentElement(parent))
         if(parent.hasAttribute(STATE.processedAttr))return true;
       return false;
     },
@@ -454,7 +462,10 @@ function init() {
    * @param {Object} options hover/retryProcessed 控制主动单段的过滤例外。
    * @returns {Object[]} 含 el、text、kind、源快照、保护映射及可选节点区间的单元。
    */
-  function collectBlocks(roots,options={}) {return unitCollector.collect(roots,options);}
+  function collectBlocks(roots,options={}) {
+    discoverShadowRoots(roots||[document]);
+    return unitCollector.collect(roots,options);
+  }
 
   /**
    * 按文字容器位置排序：当前视口优先，再处理下方和已滚过的上方内容。
@@ -487,6 +498,10 @@ function init() {
    * @returns {Promise<void>} 本轮队列及在途文字单元排空后结束，不代表全页均翻译成功。
    */
   async function translatePage(force = false, automatic = false) {
+    if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)){
+      if(!automatic)chrome.runtime.sendMessage({action:"OPEN_PDF_READER",url:location.href},()=>{void chrome.runtime.lastError;});
+      return;
+    }
     // 自动任务不能解除用户暂停；只有手动翻译入口可以恢复当前页面。
     if (automatic && ((!STATE.pageStarted && !STATE.autoTranslate) || STATE.pagePaused || STATE.cancelRequested)) return;
     if (!isPageVisible()) {
@@ -803,6 +818,7 @@ function init() {
         el.closest("button, [role='button'], summary, [role='tab'], [role='menuitem'], [role='option']"))) wrapper.classList.add("bt-translation-control");
     el.appendChild(original);
     el.appendChild(wrapper);
+    ensureShadowStyles(el.getRootNode());
     translatedElements.set(el, { wrapper, original, sourceText: (original.textContent || "").trim() });
     applyEntryMode(translatedElements.get(el));
   }
@@ -964,7 +980,7 @@ function init() {
     if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return null;
     let node;
     if (typeof document.caretPositionFromPoint === "function") {
-      node = document.caretPositionFromPoint(point.x, point.y)?.offsetNode;
+      node = document.caretPositionFromPoint(point.x, point.y,{shadowRoots:[...shadowRoots]})?.offsetNode;
     } else if (typeof document.caretRangeFromPoint === "function") {
       node = document.caretRangeFromPoint(point.x, point.y)?.startContainer;
     }
@@ -994,7 +1010,7 @@ function init() {
    * @returns {Object|null} 已译段定位或可执行的新采集单元。
    */
   function getHoverItem(target, point, retryProcessed = false) {
-    if (!target?.closest || target.closest(HOVER_EXCLUDED_SELECTOR)) return null;
+    if (!target?.closest || translationUnits.closestComposed(target,HOVER_EXCLUDED_SELECTOR)) return null;
     for (let el = target; el;) {
       const parent = el.parentElement;
       let entry = translatedElements.get(el);
@@ -1127,7 +1143,8 @@ function init() {
     let pointer = null;
     let shiftPressed = false;
     // mousemove 只记坐标；触发翻译发生在移入或 Shift 按下，不每移动一个像素就发请求。
-    const rememberPointer = e => { pointer = { target: e.target, x: e.clientX, y: e.clientY }; };
+    const eventTarget=e=>(e.composedPath?.()||[]).find(node=>node instanceof Element)||e.target;
+    const rememberPointer = e => { pointer = { target: eventTarget(e), x: e.clientX, y: e.clientY }; };
     document.addEventListener("mousemove", rememberPointer, { passive: true });
     document.addEventListener("mouseover", e => {
       rememberPointer(e);
@@ -1137,7 +1154,7 @@ function init() {
         shiftPressed = true;
         hoverGesture++;
       }
-      return translateHoverBlock(e.target, false, { x: e.clientX, y: e.clientY, gesture: STATE.hoverRequireShift ? hoverGesture : undefined });
+      return translateHoverBlock(eventTarget(e), false, { x: e.clientX, y: e.clientY, gesture: STATE.hoverRequireShift ? hoverGesture : undefined });
     });
     document.addEventListener("mouseout", e => { if (!e.relatedTarget) pointer = null; });
     document.addEventListener("keydown", e => {
@@ -1146,11 +1163,17 @@ function init() {
       shiftPressed = true;
       hoverGesture++;
       if (!STATE.hoverRequireShift || e.ctrlKey || e.altKey || e.metaKey || e.isComposing || e.defaultPrevented) return;
-      if (e.target?.closest?.("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+      if (translationUnits.closestComposed(eventTarget(e),"input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
       if (!pointer) return;
       // 页面滚动后鼠标可能没动，使用当前位置命中元素，避免操作已经移走的旧段落。
-      const target = Number.isFinite(pointer.x) && Number.isFinite(pointer.y)
+      let target = Number.isFinite(pointer.x) && Number.isFinite(pointer.y)
         ? document.elementFromPoint(pointer.x, pointer.y) : pointer.target;
+      // document 命中宿主，逐层进入开放根；封闭组件保持原边界。
+      while(target?.shadowRoot){
+        const inner=target.shadowRoot.elementFromPoint(pointer.x,pointer.y);
+        if(!inner||inner===target)break;
+        target=inner;
+      }
       return translateHoverBlock(target, true, { ...pointer, gesture: hoverGesture });
     });
     document.addEventListener("keyup", e => { if (e.key === "Shift") shiftPressed = false; });
@@ -1372,6 +1395,9 @@ function init() {
    * 工具栏的再次点击关闭由 OPEN_PANEL 的 toggle 分支处理，此函数仍保持幂等打开。
    */
   function openControlPanel() {
+    if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)){
+      chrome.runtime.sendMessage({action:"OPEN_PDF_READER",url:location.href},()=>{void chrome.runtime.lastError;});return;
+    }
     if (panelModalEl) return;
     const mount = getMountNode();
     if (!mount) return;
@@ -1459,6 +1485,7 @@ function init() {
           </button>
           <a class="bt-modal-settings" id="btModalFeedback" href="https://github.com/cherubr/yezhiyi-translator/issues/new" target="_blank" rel="noopener noreferrer" title="前往 GitHub 提交问题">问题反馈 ↗</a>
         </div>
+        <button class="bt-modal-btn" id="btModalPdf">PDF 双语阅读 · 打开在线或本地文件</button>
       </div>
     `;
     mount.appendChild(panelModalEl);
@@ -1565,6 +1592,7 @@ function init() {
     $("#btModalSettings").onclick = () => {
       chrome.runtime.sendMessage({ action: "OPEN_SETTINGS" });
     };
+    $("#btModalPdf").onclick=()=>chrome.runtime.sendMessage({action:"OPEN_PDF_READER"});
   }
 
   /**
@@ -1991,12 +2019,16 @@ function init() {
   function observeDynamicContent() {
     const uiSelector = ".bt-translation-text, .bt-modal, .bt-popup, .bt-fab-wrap, .bt-thumb, .bt-page-notice";
     const observer = new MutationObserver(records => {
+      for(const record of records)for(const node of record.addedNodes||[])
+        if(node.nodeType===1)discoverShadowRoots([node]);
+      const detachedRoots=pruneShadowRoots();
       if (STATE.pagePaused || STATE.cancelRequested) return;
       const touched = new Set();
       let relevant = false;
       for (const record of records) {
-        const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
-        if (!target || target.closest(uiSelector)) continue;
+        const target = record.target.nodeType === 1 ? record.target : record.target.host || record.target.parentElement;
+        if (!target || translationUnits.closestComposed(target,uiSelector)) continue;
+        if(target.hasAttribute("data-bt-shadow-style"))continue;
         for (let parent = target; parent; parent = parent.parentElement) {
           if (translatedElements.has(parent)) touched.add(parent);
         }
@@ -2018,6 +2050,7 @@ function init() {
         dirtyRoots.add(root);
         relevant = true;
       }
+      if(detachedRoots)for(const el of translatedElements.keys())if(!el.isConnected)touched.add(el);
       for (const el of touched) {
         const entry = translatedElements.get(el);
         const current = [...el.childNodes].filter(node => node !== entry.wrapper).map(node => node.textContent || "").join("").trim();
@@ -2035,15 +2068,77 @@ function init() {
       }
     });
     // attributeFilter 不包含插件自用 data-bt-processed，减少状态标记造成的观察噪声。
+    dynamicObserver=observer;
     observer.observe(document.body || document.documentElement, {
       subtree:true,childList:true,characterData:true,attributes:true,
       attributeFilter:["open","hidden","aria-hidden","aria-expanded","data-state","class","style"]
     });
+    discoverShadowRoots([document]);
     for (const event of ["toggle","transitionend","animationend"]) document.addEventListener(event,(e)=>{
       // 插件按钮悬停动画、悬浮球动画均不属于网页内容变化。
       if (e.target instanceof Element && e.target.closest(uiSelector)) return;
       scheduleVisibleTranslation();
     },true);
+  }
+
+  /** 为所有开放根复用发布包内的译文 CSS，不向组件注入面板或其他交互。 */
+  function ensureShadowStyles(root) {
+    if(!root?.host||root.__btTranslationStyles)return;
+    registerShadowRoot(root);
+    root.__btTranslationStyles=true;
+    if(!shadowStylesPromise)shadowStylesPromise=new Promise(resolve=>{
+      chrome.runtime.sendMessage({action:"GET_TRANSLATION_STYLES"},res=>{
+        if(chrome.runtime.lastError||!res?.data)return resolve(null);
+        const sheet=new CSSStyleSheet();sheet.replaceSync(res.data);resolve(sheet);
+      });
+    });
+    shadowStylesPromise.then(sheet=>{
+      if(sheet&&root.isConnected)root.adoptedStyleSheets=[...root.adoptedStyleSheets,sheet];
+      else root.__btTranslationStyles=false;
+    }).catch(()=>{root.__btTranslationStyles=false;});
+  }
+
+  function registerShadowRoot(root) {
+    if(shadowRoots.has(root))return;
+    shadowRoots.add(root);
+    dynamicObserver?.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,
+      attributeFilter:["open","hidden","aria-hidden","aria-expanded","data-state","class","style"]});
+    if(boundShadowRoots.has(root))return;
+    boundShadowRoots.add(root);
+    root.addEventListener("scroll",()=>{wholePageScan=true;scheduleVisibleTranslation();},{passive:true,capture:true});
+    root.addEventListener("slotchange",()=>{dirtyRoots.add(root);scheduleVisibleTranslation();});
+  }
+
+  /** 仅追踪尚未附加根的自定义元素，处理组件稍后升级/异步 attachShadow 的情况。 */
+  function discoverShadowRoots(roots) {
+    for(const start of roots)translationUnits.visitRoots(start,root=>{
+      if(root.host)registerShadowRoot(root);
+      for(const el of [ ...(root.nodeType===1?[root]:[]),...(root.querySelectorAll?.("*")||[])])
+        if(el.localName?.includes("-")&&!el.shadowRoot&&!translationUnits.closestComposed(el,EXCLUDED_SELECTOR))pendingShadowHosts.add(el);
+    },el=>!!translationUnits.closestComposed(el.host||el,EXCLUDED_SELECTOR));
+    if(!rootDiscoveryTimer&&pendingShadowHosts.size&&STATE.pageStarted&&!STATE.pagePaused&&isPageVisible())
+      rootDiscoveryTimer=setTimeout(checkPendingShadowRoots,1000);
+  }
+  function checkPendingShadowRoots() {
+    rootDiscoveryTimer=null;pruneShadowRoots();
+    if(STATE.pagePaused||!STATE.pageStarted||!isPageVisible())return;
+    for(const host of pendingShadowHosts)if(host.shadowRoot){
+      pendingShadowHosts.delete(host);discoverShadowRoots([host]);dirtyRoots.add(host);scheduleVisibleTranslation();
+    }
+    if(!rootDiscoveryTimer&&pendingShadowHosts.size)rootDiscoveryTimer=setTimeout(checkPendingShadowRoots,1000);
+  }
+  function pruneShadowRoots() {
+    let removed=false;
+    for(const root of shadowRoots)if(!root.host.isConnected){shadowRoots.delete(root);removed=true;}
+    for(const host of pendingShadowHosts)if(!host.isConnected)pendingShadowHosts.delete(host);
+    if(removed&&dynamicObserver){
+      dynamicObserver.disconnect();
+      const config={subtree:true,childList:true,characterData:true,attributes:true,
+        attributeFilter:["open","hidden","aria-hidden","aria-expanded","data-state","class","style"]};
+      dynamicObserver.observe(document.body||document.documentElement,config);
+      for(const root of shadowRoots)dynamicObserver.observe(root,config);
+    }
+    return removed;
   }
 
   /**
@@ -2059,6 +2154,7 @@ function init() {
     // 页面已有可挂载节点后再初始化悬浮球、观察器及自动翻译。
     const start = () => {
       createFab();
+      if(window.BT_PDF_DOCUMENT?.isPdfDocument(document))return;
       bindPageLifecycle();
       bindHoverTranslate();
       observeDynamicContent();
