@@ -1159,3 +1159,5 @@ button.service-card { width:100%;font:inherit;text-align:left;color:inherit; }
 .translation-color-row input[type="color"] { flex: 0 0 44px; width: 44px; height: 38px; padding: 3px; border: 1px solid #d8dee7; border-radius: 6px; background: transparent; }
 .translation-color-row input:disabled { opacity: .4; }
 .style-preview { overflow-wrap: anywhere; }
+
+.glossary-row{display:grid;grid-template-columns:minmax(90px,1fr) minmax(120px,1.3fr) 120px auto auto auto;gap:8px;align-items:center;margin:10px 0}.glossary-row>input,.glossary-row>select{min-width:0;width:100%}.glossary-row label{white-space:nowrap;font-size:12px}.glossary-row input[type=checkbox]{width:auto}.glossary-file{position:relative;overflow:hidden;padding:8px;border:1px solid #cbd7e5;border-radius:6px;cursor:pointer}.glossary-file input{position:absolute;inset:0;opacity:0;width:100%}@media(max-width:900px){.glossary-row{grid-template-columns:1fr 1fr}.glossary-row select{width:100%}}

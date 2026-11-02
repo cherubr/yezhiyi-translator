@@ -11,6 +11,22 @@ assert.deepEqual(Array.from(api.paragraphs([item('Hello',10,100),item('world',46
 assert.deepEqual(Array.from(api.paragraphs([item('Left column.',10,100,true),item('Right column.',300,100,true)])),['Left column.','Right column.']);
 assert.equal(api.paragraphs([item('12345',0,0,true)]).length,0);
 assert.ok(api.paragraphs([item('a'.repeat(20000),0,0,true)]).every(text=>text.length<=6000));
+// 原版式定位必须沿用同一组翻译单元，且不能跨栏遮盖或重复遮盖长字符串分片。
+const items=[item('Heading',10,100,true),item('Body first line',10,60,true),item('and second line',10,44,true)];
+const blocks=api.blocks(items);
+assert.deepEqual(Array.from(blocks,block=>block.text),Array.from(api.paragraphs(items)));
+assert.deepEqual(Array.from(blocks[1].indices),[1,2]);
+const viewport={transform:[2,0,0,-2,0,400],scale:2,width:600,height:400};
+const rect=api.layoutRect(blocks[1],items,{},viewport);
+assert.ok(rect.left>=0&&rect.top>=0&&rect.left+rect.width<=1&&rect.top+rect.height<=1);
+assert.ok(Math.abs(rect.top-(400-120-19.2-1)/400)<.0001,'按字体上升部和 PDF 基线定位');
+const tallFont=api.layoutRect(blocks[0],items,{undefined:{ascent:1.2,descent:-.3}},viewport);
+assert.ok(tallFont.top+tallFont.height>(400-200)/400,'字体 ascent 超过 1 时仍覆盖基线下方的降部');
+assert.equal(api.blocks([item('Left',10,100),item('Right',300,100,true)]).length,2,'同一基线的两栏也独立');
+assert.equal(api.blocks([item('Title',10,100,true),{...item('Small body',10,84,true),height:6}]).length,2,'标题与正文字号不同须分开');
+assert.equal(api.layoutRect(api.blocks([item('a'.repeat(20000),0,0,true)])[0],items,{},viewport),null);
+assert.equal(api.layoutRect(blocks[0],[{...items[0],transform:[0,12,-12,0,10,100]}],{},viewport),null,'旋转文字不错误遮盖');
+assert.equal(api.layoutRect(blocks[0],[{...items[0],dir:'ttb'}],{},viewport),null);
 assert.equal(api.isPdfDocument({contentType:'application/pdf'}),true);
 assert.equal(api.isPdfDocument({contentType:'text/html',body:{innerText:'Ordinary article'},querySelector:()=>({})}),false);
-console.log('PASS: PDF 来源校验、页内文字分段/分栏、超长单元及普通网页内嵌 PDF 边界');
+console.log('PASS: PDF 来源校验、文字分段/分栏、原版式定位、特殊文字回退及普通网页内嵌 PDF 边界');

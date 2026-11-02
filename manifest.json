@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "页知译 · 网页双语翻译",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "在网页段落下方显示翻译，支持 Google / 百度 / AI 多引擎，带悬浮球 + 控制面板 + 完整设置页。",
   "permissions": [
     "contextMenus",
@@ -81,7 +81,9 @@
         "content/content.css"
       ],
       "run_at": "document_idle",
-      "all_frames": false
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
     }
   ],
   "homepage_url": "https://github.com/cherubr/yezhiyi-translator"

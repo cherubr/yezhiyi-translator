@@ -30,7 +30,7 @@ async function setup(browser,html,preferences={}) {
  for(const file of ['core/constants.js','core/translation-style.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
  await page.addStyleTag({content:fs.readFileSync(path.join(root,'core/translation-style.css'),'utf8')+'\n'+fs.readFileSync(path.join(root,'content/content.css'),'utf8')});
  const source=fs.readFileSync(path.join(root,'content/content.js'),'utf8').replace('  bootstrap();',
- '  window.test={STATE,openControlPanel,changeTranslationSetting,translatePage,cancelTranslation,collectBlocks,translatedElements,insertTranslation,clearTranslations,createFab,observeDynamicContent,scheduleVisibleTranslation,bindHoverTranslate,bindPageLifecycle};');
+ '  window.test={STATE,applyMode,openControlPanel,changeTranslationSetting,translatePage,cancelTranslation,collectBlocks,translatedElements,insertTranslation,clearTranslations,createFab,observeDynamicContent,scheduleVisibleTranslation,bindHoverTranslate,bindPageLifecycle};');
  await page.addScriptTag({content:source});
  await page.evaluate(preferences=>{Object.assign(test.STATE,preferences);test.createFab();test.bindPageLifecycle();test.observeDynamicContent();test.bindHoverTranslate();},preferences);
  return page;
@@ -38,6 +38,50 @@ async function setup(browser,html,preferences={}) {
 (async()=>{
  const browser=await chromium.launch({headless:true,...(process.env.BROWSER_CHANNEL?{channel:process.env.BROWSER_CHANNEL}:{})});
  try {
+ // 模拟前端框架保存父节点/子节点引用，再按保存的引用执行原生更新。
+ // 保留节点对象本身还不够，翻译后直接父子关系和更新能力也必须保留。
+ const ownership=await setup(browser,'<p id="owned">Original <a href="#" id="ownedLink">linked text</a> remains.</p><label id="mixedOwned"><input id="ownedInput" value="private">Account <strong id="ownedStrong">name</strong></label>',{autoTranslate:true});
+ await ownership.evaluate(()=>{
+   window.ownedNodes=[...document.getElementById('owned').childNodes,...document.getElementById('mixedOwned').childNodes].map(node=>({node,parent:node.parentNode}));
+ });
+ await ownership.evaluate(()=>test.translatePage());
+ assert.equal(await ownership.evaluate(()=>ownedNodes.every(({node,parent})=>node.parentNode===parent)),true,'整段与混合片段都不得搬动网站原节点');
+ await ownership.evaluate(()=>{
+   const text=ownedNodes[0];text.parent.removeChild(text.node);
+   const link=ownedNodes[1];link.parent.replaceChild(document.createTextNode('replacement from framework'),link.node);
+   const tail=ownedNodes[2];tail.parent.insertBefore(document.createTextNode('inserted before tail'),tail.node);
+ });
+ await ownership.waitForFunction(()=>document.querySelector('#owned .bt-translation-text')?.textContent.includes('replacement from framework'));
+ await ownership.evaluate(()=>test.cancelTranslation());
+ assert.ok(!(await ownership.locator('#owned').innerText()).includes('Original '),'取消不复活网站已经删除的旧原文');
+ assert.equal(await ownership.inputValue('#ownedInput'),'private');
+ await ownership.close();
+ console.log('PASS Chromium: 原节点父子关系、框架 removeChild/replaceChild/insertBefore 与动态更新后取消');
+ const only=await setup(browser,'<p id="onlyLive">Original live text <a id="onlyLink" href="#">original link</a></p><p id="onlyEmpty">Original empty target</p><p id="onlyMoved">Original moved text</p><p id="moveTarget"></p><p id="onlyImmediateMode">Original immediately cleared text</p><p id="onlyImmediateCancel">Original immediately cancelled text</p>',{autoTranslate:true});
+ await only.evaluate(async()=>{
+   window.liveNode=document.getElementById('onlyLive').firstChild;window.emptyNode=document.getElementById('onlyEmpty').firstChild;window.movedNode=document.getElementById('onlyMoved').firstChild;
+   window.modeNode=document.getElementById('onlyImmediateMode').firstChild;window.cancelNode=document.getElementById('onlyImmediateCancel').firstChild;
+   await test.translatePage();test.STATE.mode='translation-only';test.applyMode();
+ });
+ assert.equal(await only.evaluate(()=>liveNode.parentNode===document.getElementById('onlyLive')&&liveNode.textContent===''),true);
+ await only.evaluate(()=>{modeNode.textContent='';test.STATE.mode='bilingual';test.applyMode();});
+ assert.equal(await only.evaluate(()=>modeNode.textContent),'','观察器回调前切换模式也不得恢复网页已清空的内容');
+ await only.evaluate(()=>{test.STATE.mode='translation-only';test.applyMode();});
+ await only.evaluate(()=>{
+   liveNode.textContent='New text written by the page ';
+   document.getElementById('onlyLink').style.setProperty('display','inline-block');
+   emptyNode.textContent='';
+   document.getElementById('moveTarget').appendChild(movedNode);
+ });
+ await only.waitForFunction(()=>document.querySelector('#onlyLive .bt-translation-text')?.textContent.includes('New text written by the page'));
+ await only.evaluate(()=>{cancelNode.textContent='';test.cancelTranslation();});
+ assert.equal(await only.evaluate(()=>cancelNode.textContent),'','同一事件内清空并取消不写回旧原文');
+ assert.equal(await only.evaluate(()=>liveNode.textContent),'New text written by the page ');
+ assert.equal(await only.locator('#onlyLink').evaluate(el=>el.style.display),'inline-block','保留网站后来设置的样式');
+ assert.equal(await only.evaluate(()=>emptyNode.textContent),'','不恢复网站主动清空的原文');
+ assert.equal(await only.evaluate(()=>movedNode.parentNode===document.getElementById('moveTarget')&&movedNode.textContent==='Original moved text'),true,'网站移动原节点后，撤销扩展隐藏但不搬回节点');
+ await only.close();
+ console.log('PASS Chromium: 仅译文保持父子关系、隐藏期间更新/清空/移动文字、网页样式覆盖及取消不写回旧内容');
  const page=await setup(browser,'<p id="source">Original paragraph</p><label id="label"><input id="check" type="checkbox">Accept terms</label><input id="value" value="User secret"><textarea id="edit">Entered content</textarea><button id="button"><svg width="12" height="12"><path d="M0 0L10 10"/></svg>Save changes</button><div id="unrelated">Unrelated content</div>',{autoTranslate:true});
  await page.evaluate(()=>{window.savedControl=document.querySelector('#check');window.savedButton=document.querySelector('#button');savedButton.addEventListener('click',()=>window.clicks=(window.clicks||0)+1);});
  await page.evaluate(()=>test.translatePage());
@@ -394,7 +438,7 @@ async function setup(browser,html,preferences={}) {
  await hoverKeys.keyboard.up('Shift');
  // 整页翻译后的单段还原不被动态补翻立即恢复，且不影响其他段落。
  await hoverKeys.evaluate(async()=>{await chrome.storage.sync.set({autoTranslate:true});await test.translatePage();});
- await hoverKeys.locator('#keyA .bt-original-text').hover();
+ await hoverKeys.locator('#keyA').hover({position:{x:40,y:8}});
  await hoverKeys.keyboard.down('Shift');await hoverKeys.keyboard.up('Shift');
  await hoverKeys.waitForTimeout(650);
  assert.equal(await hoverKeys.locator('#keyA .bt-translation-text').count(),0,'手动还原的段落不被动态补翻恢复');
@@ -431,7 +475,7 @@ async function setup(browser,html,preferences={}) {
  assert.equal(await cancelledHover.evaluate(()=>test.STATE.pagePaused),true);
  assert.equal(await cancelledHover.evaluate(()=>requests.length),beforeManual+1,'单段操作不重启自动补翻');
  assert.equal(await cancelledHover.locator('#cancelB .bt-translation-text').count(),0);
- await cancelledHover.locator('#cancelA .bt-original-text').hover();
+ await cancelledHover.locator('#cancelA').hover();
  await cancelledHover.keyboard.down('Shift');await cancelledHover.keyboard.up('Shift');
  assert.equal(await cancelledHover.locator('.bt-translation-text').count(),0,'暂停状态下也可还原当前段落');
  // 暂停后新发起的手动请求，仍可被下一次取消中止。
@@ -604,12 +648,13 @@ async function setup(browser,html,preferences={}) {
  // 记录和译文同时丢失但原文容器残留时，解包当前原文再翻译，不能套上第二层旧容器。
  await actual.evaluate(()=>{const el=document.getElementById('actualParagraph');el.querySelector('.bt-translation-text').remove();test.translatedElements.delete(el);});
  await pressActual();await actual.waitForFunction(()=>document.querySelector('#actualParagraph .bt-hover-translation'));
- assert.equal(await actual.locator('#actualParagraph .bt-original-text').count(),1);
+ assert.equal(await actual.locator('#actualParagraph .bt-original-text').count(),0,'不再创建源节点包装');
+ assert.equal(await actual.evaluate(()=>savedActualLink.parentNode===document.getElementById('actualParagraph')),true);
  // 节点已经被网页整体复用，不能把旧记录中的原文插回页面。
  await actual.evaluate(()=>document.getElementById('actualParagraph').textContent='Replacement original after page update');
  await actual.locator('#actualParagraph').hover();await actual.keyboard.press('Shift');
  await actual.waitForFunction(()=>document.querySelector('#actualParagraph .bt-hover-translation'));
- assert.equal(await actual.locator('#actualParagraph .bt-original-text').textContent(),'Replacement original after page update');
+ assert.equal(await actual.locator('#actualParagraph').evaluate(el=>el.firstChild.textContent),'Replacement original after page update');
  assert.equal(await actual.locator('#actualParagraph .bt-hover-translation').textContent(),'译：Replacement original after page update');
  // 文字片段的译文被移除时也能重新翻译，并保持复选框节点。
  const pressFragment=async()=>{
@@ -708,17 +753,19 @@ async function setup(browser,html,preferences={}) {
  console.log('PASS Chromium: AI 长段投递背压、完整段落及时显示、手动上限即时生效、旧视口慢任务不阻塞新视口');
 
  const long=await setup(browser,Array.from({length:2500},(_,i)=>'<div><span id="row'+i+'">Long page row '+i+'</span></div>').join(''),{autoTranslate:true});
- const metrics=await long.evaluate(()=>{
+ const metrics=await long.evaluate(async()=>{
    const start=performance.now();const blocks=test.collectBlocks();const scanMs=performance.now()-start;
    for(let i=0;i<500;i++){const el=document.querySelector('#row'+i);el.setAttribute(test.STATE.processedAttr,'1');test.insertTranslation(el,'长页面译文 '+i);}
-   test.STATE.pageStarted=true;
+   // 先走公开的整页入口建立会话，初始扫描与后续局部变更分别验证。
+   const initialRequests=requests.length;await test.translatePage();
+   if(requests.length!==initialRequests)throw Error("已有译文不能被祖先内联采集重新包含");
    return {scanMs,visibleBlocks:blocks.length,translated:test.translatedElements.size};
  });
  await long.waitForTimeout(400);
  await long.evaluate(()=>{
    window.fullScans=0;const original=document.querySelectorAll.bind(document);
    document.querySelectorAll=(...args)=>{window.fullScans++;return original(...args);};
-   document.querySelector('#row0 .bt-original-text').firstChild.textContent='Updated long page row';
+   document.querySelector('#row0').firstChild.textContent='Updated long page row';
  });
  await long.waitForFunction(()=>document.querySelector('#row0 .bt-translation-text')?.textContent.includes('Updated long page row'));
  assert.equal(await long.evaluate(()=>window.fullScans),0);

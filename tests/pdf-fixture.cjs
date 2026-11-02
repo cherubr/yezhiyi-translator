@@ -1,6 +1,6 @@
 /** 两页标准 PDF，用于真实解析、翻页和网络传输测试，不包含外部资源。 */
 function pdfFixture(){
- const streams=['BT /F1 18 Tf 40 740 Td (Hello PDF first page.) Tj 0 -36 Td (Read the account guide.) Tj ET','BT /F1 18 Tf 40 740 Td (Second PDF page.) Tj ET'];
+ const streams=['q 0.06 0.09 0.14 rg 35 730 300 36 re f Q BT /F1 18 Tf 1 1 1 rg 40 740 Td (Hello PDF first page.) Tj ET BT /F1 18 Tf 40 704 Td (Read the account guide.) Tj ET','BT /F1 18 Tf 40 740 Td (Second PDF page.) Tj ET'];
  const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>',
   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>',
   '<< /Length '+streams[0].length+' >>\nstream\n'+streams[0]+'\nendstream',

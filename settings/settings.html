@@ -23,6 +23,7 @@
         <button class="nav-item" data-tab="display"><span class="nav-icon">🎨</span><span>显示样式</span></button>
         <button class="nav-item" data-tab="service"><span class="nav-icon">🔌</span><span>翻译服务</span></button>
         <button class="nav-item" data-tab="behavior"><span class="nav-icon">🧠</span><span>行为偏好</span></button>
+        <button class="nav-item" data-tab="glossary"><span class="nav-icon">术</span><span>技术术语表</span></button>
         <button class="nav-item" data-tab="about"><span class="nav-icon">ℹ</span><span>关于</span></button>
       </nav>
 
@@ -36,7 +37,7 @@
         <section class="tab-panel active" data-panel="general">
           <h1>基本设置</h1>
           <p class="desc">选择默认翻译服务与语言方向。连接和请求设置分别管理。</p>
-          <p><button type="button" id="openPdfReader">打开 PDF 双语阅读</button></p>
+          <p><button type="button" id="openPdfReader">打开 PDF 双语阅读</button> <a href="../ocr/reader.html" target="_blank" rel="noopener">图片文字识别与翻译</a></p>
 
           <div class="field">
             <label for="engine">默认翻译服务</label>
@@ -250,6 +251,16 @@
         </section>
 
 
+        <section class="tab-panel" data-panel="glossary">
+          <h1>技术术语表</h1><p class="desc">为网页、PDF 和图片翻译统一译法；术语只保存在本机。</p>
+          <p><label><input id="glossaryEnabled" type="checkbox"> 启用术语表</label></p>
+          <p><label><input id="glossaryBuiltins" type="checkbox"> 保留内置术语原名：Linux、RHCE、OpenShift、Kubernetes、Red Hat</label></p>
+          <p class="hint">译法留空表示保留原词。长词优先，自定义规则优先于内置规则；目标语言为“所有语言”时通用。</p>
+          <p><a href="../ocr/reader.html" target="_blank" rel="noopener">打开图片文字识别与翻译</a> · 扩展图标右键菜单也可打开。</p>
+          <div id="glossaryRows"></div>
+          <p class="request-actions"><button id="addGlossary" type="button">添加术语</button><button id="saveGlossary" type="button">保存术语表</button><button id="exportGlossary" type="button">导出 JSON</button><label class="glossary-file">导入 JSON<input id="importGlossary" type="file" accept="application/json,.json"></label></p>
+          <p id="glossaryStatus" role="status" aria-live="polite"></p>
+        </section>
         <section class="tab-panel" data-panel="about">
           <h1>关于</h1>
           <p class="desc">页知译 · 网页双语翻译</p>
@@ -283,6 +294,8 @@
   <script src="../core/translation-style.js"></script>
   <script src="../core/request-policy.js"></script>
   <script src="../core/providers.js"></script>
+  <script src="../core/glossary.js"></script>
   <script src="settings.js"></script>
+  <script src="glossary.js"></script>
 </body>
 </html>

@@ -9,7 +9,9 @@ importScripts(
   "../core/md5.js",
   "../core/languages.js",
   "../core/translation-runtime.js",
-  "../core/pdf-document.js"
+  "../core/pdf-document.js",
+  "../core/glossary.js",
+  "../core/frame-sessions.js"
 );
 
 // 消息动作常量，供后台与内容脚本使用同一套指令名。
@@ -31,6 +33,7 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "页知译 · 翻译选中文字",
       contexts: ["selection"]
     });
+    chrome.contextMenus.create({id:"translateImage",title:"页知译 · 识别并翻译图片文字",contexts:["image","action"]});
     chrome.contextMenus.create({id:"translatePdf",title:"用页知译打开 PDF 双语阅读",contexts:["page","link","action"]});
   });
 });
@@ -52,6 +55,7 @@ chrome.action.onClicked.addListener((tab) => {
  * @param {Object} tab 触发菜单的标签页。
  */
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if(info.menuItemId==="translateImage"){let hash="";try{hash="#url="+encodeURIComponent(self.BT_PDF_DOCUMENT.sourceUrl(info.srcUrl).href);}catch(_){}openExtensionPage("ocr/reader.html"+hash);return;}
   if(info.menuItemId==="translatePdf"){openPdfReader(info.linkUrl||info.pageUrl||tab?.url);return;}
   if (info.menuItemId === "translatePage") {
     safeSendToTab(tab.id, { action: MSG.START_TRANSLATION });
@@ -59,7 +63,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     safeSendToTab(tab.id, {
       action: MSG.TRANSLATE_SELECTION,
       text: info.selectionText
-    });
+    },info.frameId);
   }
 });
 
@@ -87,9 +91,9 @@ chrome.commands.onCommand.addListener(async (command) => {
  * @param {Object} message 包含 action 及该指令需要的数据。
  * @returns {Promise<void>} 消息发送结束；失败不会继续向调用方抛出。
  */
-async function safeSendToTab(tabId, message) {
+async function safeSendToTab(tabId, message,frameId=0) {
   try {
-    await chrome.tabs.sendMessage(tabId, message);
+    await chrome.tabs.sendMessage(tabId, message,{frameId});
   } catch (e) {
 
   }
@@ -132,7 +136,7 @@ let baiduVerificationWrite = Promise.resolve();
 const currentDocuments = new Map(), retiredOwners = new Set();
 
 // 请求策略更新计数，用于阻止较早的异步存储读取覆盖新策略。
-let requestPolicyRevision = 0;
+let requestPolicyRevision = 0, glossaryRevision=0;
 
 /**
  * 生成文档身份，用于隔离不同页面及刷新前后的请求。
@@ -280,6 +284,11 @@ function cancelRequestGroup(request,sender) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   const { action } = request;
 
+  if(action==="FRAME_READY"||action==="FRAME_SESSION"){
+    const operation=action==="FRAME_READY"?frameSessions.ready(sender):frameSessions.publish(sender,request);
+    operation.then(data=>sendResponse({ok:true,data})).catch(error=>sendResponse({ok:false,error:error.message}));return true;
+  }
+  if(action==="OPEN_OCR_READER"){openExtensionPage("ocr/reader.html");sendResponse({ok:true});return false;}
   if(action==="OPEN_PDF_READER"){
     openPdfReader(request.url||sender.tab?.url);sendResponse({ok:true});return false;
   }
@@ -338,6 +347,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+const frameSessions=self.BT_FRAME_SESSIONS.create(
+  (tabId,message,frame)=>chrome.tabs.sendMessage(tabId,message,!frame?undefined:frame.documentId?{documentId:frame.documentId}:{frameId:frame.frameId}),
+  tabId=>chrome.tabs.sendMessage(tabId,{action:"FRAME_REQUEST_SESSION"},{frameId:0}).catch(()=>{})
+);
 // 本后台生命周期共用的调度器，负责限速、缓存、去重和有限重试。
 const translationRuntime=self.BT_CREATE_TRANSLATION_RUNTIME(dispatchTranslation);
 /**
@@ -346,6 +359,7 @@ const translationRuntime=self.BT_CREATE_TRANSLATION_RUNTIME(dispatchTranslation)
  * @param {string} area 存储区域，只处理 local 中的 requestPolicies。
  */
 chrome.storage.onChanged?.addListener((changes,area)=>{
+  if(area==="local"&&changes.glossary)glossaryRevision++;
   if(area==="local"&&changes.requestPolicies){
 
     requestPolicyRevision++;
@@ -358,6 +372,7 @@ chrome.storage.onChanged?.addListener((changes,area)=>{
  * @param {number} tabId 被关闭标签页的编号。
  */
 chrome.tabs?.onRemoved?.addListener(tabId=>{
+  frameSessions.remove(tabId);
   for(const [frame,record] of currentDocuments)if(record.tabId===tabId){
     cancelOwner(record.owner);retiredOwners.add(record.owner);currentDocuments.delete(frame);
   }
@@ -390,9 +405,9 @@ async function handleTranslate(request, signal, sender = {}) {
   translationRuntime.setOwnerState(owner,{visible:request.pageVisible!==false,viewportEpoch:request.viewportEpoch,version:request.stateVersion});
 
   // 开始读取存储时的策略版本快照。
-  const revision=requestPolicyRevision;
+  const revision=requestPolicyRevision,termRevision=glossaryRevision;
   // 共享存储读取的凭据、验证结果和请求策略。
-  const stored=await self.BT_STORAGE.get(["aiProvider","aiKeys","baiduAppId","baiduKey","baiduVerification","requestPolicies"]);
+  const stored=await self.BT_STORAGE.get(["aiProvider","aiKeys","baiduAppId","baiduKey","baiduVerification","requestPolicies","glossary"]);
   if(revision===requestPolicyRevision)translationRuntime.updatePolicies(stored.requestPolicies || {});
 
   // 提交运行时的请求快照，附带可见性、优先级、重试及诊断回调。
@@ -427,7 +442,11 @@ async function handleTranslate(request, signal, sender = {}) {
 
   if(signal?.aborted)throw cancelledError();
   if (request.verifyBaidu) return testBaiduConnection(normalized);
-  return translationRuntime.runText(normalized);
+  if(termRevision!==glossaryRevision)throw cancelledError();
+  const prepared=self.BT_GLOSSARY.prepare(text,stored.glossary||{},to);
+  const translated=await translationRuntime.runText({...normalized,text:prepared.text});
+  if(signal?.aborted||termRevision!==glossaryRevision)throw cancelledError();
+  return self.BT_GLOSSARY.restore(translated,prepared);
 }
 
 /**

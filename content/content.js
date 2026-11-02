@@ -12,6 +12,42 @@ if (window.__BT_INJECTED) {
  */
 function init() {
   const { MSG } = window.BT_CONST;
+  // 只有顶层页面显示控制面板；子框架通过扩展后台继承页面会话，不通过网页 postMessage 信任指令。
+  const IS_SUBFRAME=!!window.top&&window.top!==window;
+  const frameSession={sessionId:"",version:-1,started:false,paused:true,visible:true};
+  const retiredFrameSessions=new Set();let frameIntersecting=!IS_SUBFRAME;
+  function publishFrameSession(){
+    if(IS_SUBFRAME||!chrome.runtime.id)return;
+    try{chrome.runtime.sendMessage({action:"FRAME_SESSION",started:STATE.pageStarted,paused:STATE.pagePaused,visible:!document.hidden},()=>{void chrome.runtime.lastError;});}catch(_){}
+  }
+  function applyFrameSession(value){
+    if(!IS_SUBFRAME||!value?.sessionId)return;
+    if(frameSession.sessionId&&frameSession.sessionId!==value.sessionId){
+      if(retiredFrameSessions.has(value.sessionId))return;
+      retiredFrameSessions.add(frameSession.sessionId);while(retiredFrameSessions.size>8)retiredFrameSessions.delete(retiredFrameSessions.values().next().value);
+    }else if(value.version<frameSession.version)return;
+    const wasActive=frameSession.started&&!frameSession.paused;
+    Object.assign(frameSession,value);
+    if(!value.started||value.paused){cancelTranslation();return;}
+    if(!wasActive){STATE.pagePaused=false;STATE.pageStarted=true;}
+    notifyPageState();
+    if(activePageRun)activePageRun.pump();
+    if(isPageVisible()&&!STATE.pagePaused)void translatePage(false,true);
+  }
+  function registerFrame(){
+    if(!chrome.runtime.id)return;
+    try{chrome.runtime.sendMessage({action:"FRAME_READY"},response=>{
+      if(chrome.runtime.lastError)return;
+      if(IS_SUBFRAME&&response?.ok)applyFrameSession(response.data);else if(!IS_SUBFRAME)publishFrameSession();
+    });}catch(_){}
+    if(IS_SUBFRAME&&typeof IntersectionObserver!=="undefined"){
+      new IntersectionObserver(entries=>{
+        frameIntersecting=entries.some(entry=>entry.isIntersecting&&entry.intersectionRect.width>0&&entry.intersectionRect.height>0);
+        notifyPageState();if(frameIntersecting&&!STATE.pagePaused&&frameSession.started&&!frameSession.paused){activePageRun?.pump();wholePageScan=true;scheduleVisibleTranslation();}
+      }).observe(document.documentElement);
+    }
+  }
+
   /**
    * 仅在日志级别允许 debug 时输出本地诊断，不参与翻译决策或错误计数。
    * 传入参数不得包含网页原文、完整译文、密钥或含凭据的配置对象。
@@ -157,6 +193,12 @@ function init() {
   // START/CANCEL 控制整页会话；OPEN_PANEL 只控制面板；TOGGLE_PANEL 是旧名，实际切换翻译。
   // 后台状态/诊断必须匹配当前 requestToken，避免取消后仍收到旧批次的等待或失败外观。
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if(request.action==="FRAME_APPLY_SESSION"){
+      if(sender?.id===chrome.runtime.id)applyFrameSession(request);return;
+    }
+    if(request.action==="FRAME_REQUEST_SESSION"){
+      if(sender?.id===chrome.runtime.id)publishFrameSession();return;
+    }
     switch (request.action) {
       case MSG.START_TRANSLATION: translatePage(); break;
       case MSG.CANCEL_TRANSLATION: cancelTranslation(); break;
@@ -192,9 +234,9 @@ function init() {
     if(!Object.keys(changes).length)return;
     // relevant 决定是否重读配置；affecting 仅列出会改变译文含义/服务的字段。
     // 显示模式和请求参数变化不必把已有译文全部撤回，策略变化可直接唤醒当前队列。
-    const relevant = ["engine", "aiProvider", "aiKeys", "requestPolicies", "from", "to", "mode", "translationStyle", "autoTranslate", "hoverPanel", "baiduAppId", "baiduKey", "baiduVerification", "hoverTranslate", "hoverRequireShift"];
+    const relevant = ["engine", "aiProvider", "aiKeys", "requestPolicies", "glossary", "from", "to", "mode", "translationStyle", "autoTranslate", "hoverPanel", "baiduAppId", "baiduKey", "baiduVerification", "hoverTranslate", "hoverRequireShift"];
     if (!relevant.some((key) => Object.prototype.hasOwnProperty.call(changes, key))) return;
-    const affecting = ["engine","aiProvider","aiKeys","from","to","baiduAppId","baiduKey"];
+    const affecting = ["engine","aiProvider","aiKeys","from","to","baiduAppId","baiduKey","glossary"];
     const changed = affecting.some(key => Object.prototype.hasOwnProperty.call(changes,key) &&
       JSON.stringify(changes[key].newValue) !== JSON.stringify(STATE[key]));
     if (area === "sync" && changes.autoTranslate) {
@@ -223,7 +265,7 @@ function init() {
   async function reloadConfig() {
     const autoVersion = autoPreferenceVersion;
     const cfg = await window.BT_STORAGE.get([
-      "engine", "aiProvider", "aiKeys", "requestPolicies", "from", "to", "mode", "translationStyle",
+      "engine", "aiProvider", "aiKeys", "requestPolicies", "glossary", "from", "to", "mode", "translationStyle",
       "autoTranslate", "hoverPanel",
       "baiduAppId", "baiduKey", "baiduVerification",
       "hoverTranslate", "hoverRequireShift"
@@ -233,6 +275,7 @@ function init() {
     if (cfg.aiProvider) STATE.aiProvider = cfg.aiProvider;
     if (cfg.aiKeys) STATE.aiKeys = cfg.aiKeys;
     STATE.requestPolicies=cfg.requestPolicies||{};
+    STATE.glossary=cfg.glossary||window.BT_CONST.DEFAULTS.glossary;
     if (cfg.from) STATE.from = cfg.from;
     if (cfg.to) STATE.to = cfg.to;
     const modeChanged = cfg.mode && cfg.mode !== STATE.mode;
@@ -349,8 +392,10 @@ function init() {
     return normalize(source) === normalize(translation);
   }
   // Map 必须可遍历，用于模式切换和整页还原；失效节点通过观察器删除记录。
-  // entry 保存 wrapper、original、sourceText，连续片段可另保存 logicalText。
+  // entry 保存原节点快照和独立译文；不包装、不搬动网站管理的原节点。
   const translatedElements = new Map();
+  const entriesByContainer = new WeakMap(), sourceOwners = new WeakMap();
+  const layoutEffects = new WeakMap();
   // 弱引用记录随网页节点释放；取消后整体更换集合，旧任务仍持有的集合不影响新轮次。
   let failureRecords = new WeakMap();
   let pendingRecords = new WeakSet();
@@ -361,6 +406,7 @@ function init() {
   // 开放组件共享一个观察器；根节点移除时清理强引用，不对每次变动全页重扫。
   const shadowRoots = new Set(), pendingShadowHosts = new Set(), boundShadowRoots = new WeakSet();
   let dynamicObserver = null, shadowStylesPromise = null, rootDiscoveryTimer = null;
+  let processDynamicRecords=null,processingMutations=false;
   /**
    * 生成失败/未变化记录的配置作用域，切换引擎、AI 配置或语言后可重新处理。
    * 该内部比较值可能包含 AI 凭据，不能作为日志字段或可见错误消息输出。
@@ -423,7 +469,9 @@ function init() {
     /**
      * 已由祖先单元占有的子元素不重复提交，避免整段与句中链接同时请求。
      */
+    ownedNode(node) { return sourceOwners.has(node)||!!node.__btTranslationEntry; },
     ownedByAncestor(el) {
+      for(let node=el;node;node=translationUnits.parentElement(node))if(sourceOwners.has(node))return true;
       // 整段已在请求、已完成或被手动还原时，不能再向其链接/span 发起重复请求。
       for(let parent=translationUnits.parentElement(el);parent;parent=translationUnits.parentElement(parent))
         if(parent.hasAttribute(STATE.processedAttr))return true;
@@ -498,6 +546,7 @@ function init() {
    * @returns {Promise<void>} 本轮队列及在途文字单元排空后结束，不代表全页均翻译成功。
    */
   async function translatePage(force = false, automatic = false) {
+    if(IS_SUBFRAME&&(!frameSession.started||frameSession.paused))return;
     if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)){
       if(!automatic)chrome.runtime.sendMessage({action:"OPEN_PDF_READER",url:location.href},()=>{void chrome.runtime.lastError;});
       return;
@@ -554,6 +603,7 @@ function init() {
       return;
     }
     STATE.pageStarted = true;
+    publishFrameSession();
     if(!isPageVisible()){STATE.translating=false;STATE.visibilityPaused=true;setFabBusy(false);return;}
     // 固定本轮配置，防止请求过程中更改设置导致同一批次混用服务或语言。
     const runConfig = { engine: STATE.engine, from: STATE.from, to: STATE.to,
@@ -670,7 +720,7 @@ function init() {
 
   /**
    * 单元执行器：防重复登记 → 请求编码文字 → 校验批次/原文快照 → 还原保护标记 → 插入。
-   * 原译文相同只记录跳过；混合区间仅包装连续源节点，不移动旁边的输入控件。
+   * 原译文相同只记录跳过；整段和混合区间均保持原节点归属，仅插入独立译文。
    * 原文在请求期间改变则丢弃旧结果并安排重新采集；取消不计失败，失败按类型记录冷却。
    * @param {Object} item 共享采集器返回的翻译单元，保护映射仅留在页面。
    * @param {Object} config 本轮配置快照，含 cancelVersion 和可选 hover 标记。
@@ -721,19 +771,8 @@ function init() {
         return "skipped";
       }
       failureRecords.delete(target);
-      if (node) {
-        const fragment = document.createElement("span");
-        fragment.className = "bt-text-fragment";
-        el.insertBefore(fragment, node);
-        for(const sourceNode of translationUnits.nodesOf(item))fragment.appendChild(sourceNode);
-        insertTranslation(fragment, translation, config.hover === true,item.kind);
-        const entry=translatedElements.get(fragment);if(entry)entry.logicalText=text;
-        if (config.hover) fragment.setAttribute(STATE.processedAttr, "hover");
-      } else {
-        insertTranslation(el, translation, config.hover === true,item.kind);
-        const entry=translatedElements.get(el);if(entry)entry.logicalText=text;
-        if (config.hover) el.setAttribute(STATE.processedAttr, "hover");
-      }
+      insertTranslation(el, translation, config.hover === true,item.kind,item);
+      if(config.hover&&!node)el.setAttribute(STATE.processedAttr,"hover");
       debugLog("[页知译][诊断] 译文已显示 · 页面任务 #"+diagnosticId,{totalMs:Date.now()-startedAt,insertMs:Date.now()-receivedAt});
       return true;
     } catch (e) {
@@ -778,61 +817,143 @@ function init() {
     return false;
   }
 
-  /**
-   * 在文字容器内部包装原节点并追加译文，保存原文节点与译文节点的对应记录。
-   * 移动原节点保留事件和控件状态；译文使用 textContent，不执行接口返回的 HTML。
-   * kind 与实际布局共同决定正文/控件/单行样式，字体颜色由 CSS 和所在区域继承。
-   * @param {Element} el 完整段落或 handleBlock 创建的连续片段容器。
-   * @param {string} translation 已校验并还原保护项的纯文本译文。
-   * @param {boolean} isHover 是否为单段翻译，决定专用样式及模式处理。
-   * @param {string} kind 采集器给出的 paragraph/control/inline 分类。
-   */
-  function insertTranslation(el, translation, isHover = false, kind) {
-    if (STATE.cancelRequested && !isHover) return;
-    if (!el.isConnected) return;
-    // 将译文放在原文字块内部，避免新增同级节点破坏网格、弹性布局、表格或列表。
-    if (translatedElements.has(el)) return;
-    const singleLine=needsSingleLineTranslation(el);
-    const original = document.createElement("span");
-    original.className = "bt-original-text";
-    original.style.display = "contents";
-    while (el.firstChild) original.appendChild(el.firstChild);
-    const wrapper = document.createElement("span");
-    wrapper.className = "bt-translation-text" + (isHover ? " bt-hover-translation" : "");
-    wrapper.textContent = translation;
-    if(singleLine){wrapper.classList.add("bt-translation-tight");wrapper.title=translation;}
-    wrapper.setAttribute("translate", "no");
-    const display=window.getComputedStyle(el).display;
-    const paragraph=kind==="paragraph"&&!singleLine;
-    if(paragraph)wrapper.classList.add("bt-translation-paragraph");
-    else if(display==="inline"||el.classList.contains("bt-text-fragment")||
-      el.closest("nav, [role='navigation'], aside, [role='menu']"))wrapper.classList.add("bt-translation-inline");
-    if(kind==="control")wrapper.classList.add("bt-translation-control");
-    const compact = el.matches && (el.matches(FORM_SELECTOR + ", td, th") || !!el.closest("form, " + DIALOG_SELECTOR));
-    if (compact) wrapper.classList.add("bt-translation-compact");
-    // 继承所在区域的文字颜色，兼容同一页面上的浅色和深色卡片。
-    // 预览与真实译文共用同一映射，避免内联颜色覆盖用户保存的配置。
-    window.BT_TRANSLATION_STYLE.apply(wrapper,STATE.translationStyle);
-    // 按钮等紧凑控件采用行内译文，尽量减少额外高度并保留原始文字。
-    if (el.matches && (el.matches("button, [role='button'], summary, [role='tab'], [role='menuitem'], [role='option']") ||
-        el.closest("button, [role='button'], summary, [role='tab'], [role='menuitem'], [role='option']"))) wrapper.classList.add("bt-translation-control");
-    el.appendChild(original);
-    el.appendChild(wrapper);
-    ensureShadowStyles(el.getRootNode());
-    translatedElements.set(el, { wrapper, original, sourceText: (original.textContent || "").trim() });
-    applyEntryMode(translatedElements.get(el));
+  /** 还原前处理尚未回调的网页变更，避免同一事件内清空原文又切换/取消时写回旧值。 */
+  function flushDynamicRecords(){
+    if(processingMutations||!dynamicObserver?.takeRecords)return;
+    const records=dynamicObserver.takeRecords();if(records.length)processDynamicRecords?.(records);
   }
 
-  /**
-   * 仅通过原文容器显示状态和译文类名切换双语/仅译文，不重新请求接口。
-   * 悬停单段译文保留原文对照，不随全局仅译文模式隐藏原文。
-   * @param {Object} entry translatedElements 中的原文与译文对应记录。
-   */
+  /** 读取源快照时扣除扩展译文，兼容仅译文模式下由本扩展暂时隐藏的直接文本。 */
+  function entryText(entry){
+    return entry.nodes.map(node=>{
+      const hidden=entry.suppressed.find(item=>item.node===node&&item.restore);
+      return hidden&&node.textContent===""?hidden.text:node.textContent||"";
+    }).join("").trim();
+  }
+  function sourceChildren(el){return [...el.childNodes].filter(node=>!node.classList?.contains("bt-translation-text"));}
+  function isEntryCurrent(entry){
+    if(!entry?.el?.isConnected||entry.nodes.some(node=>node.parentNode!==entry.el))return false;
+    const current=sourceChildren(entry.el);
+    if(entry.full&&(current.length!==entry.nodes.length||current.some((node,index)=>node!==entry.nodes[index])))return false;
+    if(!entry.full){
+      const start=current.indexOf(entry.nodes[0]);
+      if(start<0||entry.nodes.some((node,index)=>current[start+index]!==node))return false;
+      if((current[start-1]||null)!==entry.beforeNode||(current[start+entry.nodes.length]||null)!==entry.afterNode)return false;
+    }
+    return entryText(entry)===entry.sourceText;
+  }
+
+  /** 每项临时样式有引用计数；只撤销仍为扩展写入值的属性，保留网站后续覆盖。 */
+  function styleSnapshot(el){return {attribute:el.getAttribute("style"),cssText:el.style.cssText};}
+  function restoreStyleAttribute(el,snapshot){
+    const current=el.getAttribute("style");
+    if(el.style.cssText!==snapshot.cssText||current===snapshot.attribute)return;
+    if(snapshot.attribute===null)el.removeAttribute("style");else el.setAttribute("style",snapshot.attribute);
+  }
+  function acquireLayout(entry,property,value){
+    let effects=layoutEffects.get(entry.el);if(!effects){effects=new Map();effects.snapshot=styleSnapshot(entry.el);layoutEffects.set(entry.el,effects);}
+    let effect=effects.get(property);
+    if(!effect){effect={value,before:entry.el.style.getPropertyValue(property),priority:entry.el.style.getPropertyPriority(property),owners:new Set()};effects.set(property,effect);entry.el.style.setProperty(property,value);effect.writtenPriority=entry.el.style.getPropertyPriority(property);}
+    effect.owners.add(entry);entry.effects.push(property);
+  }
+  function releaseLayout(entry){
+    const effects=layoutEffects.get(entry.el);if(!effects)return;
+    for(const property of entry.effects){
+      const effect=effects.get(property);if(!effect)continue;
+      effect.owners.delete(entry);if(effect.owners.size)continue;
+      if(entry.el.style.getPropertyValue(property)===effect.value&&entry.el.style.getPropertyPriority(property)===effect.writtenPriority){
+        if(effect.before)entry.el.style.setProperty(property,effect.before,effect.priority);else entry.el.style.removeProperty(property);
+      }
+      effects.delete(property);
+    }
+    if(!effects.size){restoreStyleAttribute(entry.el,effects.snapshot);layoutEffects.delete(entry.el);}
+    entry.effects=[];
+  }
+
+  /** 在源节点原位读取文字范围，用实际所在轨道安排网格译文，不占据图标窄列。 */
+  function placeTranslation(entry,singleLine){
+    const style=window.getComputedStyle(entry.el),wrapper=entry.wrapper;
+    if(!/grid|flex/.test(style.display)||singleLine)return;
+    const range=document.createRange();range.setStartBefore(entry.nodes[0]);range.setEndAfter(entry.nodes.at(-1));
+    const source=range.getBoundingClientRect(),parent=entry.el.getBoundingClientRect();
+    if(/grid/.test(style.display)){
+      const columns=(style.gridTemplateColumns.match(/[\d.]+px/g)||[]).map(parseFloat);
+      const gap=parseFloat(style.columnGap)||0;
+      const rtl=style.direction==="rtl";
+      let offset=rtl?parent.right-(parseFloat(style.borderRightWidth)||0)-(parseFloat(style.paddingRight)||0):
+        parent.left+(parseFloat(style.borderLeftWidth)||0)+(parseFloat(style.paddingLeft)||0),start=-1,end=-1;
+      const tracks=columns.map(width=>{
+        const track=rtl?{left:offset-width,right:offset}:{left:offset,right:offset+width};offset+=(rtl?-1:1)*(width+gap);return track;
+      });
+      tracks.forEach((track,index)=>{
+        if(source.right>track.left+.5&&source.left<track.right-.5){if(start<0)start=index;end=index;}
+      });
+      wrapper.style.gridColumn=start<0?"1 / -1":(start+1)+" / "+(end+2);
+      wrapper.style.minWidth="0";
+    }else if(!String(style.flexDirection).startsWith("column")){
+      // 原始匿名文字/链接继续留在同一父节点，只给新增译文单独安排换行。
+      const reverse=(style.direction==="rtl")!==(style.flexDirection==="row-reverse");
+      const padding=parseFloat(reverse?style.paddingRight:style.paddingLeft)||0,border=parseFloat(reverse?style.borderRightWidth:style.borderLeftWidth)||0;
+      const indent=Math.max(0,(reverse?parent.right-source.right:source.left-parent.left)-padding-border);
+      acquireLayout(entry,"flex-wrap","wrap");
+      wrapper.style.flex="0 0 calc(100% - "+indent+"px)";
+      wrapper.style.marginLeft=(reverse?0:indent)+"px";wrapper.style.marginRight=(reverse?indent:0)+"px";
+      wrapper.style.maxWidth="calc(100% - "+indent+"px)";
+    }
+  }
+
+  /** 独立插入译文，网站原有节点始终保留原父节点和顺序。 */
+  function insertTranslation(el, translation, isHover = false, kind, unit) {
+    if ((STATE.cancelRequested&&!isHover)||!el.isConnected||translatedElements.has(el))return;
+    const nodes=translationUnits.nodesOf(unit||{})||sourceChildren(el);
+    if(!nodes.length||nodes.some(node=>node.parentNode!==el||sourceOwners.has(node)))return;
+    const singleLine=needsSingleLineTranslation(el),wrapper=document.createElement("span");
+    wrapper.className="bt-translation-text"+(isHover?" bt-hover-translation":"");
+    wrapper.textContent=translation;wrapper.setAttribute("translate","no");
+    if(singleLine){wrapper.classList.add("bt-translation-tight");wrapper.title=translation;}
+    const display=window.getComputedStyle(el).display;
+    if(kind==="paragraph"&&!singleLine)wrapper.classList.add("bt-translation-paragraph");
+    else if(unit?.node||display==="inline"||el.closest("nav, [role='navigation'], aside, [role='menu']"))wrapper.classList.add("bt-translation-inline");
+    if(kind==="control"||el.closest("button, [role='button'], summary, [role='tab'], [role='menuitem'], [role='option']"))wrapper.classList.add("bt-translation-control");
+    if(el.matches(FORM_SELECTOR+", td, th")||el.closest("form, "+DIALOG_SELECTOR))wrapper.classList.add("bt-translation-compact");
+    window.BT_TRANSLATION_STYLE.apply(wrapper,STATE.translationStyle);
+    const entry={el,wrapper,nodes:[...nodes],full:!unit?.node,key:unit?.node?wrapper:el,
+      sourceText:nodes.map(node=>node.textContent||"").join("").trim(),logicalText:unit?.text,suppressed:[],effects:[]};
+    const siblings=sourceChildren(el),start=siblings.indexOf(nodes[0]);
+    entry.beforeNode=siblings[start-1]||null;entry.afterNode=siblings[start+nodes.length]||null;
+    placeTranslation(entry,singleLine);
+    const last=nodes.at(-1);el.insertBefore(wrapper,last.nextSibling);
+    wrapper.__btTranslationEntry=entry;
+    for(const node of nodes)sourceOwners.set(node,entry);
+    let entries=entriesByContainer.get(el);if(!entries){entries=new Set();entriesByContainer.set(el,entries);}entries.add(entry);
+    translatedElements.set(entry.key,entry);
+    ensureShadowStyles(el.getRootNode());applyEntryMode(entry);
+  }
+
+  /** 恢复时不搬回被网站移除的节点，也不覆盖网站在隐藏期间写入的新文字或样式。 */
+  function showEntrySource(entry){
+    for(const item of entry.suppressed){
+      if(item.node.nodeType===3){
+        if(item.restore&&item.node.textContent==="")item.node.textContent=item.text;
+      }else if(item.node.style.getPropertyValue("display")==="none"&&item.node.style.getPropertyPriority("display")==="important"){
+        if(item.display)item.node.style.setProperty("display",item.display,item.priority);else item.node.style.removeProperty("display");
+        restoreStyleAttribute(item.node,item.styleSnapshot);
+      }
+    }
+    entry.suppressed=[];
+  }
+  /** 仅译文模式不创建原文包装：直接文本暂存文字，元素仅临时隐藏，节点归属不变。 */
   function applyEntryMode(entry) {
-    const hide = STATE.mode === "translation-only" && !entry.wrapper.classList.contains("bt-hover-translation");
-    entry.original.style.display = hide ? "none" : "contents";
-    // 隐藏原文时去掉双语段落间距，切回双语时恢复上下留白。
-    entry.wrapper.classList.toggle("bt-translation-only", hide);
+    const hide=STATE.mode==="translation-only"&&!entry.wrapper.classList.contains("bt-hover-translation");
+    if(!hide)showEntrySource(entry);
+    else if(!entry.suppressed.length)for(const node of entry.nodes){
+      if(node.nodeType===3&&node.textContent){entry.suppressed.push({node,text:node.textContent,restore:true});node.textContent="";}
+      else if(node.nodeType===1){
+        entry.suppressed.push({node,display:node.style.getPropertyValue("display"),priority:node.style.getPropertyPriority("display"),styleSnapshot:styleSnapshot(node)});
+        node.style.setProperty("display","none","important");
+      }
+    }
+    entry.wrapper.classList.toggle("bt-translation-only",hide);
   }
 
   /**
@@ -840,6 +961,7 @@ function init() {
    * 本操作只改展示，不更换源快照、重新采集或触发网络翻译。
    */
   function applyMode() {
+    flushDynamicRecords();
     for (const entry of translatedElements.values()) {
       if (!entry.wrapper.isConnected) continue;
       applyEntryMode(entry);
@@ -886,25 +1008,17 @@ function init() {
     return null;
   }
 
-  // 解包保存的原始节点，保留链接事件和控件状态；文字片段的临时容器也一并移除。
   /**
-   * 清除全部已有译文，解包保存的原节点，并移除混合片段容器与处理标记。
+   * 清除全部已有译文，撤销本扩展的临时隐藏/布局样式并移除处理标记。
    * 同时清空本页未变化/失败记录，保留原节点身份；不操作后台缓存或用户配置。
    * 这是 DOM 还原工具，本身不取消网络请求；取消入口须先隔离旧批次再调用。
    */
   function clearTranslations() {
-    for (const [el, entry] of translatedElements) {
-      const original = entry.original;
-      if (original.parentNode) {
-        while (original.firstChild) original.parentNode.insertBefore(original.firstChild, original);
-        original.remove();
-      }
-      entry.wrapper.remove();
-      if (el.classList.contains("bt-text-fragment") && el.parentNode) {
-        while (el.firstChild) el.parentNode.insertBefore(el.firstChild, el);
-        el.remove();
-      }
-    }
+    flushDynamicRecords();
+    const entries=new Set(translatedElements.values());
+    for(const root of [document,...shadowRoots])for(const wrapper of root.querySelectorAll(".bt-translation-text"))
+      if(wrapper.__btTranslationEntry)entries.add(wrapper.__btTranslationEntry);
+    for(const entry of entries)restoreEntry(entry.key,entry);
     translatedElements.clear();
     unchangedTextNodes = new WeakMap();
     unchangedElements = new WeakMap();
@@ -938,7 +1052,7 @@ function init() {
   function cancelTranslation() {
     const oldToken=requestToken;
     // 先宣布暂停并提升代次，防止下面 DOM 还原或旧 Promise 结算触发自动重启。
-    STATE.pagePaused=true;STATE.cancelVersion++;
+    STATE.pagePaused=true;STATE.cancelVersion++;publishFrameSession();
     activePageRun?.cancel();STATE.requestNotice="";
     resumeAfterSettingsChange=false;
     requestToken="page-"+Date.now()+"-"+Math.random();
@@ -989,20 +1103,19 @@ function init() {
 
   /**
    * 按真实 DOM 验证该段是否已有有效译文，不依赖上一次按键留下的布尔值。
-   * 要求源容器和译文仍为 el 的子节点、源文字未改变、译文非空且未被 CSS 隐藏。
+   * 要求原节点归属与快照有效、译文仍在源容器内部、译文非空且未被 CSS 隐藏。
    * @returns {boolean} true 时主动按键可还原；false 时应清理失效记录并重新定位。
    */
   function hasHoverTranslation(el, entry) {
-    if (!el.isConnected || !entry?.wrapper?.isConnected || entry.wrapper.parentNode !== el ||
-        entry.original?.parentNode !== el || entry.sourceText !== (entry.original.textContent || "").trim() ||
-        !entry.wrapper.textContent?.trim() || entry.wrapper.hasAttribute("hidden")) return false;
-    const style = window.getComputedStyle(entry.wrapper);
-    return style.display !== "none" && style.visibility !== "hidden" && style.visibility !== "collapse";
+    if(!isEntryCurrent(entry)||!entry.wrapper.isConnected||entry.wrapper.parentNode!==entry.el||
+      !entry.wrapper.textContent?.trim()||entry.wrapper.hasAttribute("hidden"))return false;
+    const style=window.getComputedStyle(entry.wrapper);
+    return style.display!=="none"&&style.visibility!=="hidden"&&style.visibility!=="collapse";
   }
 
   /**
    * 先沿鼠标目标祖先查找有效译文，确保命中原文、链接或译文都指向同一还原区域。
-   * 失效记录先解包当前 DOM，再通过共享采集器查找完整正文或连续混合文字区间。
+   * 失效记录先清理扩展自己的节点和样式，再通过共享采集器查找完整正文或混合区间。
    * 多个候选但无法确定命中单元时返回 null，不将相邻说明文字或整个布局误合并。
    * @param {Element} target 当前指针位置的元素，不使用滚动前已经移走的旧目标。
    * @param {Object} point 指针坐标，用于命中文字节点。
@@ -1011,31 +1124,26 @@ function init() {
    */
   function getHoverItem(target, point, retryProcessed = false) {
     if (!target?.closest || translationUnits.closestComposed(target,HOVER_EXCLUDED_SELECTOR)) return null;
-    for (let el = target; el;) {
-      const parent = el.parentElement;
-      let entry = translatedElements.get(el);
-      if (!entry) {
-        // 记录丢失时仍以实际 DOM 为准，仅识别当前节点的直接子容器，不能误用其他段落的译文。
-        const children = [...(el.children || [])];
-        const original = children.find(child => child.classList.contains("bt-original-text"));
-        const wrapper = children.find(child => child.classList.contains("bt-translation-text"));
-        if (original || wrapper) entry = { original, wrapper, sourceText: (original?.textContent || "").trim() };
-      }
-      if (entry) {
-        if (hasHoverTranslation(el, entry)) {
-          translatedElements.set(el, entry);
-          return { el, text: entry.sourceText };
+    const fallback=target.__btTranslationEntry?.el||target;
+    flushDynamicRecords();if(!target.isConnected)target=fallback;if(!target.isConnected)return null;
+    const hitNode=getHoverTextNode(target,point);
+    for(let el=target;el;el=translationUnits.parentElement(el)){
+      const entries=new Set(entriesByContainer.get(el)||[]);
+      if(el.__btTranslationEntry)entries.add(el.__btTranslationEntry);
+      for(const child of el.children||[])if(child.__btTranslationEntry)entries.add(child.__btTranslationEntry);
+      for(const entry of entries){
+        if(!hasHoverTranslation(entry.key,entry)){
+          const fallback=entry.el;restoreEntry(entry.key,entry);unchangedElements.delete(fallback);
+          if(!target.isConnected)target=fallback;
+          continue;
         }
-        // 网页可能只删除译文、清空译文或复用外层节点；清理记录并解包当前原文，不能恢复旧原文。
-        const fallback = el.classList.contains("bt-text-fragment") ? parent : el;
-        restoreEntry(el, entry);
-        unchangedElements.delete(el);
-        if (!target.isConnected) target = fallback;
-        if (!target?.isConnected) return null;
-        el = target;
-        continue;
+        const matched=el===entry.wrapper||entry.full||entry.nodes.some(node=>node===hitNode||node===target||node.contains?.(target))||
+          (!hitNode&&entry.el===target&&entries.size===1);
+        if(matched){
+          translatedElements.set(entry.key,entry);
+          return {el:entry.key,node:entry.full?null:entry.nodes[0],text:entry.logicalText||entry.sourceText,entry};
+        }
       }
-      el = parent;
     }
     let root = target.closest(BLOCK_SELECTOR + ", " + FORM_SELECTOR +
       ", div, section, dialog, form, fieldset, dt, dd, summary, [role='option'], [role='menuitem'], [role='tab'], [role='status'], [role='tooltip']");
@@ -1064,13 +1172,13 @@ function init() {
    * @param {Object} entry 有效的原文/译文对应记录。
    */
   function restoreHoverItem(el, entry) {
-    const sourceNode = el.classList.contains("bt-text-fragment") ? entry.original.firstChild : null;
-    restoreEntry(el, entry);
-    if (sourceNode?.parentNode) {
-      unchangedTextNodes.set(sourceNode, { text: entry.logicalText||entry.sourceText, scope: requestScope(), hoverRestored: true });
-    } else {
-      unchangedElements.set(el, { text: (el.textContent || "").trim(), scope: requestScope() });
-      el.setAttribute(STATE.processedAttr, "hover-restored");
+    const sourceNode=entry.full?null:entry.nodes[0],sourceElement=entry.el;
+    restoreEntry(el,entry);
+    if(sourceNode?.parentNode){
+      unchangedTextNodes.set(sourceNode,{text:entry.logicalText||entry.sourceText,scope:requestScope(),hoverRestored:true});
+    }else{
+      unchangedElements.set(sourceElement,{text:(sourceElement.textContent||"").trim(),scope:requestScope()});
+      sourceElement.setAttribute(STATE.processedAttr,"hover-restored");
     }
     if (!translatedElements.size) STATE.translated = false;
     setFabTranslated(STATE.translated);
@@ -1096,10 +1204,10 @@ function init() {
     const gesture = manual ? point?.gesture : undefined;
     if (gesture !== undefined && hoverGestureRecords.get(key) === gesture) return;
     if (hoverPendingRecords.has(key) || pendingRecords.has(key)) return;
-    const entry = translatedElements.get(el);
+    const entry = item.entry||translatedElements.get(el);
     if (hasHoverTranslation(el, entry)) {
       if (allowRestore) {
-        const sourceNode = el.classList.contains("bt-text-fragment") ? entry.original.firstChild : null;
+        const sourceNode=entry.full?null:entry.nodes[0];
         restoreHoverItem(el, entry);
         if (gesture !== undefined) hoverGestureRecords.set(sourceNode || el, gesture);
       }
@@ -1198,6 +1306,7 @@ function init() {
    * 最后绑定鼠标/触摸交互；成功与忙碌状态由独立刷新函数更新。
    */
   function createFab() {
+    if(IS_SUBFRAME)return;
     if (fabWrap) return;
     const mount = getMountNode();
     if (!mount) { setTimeout(createFab, 300); return; }
@@ -1395,6 +1504,7 @@ function init() {
    * 工具栏的再次点击关闭由 OPEN_PANEL 的 toggle 分支处理，此函数仍保持幂等打开。
    */
   function openControlPanel() {
+    if(IS_SUBFRAME)return;
     if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)){
       chrome.runtime.sendMessage({action:"OPEN_PDF_READER",url:location.href},()=>{void chrome.runtime.lastError;});return;
     }
@@ -1908,7 +2018,7 @@ function init() {
    * 无 document 的测试环境视作可见；真实网页使用 document.hidden。
    * @returns {boolean} 当前标签页文档是否可见。
    */
-  function isPageVisible(){return typeof document==="undefined"||!document.hidden;}
+  function isPageVisible(){return (typeof document==="undefined"||!document.hidden)&&(!IS_SUBFRAME||(frameSession.visible&&frameIntersecting));}
   /**
    * 向后台报告可见性、阅读位置和递增状态版本，供排队优先级和临时暂停使用。
    * 回调读取 runtime.lastError 以吞掉页面离开时接收方消失的错误；不包含网页文本。
@@ -1929,7 +2039,7 @@ function init() {
     if(pageLifecycleBound)return;
     pageLifecycleBound=true;
     const update=()=>{
-      STATE.visibilityPaused=!isPageVisible();notifyPageState();
+      STATE.visibilityPaused=!isPageVisible();notifyPageState();publishFrameSession();
       if(STATE.visibilityPaused){
         clearTimeout(visibleTranslateTimer);visibleTranslateTimer=null;setFabBusy(false);
       }else{
@@ -1950,7 +2060,7 @@ function init() {
       }else cancelTranslation();
     });
     window.addEventListener("pageshow",update);
-    STATE.visibilityPaused=!isPageVisible();notifyPageState();
+    STATE.visibilityPaused=!isPageVisible();notifyPageState();publishFrameSession();
   }
 
   /**
@@ -1975,7 +2085,7 @@ function init() {
   function scheduleVisibleTranslation() {
     debugLog("[页知译] 合并补翻触发", {dirtyRegions:dirtyRoots.size,wholePageScan});
     // 已取消的页面不自动重启；将连续触发的事件合并为一次可见区域扫描。
-    if ((!STATE.pageStarted && !STATE.autoTranslate) || STATE.cancelRequested || STATE.pagePaused || !isPageVisible()) return;
+    if ((IS_SUBFRAME&&(!frameSession.started||frameSession.paused))||(!STATE.pageStarted && !STATE.autoTranslate) || STATE.cancelRequested || STATE.pagePaused || !isPageVisible()) return;
     if (visibleTranslateTimer) clearTimeout(visibleTranslateTimer);
     visibleTranslateTimer = setTimeout(() => {
       visibleTranslateTimer = null;
@@ -1990,55 +2100,55 @@ function init() {
   window.addEventListener("resize", () => { wholePageScan = true; scheduleVisibleTranslation(); }, { passive: true });
 
   /**
-   * 解包一条原文容器、移除译文及记录，并把恢复后的父区域标记为需重新采集。
-   * 混合区间还移除临时片段容器，移动原节点以保留现有交互状态。
+   * 撤销一条译文的临时效果、移除译文和索引，把源区域标记为需重新采集。
+   * 不搬动原节点，不恢复已被网站删除的节点，不覆盖网站后来写入的内容。
    * 它是失效清理与主动还原共用的 DOM 工具；是否禁止立即补翻由调用方另行登记。
    * @param {Element} el 翻译记录对应的完整段落或片段容器。
    * @param {Object} entry 原文/译文节点和源文字快照。
    */
-  function restoreEntry(el, entry) {
-    if (entry.original?.parentNode === el) {
-      while (entry.original.firstChild) el.insertBefore(entry.original.firstChild,entry.original);
-      entry.original.remove();
-    }
-    entry.wrapper?.remove();
-    if (el.classList.contains("bt-text-fragment") && el.parentNode) {
-      const parent = el.parentNode;
-      while (el.firstChild) parent.insertBefore(el.firstChild,el);
-      el.remove(); dirtyRoots.add(parent);
-    } else if (el.isConnected) dirtyRoots.add(el);
-    el.removeAttribute(STATE.processedAttr);
-    translatedElements.delete(el);
+  function restoreEntry(key, entry) {
+    showEntrySource(entry);releaseLayout(entry);
+    entry.wrapper?.remove();delete entry.wrapper?.__btTranslationEntry;
+    for(const node of entry.nodes)if(sourceOwners.get(node)===entry)sourceOwners.delete(node);
+    const entries=entriesByContainer.get(entry.el);entries?.delete(entry);if(!entries?.size)entriesByContainer.delete(entry.el);
+    if(entry.el.isConnected)dirtyRoots.add(entry.el);
+    if(entry.full)entry.el.removeAttribute(STATE.processedAttr);
+    translatedElements.delete(key);
   }
+
   /**
    * 观察新增/移除节点、文字和部分可见性属性，按受影响区域合并补翻。
    * 先记录涉及的已译祖先及被移除子树，再排除插件界面和纯插件节点变动，避免自触发循环。
-   * 原文快照或节点归属失效时先恢复旧包装；dirtyRoots 去掉被祖先覆盖的重复扫描根。
+   * 原文快照或节点归属失效时清理旧译文；dirtyRoots 去掉被祖先覆盖的重复扫描根。
    * 仅监听指定属性及展开/动画结束事件，不逐次 DOM 变化立即全页翻译。
    */
   function observeDynamicContent() {
     const uiSelector = ".bt-translation-text, .bt-modal, .bt-popup, .bt-fab-wrap, .bt-thumb, .bt-page-notice";
-    const observer = new MutationObserver(records => {
+    const processRecords = records => {
+      processingMutations=true;
+      try {
       for(const record of records)for(const node of record.addedNodes||[])
         if(node.nodeType===1)discoverShadowRoots([node]);
       const detachedRoots=pruneShadowRoots();
-      if (STATE.pagePaused || STATE.cancelRequested) return;
       const touched = new Set();
       let relevant = false;
       for (const record of records) {
         const target = record.target.nodeType === 1 ? record.target : record.target.host || record.target.parentElement;
         if (!target || translationUnits.closestComposed(target,uiSelector)) continue;
         if(target.hasAttribute("data-bt-shadow-style"))continue;
-        for (let parent = target; parent; parent = parent.parentElement) {
-          if (translatedElements.has(parent)) touched.add(parent);
+        for(let parent=target;parent;parent=translationUnits.parentElement(parent)){
+          for(const entry of entriesByContainer.get(parent)||[])touched.add(entry);
         }
-        // 移除整片内容时，仅检查被移除子树，不扫描整页的全部译文记录。
-        for (const removed of record.removedNodes || []) {
-          if (removed.nodeType !== 1) continue;
-          if (translatedElements.has(removed)) touched.add(removed);
-          if (removed.querySelectorAll) removed.querySelectorAll("[" + STATE.processedAttr + "]").forEach(el => {
-            if (translatedElements.has(el)) touched.add(el);
-          });
+        // 被移除的整片 DOM 仍可读取其译文元数据；不扫描整页。
+        for(const removed of record.removedNodes||[]){
+          if(removed.__btTranslationEntry)touched.add(removed.__btTranslationEntry);
+          for(const wrapper of removed.querySelectorAll?.(".bt-translation-text")||[])
+            if(wrapper.__btTranslationEntry)touched.add(wrapper.__btTranslationEntry);
+        }
+        if(record.type==="characterData"&&record.oldValue===""&&record.target.textContent===""){
+          const owner=sourceOwners.get(record.target);
+          const hidden=owner?.suppressed.find(item=>item.node===record.target);
+          if(hidden)hidden.restore=false; // 网站主动写入空值，不用旧原文覆盖。
         }
         if (target.closest(EXCLUDED_SELECTOR)) continue;
         const changedNodes = [...(record.addedNodes || []), ...(record.removedNodes || [])];
@@ -2050,13 +2160,9 @@ function init() {
         dirtyRoots.add(root);
         relevant = true;
       }
-      if(detachedRoots)for(const el of translatedElements.keys())if(!el.isConnected)touched.add(el);
-      for (const el of touched) {
-        const entry = translatedElements.get(el);
-        const current = [...el.childNodes].filter(node => node !== entry.wrapper).map(node => node.textContent || "").join("").trim();
-        if (!el.isConnected || entry.original.parentNode !== el || entry.wrapper.parentNode !== el || current !== entry.sourceText) {
-          restoreEntry(el,entry); relevant = true;
-        }
+      if(detachedRoots)for(const entry of translatedElements.values())if(!entry.el.isConnected)touched.add(entry);
+      for(const entry of touched){
+        if(!isEntryCurrent(entry)||entry.wrapper.parentNode!==entry.el){restoreEntry(entry.key,entry);relevant=true;}
       }
       if (relevant) {
         for (const root of [...dirtyRoots]) {
@@ -2066,11 +2172,14 @@ function init() {
         }
         scheduleVisibleTranslation();
       }
-    });
+      }finally{processingMutations=false;}
+    };
+    processDynamicRecords=processRecords;
+    const observer=new MutationObserver(processRecords);
     // attributeFilter 不包含插件自用 data-bt-processed，减少状态标记造成的观察噪声。
     dynamicObserver=observer;
     observer.observe(document.body || document.documentElement, {
-      subtree:true,childList:true,characterData:true,attributes:true,
+      subtree:true,childList:true,characterData:true,characterDataOldValue:true,attributes:true,
       attributeFilter:["open","hidden","aria-hidden","aria-expanded","data-state","class","style"]
     });
     discoverShadowRoots([document]);
@@ -2101,7 +2210,7 @@ function init() {
   function registerShadowRoot(root) {
     if(shadowRoots.has(root))return;
     shadowRoots.add(root);
-    dynamicObserver?.observe(root,{subtree:true,childList:true,characterData:true,attributes:true,
+    dynamicObserver?.observe(root,{subtree:true,childList:true,characterData:true,characterDataOldValue:true,attributes:true,
       attributeFilter:["open","hidden","aria-hidden","aria-expanded","data-state","class","style"]});
     if(boundShadowRoots.has(root))return;
     boundShadowRoots.add(root);
@@ -2133,7 +2242,7 @@ function init() {
     for(const host of pendingShadowHosts)if(!host.isConnected)pendingShadowHosts.delete(host);
     if(removed&&dynamicObserver){
       dynamicObserver.disconnect();
-      const config={subtree:true,childList:true,characterData:true,attributes:true,
+      const config={subtree:true,childList:true,characterData:true,characterDataOldValue:true,attributes:true,
         attributeFilter:["open","hidden","aria-hidden","aria-expanded","data-state","class","style"]};
       dynamicObserver.observe(document.body||document.documentElement,config);
       for(const root of shadowRoots)dynamicObserver.observe(root,config);
@@ -2158,7 +2267,8 @@ function init() {
       bindPageLifecycle();
       bindHoverTranslate();
       observeDynamicContent();
-      if (STATE.autoTranslate) initialTranslateTimer = setTimeout(() => {
+      registerFrame();
+      if (!IS_SUBFRAME&&STATE.autoTranslate) initialTranslateTimer = setTimeout(() => {
         initialTranslateTimer = null;
         if (STATE.autoTranslate && !STATE.pagePaused && !STATE.cancelRequested) translatePage(false, true);
       }, 500);

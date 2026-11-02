@@ -11,12 +11,12 @@ const root=process.env.YEZHIYI_EXTENSION_DIR?path.resolve(process.env.YEZHIYI_EX
   const id=new URL(worker.url()).host;
   await worker.evaluate(async()=>{
    await chrome.storage.sync.set({engine:'google',from:'en',to:'zh-CN',autoTranslate:false});
-   globalThis.pdfCalls=[];globalThis.pdfDelay=0;
+   globalThis.pdfCalls=[];globalThis.pdfDelay=0;globalThis.pdfLong=false;
    const originalFetch=fetch;
    globalThis.fetch=(url,options)=>{
     if(String(url).startsWith('https://translate.googleapis.com/')){
      const text=new URL(url).searchParams.get('q');pdfCalls.push(text);
-     const response=new Response(JSON.stringify([[['测试译文：'+text]]]),{headers:{'Content-Type':'application/json'}});
+     const response=new Response(JSON.stringify([[[pdfLong?'这是一段很长的译文，需要完整查看。'.repeat(60):'测试译文：'+text]]]),{headers:{'Content-Type':'application/json'}});
      return new Promise(resolve=>setTimeout(()=>resolve(response),pdfDelay));
     }
     return originalFetch(url,options);
@@ -32,6 +32,28 @@ const root=process.env.YEZHIYI_EXTENSION_DIR?path.resolve(process.env.YEZHIYI_EX
   await page.locator('#translate').click();
   await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('本页翻译完成'));
   assert.match(await page.locator('#translations').innerText(),/测试译文：Hello PDF first page/);
+  const beforeSwitch=await worker.evaluate(()=>pdfCalls.length);
+  await page.locator('#viewMode').selectOption('layout');
+  await page.waitForFunction(()=>document.querySelector('.pdf-overlay')?.getBoundingClientRect().width>0);
+  assert.equal(await page.locator('.pdf-overlay').count(),2);
+  const positioned=await page.locator('.pdf-overlay').first().evaluate(el=>{
+   const box=el.getBoundingClientRect(),canvas=document.querySelector('#pdfCanvas').getBoundingClientRect(),style=getComputedStyle(el);
+   return {within:box.left>=canvas.left&&box.top>=canvas.top&&box.right<=canvas.right&&box.bottom<=canvas.bottom,bg:style.backgroundColor,color:style.color};
+  });
+  assert.ok(positioned.within,'译文定位在当前画布内部');
+  assert.equal(positioned.color,'rgb(255, 255, 255)','深色标题背景使用浅色译文');
+  assert.ok(!['rgb(255, 255, 255)','rgba(0, 0, 0, 0)'].includes(positioned.bg));
+  await page.locator('.pdf-overlay').first().click();
+  assert.match(await page.locator('#blockSource').innerText(),/Hello PDF first page/);
+  assert.match(await page.locator('#blockTranslation').innerText(),/测试译文/);
+  await page.locator('#closeBlock').click();
+  await page.locator('#showOriginal').check();assert.equal(await page.locator('#pdfOverlays').isVisible(),false);
+  await page.locator('#showOriginal').uncheck();
+  await page.setViewportSize({width:750,height:900});await page.waitForTimeout(80);
+  assert.ok(await page.locator('.pdf-overlay').first().evaluate(el=>el.getBoundingClientRect().right<=document.querySelector('#pdfCanvas').getBoundingClientRect().right));
+  await page.setViewportSize({width:1500,height:1000});
+  await page.locator('#viewMode').selectOption('parallel');
+  assert.equal(await worker.evaluate(()=>pdfCalls.length),beforeSwitch,'切换模式、原文开关及缩放不重发请求');
   await page.locator('#next').click();
   await page.waitForFunction(()=>document.querySelector('#pageNumber').value==='2'&&document.querySelector('#status').textContent.includes('本页翻译完成'));
   assert.match(await page.locator('#translations').innerText(),/测试译文：Second PDF page/);
@@ -43,18 +65,30 @@ const root=process.env.YEZHIYI_EXTENSION_DIR?path.resolve(process.env.YEZHIYI_EX
   // 翻译过程中改变外观，只更新现有节点，不替换在途结果的接收节点。
   await worker.evaluate(()=>{pdfDelay=300;});
   await page.locator('#to').selectOption('fr');await page.locator('#translate').click();
+  await page.locator('#viewMode').selectOption('layout');
   await worker.evaluate(()=>chrome.storage.sync.set({translationStyle:{fontSize:130,lineHeight:2}}));
   await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('本页翻译完成'));
   assert.match(await page.locator('#translations').innerText(),/测试译文：Hello PDF first page/);
   assert.equal(await page.locator('.pdf-result').first().evaluate(el=>getComputedStyle(el).fontSize),'20.8px');
+  assert.equal(await page.locator('.pdf-overlay').count(),2,'在途切换阅读方式保留结果接收与定位');
+  await page.locator('#viewMode').selectOption('parallel');
   await page.locator('#cancel').click();await page.locator('#to').selectOption('de');
   // 翻译配置变化及取消都隔离迟到结果。
   await worker.evaluate(()=>{pdfDelay=400;});
   await page.locator('#translate').click();await page.waitForTimeout(40);
   await page.locator('#to').selectOption('es');await page.waitForTimeout(550);
   assert.ok(!(await page.locator('#translations').innerText()).includes('测试译文：'));
+  assert.equal(await page.locator('.pdf-overlay').count(),0,'配置切换清理原版式译文');
   await page.locator('#translate').click();await page.waitForTimeout(40);await page.locator('#cancel').click();
   await page.waitForTimeout(550);assert.ok(!(await page.locator('#translations').innerText()).includes('测试译文：'));
+  assert.equal(await page.locator('.pdf-overlay').count(),0,'取消后迟到结果不能生成遮盖层');
+  await worker.evaluate(()=>{pdfLong=true;pdfDelay=0;});
+  await page.locator('#to').selectOption('it');await page.locator('#viewMode').selectOption('layout');await page.locator('#translate').click();
+  await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('本页翻译完成')&&document.querySelector('.needs-detail'));
+  await page.locator('.needs-detail').first().click();
+  assert.equal((await page.locator('#blockTranslation').innerText()).length,'这是一段很长的译文，需要完整查看。'.repeat(60).length,'过长译文完整保留');
+  await page.locator('#closeBlock').click();
+  await page.locator('#cancel').click();await worker.evaluate(()=>{pdfLong=false;});
   // 在线来源使用已有厂商域名权限，并在浏览器传输层返回本地 PDF，不访问公网。
   await context.route('https://api.deepseek.com/fixture.pdf',route=>route.fulfill({status:200,contentType:'application/pdf',body:pdfFixture()}));
   await page.locator('#sourceUrl').fill('https://api.deepseek.com/fixture.pdf');await page.locator('#openUrl').click();
@@ -68,12 +102,19 @@ const root=process.env.YEZHIYI_EXTENSION_DIR?path.resolve(process.env.YEZHIYI_EX
   if(process.env.YEZHIYI_PDF_SAMPLE){
    await page.locator('#localFile').setInputFiles(process.env.YEZHIYI_PDF_SAMPLE);
    await page.waitForFunction(()=>document.querySelector('#pageCount').textContent==='16'&&!document.querySelector('#next').disabled);
-   await page.locator('#pageNumber').fill('3');await page.locator('#pageNumber').dispatchEvent('change');
+   await page.locator('#pageNumber').fill('3');await page.locator('#pageNumber').press('Tab');
    await page.waitForFunction(()=>document.querySelector('#pageNumber').value==='3'&&!document.querySelector('#translate').disabled);
+   await page.locator('#translate').click();
+   await page.waitForFunction(()=>!document.querySelector('#translate').disabled);
+   assert.match(await page.locator('#status').innerText(),/本页翻译完成/,
+    '样本页错误：'+await page.locator('.pdf-result.error').allTextContents());
+   await page.locator('#viewMode').selectOption('parallel');
    await page.screenshot({path:path.join(os.tmpdir(),'yezhiyi-pdf-reader.png'),fullPage:false});
+   await page.locator('#viewMode').selectOption('layout');await page.waitForTimeout(150);
+   await page.screenshot({path:path.join(os.tmpdir(),'yezhiyi-pdf-layout.png'),fullPage:true});
   }
   assert.deepEqual(errors,[],'阅读页不得产生未处理异常');
-  console.log('PASS Chromium: PDF 本地/在线读取、真实解析及渲染、分段翻译、翻页续翻、取消、配置切换、迟到结果及权限拒绝');
+  console.log('PASS Chromium: PDF 本地/在线读取、真实解析、左右对照/原版式切换、底色与位置、窄屏、长译文、翻页取消与迟到隔离、权限拒绝');
  }finally{
   if(context)await context.close();
   fs.rmSync(profile,{recursive:true,force:true});

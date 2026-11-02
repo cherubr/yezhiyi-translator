@@ -168,7 +168,7 @@
        * null 表示边界。保护片段不计入可翻译正文，纯代码区域不会产生请求。
        */
       function inline(el,depth=0) {
-        if(depth>64)return null;
+        if(depth>64||options.ownedNode?.(el))return null;
         if(inlineCache.has(el))return inlineCache.get(el);
         let result=null;
         if(!el.shadowRoot&&!el.localName?.includes("-")&&!hidden(el)&&!boundary(el)&&!control(el)){
@@ -182,6 +182,7 @@
             else{
               const segments=[];let prose="",safe=true;
               for(const child of el.childNodes){
+                if(options.ownedNode?.(child)){safe=false;break;}
                 if(child.nodeType===3){segments.push({text:child.textContent});prose+=child.textContent;}
                 else if(child.nodeType===1){const value=inline(child,depth+1);if(!value){safe=false;break;}segments.push(...value.segments);prose+=value.prose;}
               }
@@ -198,6 +199,7 @@
         const runs=[];let nodes=[],segments=[],prose="",hasBoundary=false,hasControl=false;
         const flush=()=>{if(nodes.length)runs.push({nodes,segments,prose});nodes=[];segments=[];prose="";};
         for(const child of el.childNodes||[]){
+          if(options.ownedNode?.(child)){flush();hasBoundary=true;continue;}
           if(child.nodeType===3){nodes.push(child);segments.push({text:child.textContent});prose+=child.textContent;}
           else if(child.nodeType===8)nodes.push(child);
           else if(child.nodeType===1){

@@ -1,0 +1,18 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict'),path=require('node:path');
+const c={};c.self=c;vm.createContext(c);for(const file of ['md5','translation-units','glossary'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../core/'+file+'.js'),'utf8'),c);
+const g=c.BT_GLOSSARY,rule=(source,target,extra={})=>({source,target,language:'zh-CN',...extra});
+const config={entries:[rule('kernel','内核'),rule('Red Hat Linux','红帽 Linux')]};
+let value=g.prepare('Red Hat Linux kernel RHCE OpenShift Linuxer',config,'zh-CN');
+assert.equal(g.restore(value.text,value),'红帽 Linux 内核 RHCE OpenShift Linuxer');
+assert.ok(!value.text.includes('kernel'));assert.throws(()=>g.restore(value.text.replace(/⟦[^⟧]+⟧/,''),value),/标记/);
+assert.throws(()=>g.restore(value.text+value.text,value),/标记/);
+assert.equal(g.prepare('kernel',config,'fr').text,'kernel');
+assert.equal(g.prepare('Kernel',{builtins:false,entries:[rule('kernel','内核',{caseSensitive:true})]},'zh-CN').text,'Kernel');
+assert.equal(g.prepare('Linux',{enabled:false},'zh-CN').text,'Linux');
+value=g.prepare('kernel',{entries:[rule('kernel','all',{language:'*'}),rule('kernel','内核')]},'zh-CN');assert.equal(g.restore(value.text,value),'内核','具体语言规则优先于所有语言');
+assert.notEqual(g.prepare('kernel',config,'zh-CN').text,g.prepare('kernel',{entries:[rule('kernel','核心')]},'zh-CN').text,'固定译法变化必须隔离缓存');
+value=g.prepare('⟦YZY0:0⟧ Linux与kernel',config,'zh-CN');assert.equal(g.restore(value.text,value),'⟦YZY0:0⟧ Linux与内核');
+assert.throws(()=>g.normalize({entries:[rule('A',''),rule('a','')]}),/重复/);
+assert.throws(()=>g.normalize({entries:[rule('a\nb','c')]}),/控制字符/);
+assert.throws(()=>g.normalize({entries:Array.from({length:501},()=>rule('a','b'))}),/500/);
+console.log('PASS: 术语最长匹配、语言和大小写边界、保护标记、缓存隔离与导入校验');

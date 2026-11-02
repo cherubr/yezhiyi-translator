@@ -2,7 +2,7 @@
 const { STORAGE_KEYS: KEYS, DEFAULTS: DEFAULT } = window.BT_CONST;
 const PROVIDERS = window.AI_PROVIDERS;
 // 与共享存储的分流保持一致，避免旧同步区密钥删除事件覆盖本机有效凭据。
-const LOCAL_CONFIG_KEYS = new Set(["aiKeys", "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion"]);
+const LOCAL_CONFIG_KEYS = new Set(["aiKeys", "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion", "glossary"]);
 
 // 当前设置页的配置草稿，由自动保存或独立请求设置入口写入。
 let cfg = { ...DEFAULT };
@@ -1015,7 +1015,7 @@ function save() {
   saveTimer = setTimeout(async () => {
     try {
       // 请求策略由专用保存入口更新，普通偏好/凭据自动保存不覆盖它。
-      const {requestPolicies,requestPolicyVersion,...ordinary}=cfg;
+      const {requestPolicies,requestPolicyVersion,glossary,...ordinary}=cfg;
       await window.BT_STORAGE.set(ordinary);
     } catch (error) {
       showSaveTip("✗ 保存失败：" + error.message);
