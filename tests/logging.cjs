@@ -40,7 +40,7 @@ try{
   assert.equal(fs.readFileSync(path.join(root,'core/constants.js'),'utf8'),source,'打包不修改开发配置');
   verifyReleaseLogging(fs.readFileSync(path.join(fixture,'core/constants.js'),'utf8'));
   assert.equal(fs.existsSync(path.join(fixture,'tests')),false);assert.equal(fs.existsSync(path.join(fixture,'node_modules')),false);
-  for(const file of ['pdf/reader.html','pdf/reader.js','pdf/vendor/build/pdf.mjs','pdf/vendor/build/pdf.worker.mjs','pdf/vendor/LICENSE','core/pdf-document.js','ocr/reader.html','ocr/reader.js','core/ocr-runtime.js','core/glossary.js','core/frame-sessions.js','ocr/vendor/tesseract.min.js','ocr/vendor/worker.min.js','ocr/vendor/core/tesseract-core-lstm.wasm.js','ocr/vendor/lang/eng.traineddata.gz','ocr/vendor/lang/chi_sim.traineddata.gz','ocr/vendor/lang/LICENSE'])
+  for(const file of ['pdf/reader.html','pdf/reader.js','pdf/vendor/build/pdf.mjs','pdf/vendor/build/pdf.worker.mjs','pdf/vendor/LICENSE','core/pdf-document.js','ocr/reader.html','ocr/reader.js','core/ocr-runtime.js','core/image-document.js','core/glossary.js','core/frame-sessions.js','ocr/vendor/tesseract.min.js','ocr/vendor/worker.min.js','ocr/vendor/core/tesseract-core-lstm.wasm.js','ocr/vendor/lang/eng.traineddata.gz','ocr/vendor/lang/chi_sim.traineddata.gz','ocr/vendor/lang/LICENSE'])
     assert.equal(fs.existsSync(path.join(fixture,file)),true,'发布副本必须包含 PDF 阅读运行资源：'+file);
   for(const dir of ['background','content','core','settings']){
     const walk=folder=>{for(const entry of fs.readdirSync(folder,{withFileTypes:true})){const file=path.join(folder,entry.name);if(entry.isDirectory())walk(file);else if(file.endsWith('.js')){

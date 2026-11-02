@@ -10,6 +10,7 @@ importScripts(
   "../core/languages.js",
   "../core/translation-runtime.js",
   "../core/pdf-document.js",
+  "../core/image-document.js",
   "../core/glossary.js",
   "../core/frame-sessions.js"
 );
@@ -45,6 +46,7 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.action.onClicked.addListener((tab) => {
   if (!tab || !tab.id) return;
   if(self.BT_PDF_DOCUMENT.isPdfUrl(tab.url)){openPdfReader(tab.url);return;}
+  if(self.BT_IMAGE_DOCUMENT.isImageUrl(tab.url)){void openImageReader(tab.url);return;}
 
   safeSendToTab(tab.id, { action: MSG.OPEN_PANEL, toggle: true });
 });
@@ -55,7 +57,7 @@ chrome.action.onClicked.addListener((tab) => {
  * @param {Object} tab 触发菜单的标签页。
  */
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if(info.menuItemId==="translateImage"){let hash="";try{hash="#url="+encodeURIComponent(self.BT_PDF_DOCUMENT.sourceUrl(info.srcUrl).href);}catch(_){}openExtensionPage("ocr/reader.html"+hash);return;}
+  if(info.menuItemId==="translateImage"){void openImageReader(info.srcUrl);return;}
   if(info.menuItemId==="translatePdf"){openPdfReader(info.linkUrl||info.pageUrl||tab?.url);return;}
   if (info.menuItemId === "translatePage") {
     safeSendToTab(tab.id, { action: MSG.START_TRANSLATION });
@@ -124,6 +126,17 @@ function openPdfReader(value) {
   openExtensionPage("pdf/reader.html"+hash);
 }
 
+/** 从直接点击链申请精确来源权限，再打开图片页；识别和发送文字仍由用户主动开始。 */
+function openImageReader(value){
+  let url;try{url=self.BT_IMAGE_DOCUMENT.sourceUrl(value);}catch(_){openExtensionPage("ocr/reader.html");return Promise.resolve();}
+  const params=new URLSearchParams({url:url.href}),origins={origins:[url.origin+"/*"]};let permission;
+  // 必须先在点击链发起申请；已授权来源在非手势重入时仍可通过 contains 核验预览。
+  try{permission=chrome.permissions.request(origins);}catch(_){permission=chrome.permissions.contains(origins);}
+  return permission.catch(()=>chrome.permissions.contains(origins)).then(granted=>{
+    if(granted)params.set("load","1");openExtensionPage("ocr/reader.html#"+params);
+  }).catch(()=>openExtensionPage("ocr/reader.html#"+params));
+}
+
 // 批次表：key 对应 owner、cancelled 和消费者控制器集合；属于本轮后台内存。
 const requestGroups = new Map();
 
@@ -161,27 +174,69 @@ function cancelOwner(owner) {
   translationRuntime.removeOwner(owner);
 }
 
-/**
- * 登记当前文档；同一标签页和框架出现新 documentId 时，取消并标记旧文档。
- * @param {Object} sender 浏览器提供的发送方身份；不能用请求正文伪造。
- * @returns {string} 当前文档的 owner 标识。
- * @throws {Error} 已退役文档抛出 AbortError，阻止迟到请求重新入队。
- */
-function registerOwner(sender) {
+/** 只有浏览器确认的激活/恢复可以移除退役标记，普通旧请求不能自行恢复身份。 */
+function activateDocument(sender,verified=true){
+  const owner=ownerKey(sender),frame=JSON.stringify([sender.tab.id,sender.frameId||0]),previous=currentDocuments.get(frame);
+  if(previous&&previous.owner!==owner){
+    cancelOwner(previous.owner);retiredOwners.add(previous.owner);
+    while(retiredOwners.size>256)retiredOwners.delete(retiredOwners.values().next().value);
+  }
+  retiredOwners.delete(owner);
+  currentDocuments.set(frame,{owner,tabId:sender.tab.id,documentId:sender.documentId,verified});
+  return owner;
+}
+/** 登记请求身份；缓存/预渲染文档和与浏览器已确认的活动文档不符的迟到消息均拒绝。 */
+function registerOwner(sender){
   const owner=ownerKey(sender);
+  if(sender.documentLifecycle&&sender.documentLifecycle!=="active")throw cancelledError();
   if(retiredOwners.has(owner))throw cancelledError();
   if(sender.tab?.id!=null&&sender.documentId){
-    // 标签页与框架的组合键，用于查找刷新前的文档。
-    const frame=JSON.stringify([sender.tab.id,sender.frameId || 0]);
-    // 同一框架上次登记的文档；身份变化时取消其请求。
-    const previous=currentDocuments.get(frame);
-    if(previous&&previous.owner!==owner){
-      cancelOwner(previous.owner);retiredOwners.add(previous.owner);
-      while(retiredOwners.size>256)retiredOwners.delete(retiredOwners.values().next().value);
-    }
-    currentDocuments.set(frame,{owner,tabId:sender.tab.id});
+    const frame=JSON.stringify([sender.tab.id,sender.frameId||0]),previous=currentDocuments.get(frame);
+    if(previous?.verified&&previous.owner!==owner)throw cancelledError();
+    if(!previous||previous.owner!==owner)activateDocument(sender,false);
   }
   return owner;
+}
+/** 缓存恢复时重新查询活动框架；不信任消息正文自报的 tab/frame/document。 */
+async function resumeDocument(sender){
+  if(sender.tab?.id==null||!sender.documentId)throw cancelledError();
+  if(sender.documentLifecycle&&sender.documentLifecycle!=="active")throw cancelledError();
+  const frame=JSON.stringify([sender.tab.id,sender.frameId||0]),previous=currentDocuments.get(frame);
+  const active=await chrome.webNavigation.getFrame({tabId:sender.tab.id,frameId:sender.frameId||0});
+  if(!active||active.documentId!==sender.documentId||active.documentLifecycle!=="active")throw cancelledError();
+  const latest=currentDocuments.get(frame);
+  if(latest!==previous&&latest?.documentId!==sender.documentId)throw cancelledError();
+  activateDocument(sender);return frameSessions.ready(sender);
+}
+
+const shiftRelayQueues=new Map();
+/** 仅在主动 Shift 时查询活动文档，按鼠标事件的绝对时间选择最内层命中；不持续上报鼠标移动。 */
+function routeFrameShift(sender,request){
+  const tabId=sender.tab.id,previous=shiftRelayQueues.get(tabId)||Promise.resolve();
+  const operation=previous.catch(()=>{}).then(async()=>{
+    registerOwner(sender);
+    if(request.phase==="down"){
+      const frames=await chrome.webNavigation.getAllFrames({tabId}),points=[];
+      await Promise.all((frames||[]).filter(frame=>frame.documentLifecycle==="active").map(async frame=>{
+        let timer;
+        try{
+          const point=await Promise.race([
+            chrome.tabs.sendMessage(tabId,{action:"FRAME_QUERY_POINTER"},{documentId:frame.documentId}),
+            new Promise(resolve=>{timer=setTimeout(()=>resolve(null),1200);})
+          ]);
+          if(point?.inside&&Number.isFinite(point.at)&&point.at>0)points.push({frame,at:point.at});
+        }catch(_){}finally{clearTimeout(timer);}
+      }));
+      registerOwner(sender);
+      frameSessions.clearPointer(tabId);
+      const latest=points.sort((a,b)=>b.at-a.at)[0];
+      if(latest)frameSessions.notePointer({tab:{id:tabId},frameId:latest.frame.frameId,documentId:latest.frame.documentId},{inside:true,at:latest.at});
+    }
+    return frameSessions.relayShift(sender,request);
+  });
+  shiftRelayQueues.set(tabId,operation);
+  void operation.finally(()=>{if(shiftRelayQueues.get(tabId)===operation)shiftRelayQueues.delete(tabId);}).catch(()=>{});
+  return operation;
 }
 
 /**
@@ -284,11 +339,19 @@ function cancelRequestGroup(request,sender) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   const { action } = request;
 
+  if(action==="RESUME_DOCUMENT"){
+    resumeDocument(sender).then(data=>sendResponse({ok:true,data})).catch(()=>sendResponse({ok:false,cancelled:true}));return true;
+  }
+  if(action==="FRAME_SHIFT"){
+    try{registerOwner(sender);}catch(_){sendResponse({ok:false,cancelled:true});return false;}
+    routeFrameShift(sender,request).then(()=>sendResponse({ok:true})).catch(()=>sendResponse({ok:false}));return true;
+  }
   if(action==="FRAME_READY"||action==="FRAME_SESSION"){
+    try{registerOwner(sender);}catch(_){sendResponse({ok:false,cancelled:true});return false;}
     const operation=action==="FRAME_READY"?frameSessions.ready(sender):frameSessions.publish(sender,request);
     operation.then(data=>sendResponse({ok:true,data})).catch(error=>sendResponse({ok:false,error:error.message}));return true;
   }
-  if(action==="OPEN_OCR_READER"){openExtensionPage("ocr/reader.html");sendResponse({ok:true});return false;}
+  if(action==="OPEN_OCR_READER"){void openImageReader(request.url);sendResponse({ok:true});return false;}
   if(action==="OPEN_PDF_READER"){
     openPdfReader(request.url||sender.tab?.url);sendResponse({ok:true});return false;
   }
@@ -367,12 +430,18 @@ chrome.storage.onChanged?.addListener((changes,area)=>{
   }
 });
 
+// 导航提交与往返缓存恢复都使用浏览器 documentId；不记录 URL 或浏览历史。
+chrome.webNavigation?.onCommitted.addListener(details=>{
+  if(details.documentLifecycle!=="active"||!details.documentId)return;
+  activateDocument({tab:{id:details.tabId},frameId:details.frameId,documentId:details.documentId});
+});
+
 /**
  * 标签页关闭后取消其已登记文档，并限制退役身份集合大小；其他页面的共享请求仍由运行时管理。
  * @param {number} tabId 被关闭标签页的编号。
  */
 chrome.tabs?.onRemoved?.addListener(tabId=>{
-  frameSessions.remove(tabId);
+  frameSessions.remove(tabId);shiftRelayQueues.delete(tabId);
   for(const [frame,record] of currentDocuments)if(record.tabId===tabId){
     cancelOwner(record.owner);retiredOwners.add(record.owner);currentDocuments.delete(frame);
   }
@@ -411,7 +480,8 @@ async function handleTranslate(request, signal, sender = {}) {
   if(revision===requestPolicyRevision)translationRuntime.updatePolicies(stored.requestPolicies || {});
 
   // 提交运行时的请求快照，附带可见性、优先级、重试及诊断回调。
-  const normalized={engine,text,from,to,retryManual:request.retryManual===true,retryToken:request.retryToken,signal,
+  const normalized={engine,text,from,to,retryManual:request.retryManual===true,retryToken:request.retryToken,
+    refreshCache:request.refreshCache===true,signal,
     ownerKey:owner,pageVisible:request.pageVisible!==false,viewportEpoch:request.viewportEpoch,
     priority:request.priority===0?0:1,onRetry:data=>emitRequestState(sender,request,data),
     onDiagnostic:self.BT_LOG.isEnabled("debug")?data=>emitTranslationDiagnostic(sender,request,data):undefined};

@@ -15,10 +15,11 @@ function init() {
   // 只有顶层页面显示控制面板；子框架通过扩展后台继承页面会话，不通过网页 postMessage 信任指令。
   const IS_SUBFRAME=!!window.top&&window.top!==window;
   const frameSession={sessionId:"",version:-1,started:false,paused:true,visible:true};
+  let receiveFrameShift=null,getFramePointer=null;
   const retiredFrameSessions=new Set();let frameIntersecting=!IS_SUBFRAME;
   function publishFrameSession(){
     if(IS_SUBFRAME||!chrome.runtime.id)return;
-    try{chrome.runtime.sendMessage({action:"FRAME_SESSION",started:STATE.pageStarted,paused:STATE.pagePaused,visible:!document.hidden},()=>{void chrome.runtime.lastError;});}catch(_){}
+    try{chrome.runtime.sendMessage({action:"FRAME_SESSION",started:STATE.pageStarted,paused:STATE.pagePaused,visible:isPageVisible()},()=>{void chrome.runtime.lastError;});}catch(_){}
   }
   function applyFrameSession(value){
     if(!IS_SUBFRAME||!value?.sessionId)return;
@@ -118,6 +119,7 @@ function init() {
   let requestToken = "page-" + Date.now() + "-" + Math.random();
   // 消息等待表保存本地 Promise 的终止入口；取消时先结束页面等待，再通知后台。
   const pendingMessages = new Set();
+  const pendingUnits = new Map();
   // 本页正在保存的偏好优先于异步存储读取/通知，避免连续切换被旧值回写。
   // entry 对象身份还用于防止较早的一次保存清理掉较新保存的登记。
   const pendingPreferenceWrites = new Map();
@@ -128,6 +130,7 @@ function init() {
   // 当前页面调度器只在一轮 translatePage 存活：enqueue 合并新增任务，pump 投递，cancel 清队列。
   let activePageRun = null;
   let pageLifecycleBound = false;
+  let pageRestoring=false,lifecycleVersion=0,cachedConfig="";
   /**
    * 按错误类型更新当前页：源语言识别限制累加语言提示，其他错误记录说明及失败次数。
    * 同步已有面板和悬浮球；此函数本身不创建页面提示，也不自动打开控制面板。
@@ -193,6 +196,12 @@ function init() {
   // START/CANCEL 控制整页会话；OPEN_PANEL 只控制面板；TOGGLE_PANEL 是旧名，实际切换翻译。
   // 后台状态/诊断必须匹配当前 requestToken，避免取消后仍收到旧批次的等待或失败外观。
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if(request.action==="FRAME_QUERY_POINTER"){
+      if(sender?.id===chrome.runtime.id)sendResponse(getFramePointer?.()||{inside:false,at:0});return false;
+    }
+    if(request.action==="FRAME_SHIFT_APPLY"){
+      if(sender?.id===chrome.runtime.id)receiveFrameShift?.(request);return;
+    }
     if(request.action==="FRAME_APPLY_SESSION"){
       if(sender?.id===chrome.runtime.id)applyFrameSession(request);return;
     }
@@ -547,6 +556,9 @@ function init() {
    */
   async function translatePage(force = false, automatic = false) {
     if(IS_SUBFRAME&&(!frameSession.started||frameSession.paused))return;
+    if(window.BT_IMAGE_DOCUMENT?.isImageDocument(document)){
+      if(!automatic)chrome.runtime.sendMessage({action:"OPEN_OCR_READER",url:location.href},()=>{void chrome.runtime.lastError;});return;
+    }
     if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)){
       if(!automatic)chrome.runtime.sendMessage({action:"OPEN_PDF_READER",url:location.href},()=>{void chrome.runtime.lastError;});
       return;
@@ -736,6 +748,7 @@ function init() {
     const pendingSet=pendingRecords;
     if (pendingSet.has(target)) return "skipped";
     pendingSet.add(target);
+    const pendingUnit={el,node};pendingUnits.set(target,pendingUnit);
     if (!node) el.setAttribute(STATE.processedAttr, "1");
     try {
       // 一次文字任务交给后台规划分片；所有分片共同遵守服务频率、在途和页面暂停。
@@ -792,6 +805,7 @@ function init() {
       return e.code === "NEED_SOURCE_LANGUAGE" ? "skipped" : false;
     } finally {
       pendingSet.delete(target);
+      if(pendingUnits.get(target)===pendingUnit)pendingUnits.delete(target);
     }
   }
 
@@ -1045,14 +1059,13 @@ function init() {
   }
 
   /**
-   * 明确暂停当前页会话，先递增代次并更换批次，再结束本地等待、通知后台取消旧批次。
-   * 同步清理定时器、队列记录、提示和译文，不等待网络返回；迟到回调被新代次拦截。
-   * 保留全局 autoTranslate 偏好；滚动/DOM 变化不能解除 pagePaused，主动 Shift 仍可单段处理。
+   * 结束旧请求并更换批次；不改用户暂停状态、不移除已有译文，供主动取消和缓存恢复共用。
+   * 清理本地等待/定时器并通知后台；迟到回调由新的 cancelVersion 与 requestToken 拦截。
    */
-  function cancelTranslation() {
+  function resetRequestBatch(){
     const oldToken=requestToken;
-    // 先宣布暂停并提升代次，防止下面 DOM 还原或旧 Promise 结算触发自动重启。
-    STATE.pagePaused=true;STATE.cancelVersion++;publishFrameSession();
+    // 先提升代次，使旧 Promise 的结束回调不能继续投递或插入。
+    STATE.cancelVersion++;
     activePageRun?.cancel();STATE.requestNotice="";
     resumeAfterSettingsChange=false;
     requestToken="page-"+Date.now()+"-"+Math.random();
@@ -1064,7 +1077,17 @@ function init() {
     clearTimeout(visibleTranslateTimer);clearTimeout(initialTranslateTimer);
     visibleTranslateTimer=null;initialTranslateTimer=null;
     pendingViewport=false;dirtyRoots.clear();wholePageScan=true;
+    // 往返缓存会保留 DOM，未完成单元的处理标记也必须撤销，否则恢复后会永久跳过。
+    for(const {el,node} of pendingUnits.values())if(!node)el.removeAttribute(STATE.processedAttr);
+    pendingUnits.clear();
     pendingRecords=new WeakSet();hoverPendingRecords=new WeakSet();hoverGestureRecords=new WeakMap();
+    activePageRun=null;
+    STATE.translating=false;STATE.backgroundTranslating=false;
+  }
+  /** 明确取消会清除译文并持续暂停；浏览器缓存恢复不能解除此状态。 */
+  function cancelTranslation() {
+    STATE.pagePaused=true;
+    resetRequestBatch();publishFrameSession();
     STATE.cancelRequested=false;STATE.translating=false;STATE.backgroundTranslating=false;
     hidePageNotice();
     STATE.lastError="";STATE.failedCount=0;STATE.languageNoticeCount=0;
@@ -1248,44 +1271,75 @@ function init() {
    * 不 preventDefault 网页按键，keyup/失焦负责释放本次长按状态。
    */
   function bindHoverTranslate() {
-    let pointer = null;
-    let shiftPressed = false;
-    // mousemove 只记坐标；触发翻译发生在移入或 Shift 按下，不每移动一个像素就发请求。
+    let pointer=null,shiftPressed=false,gestureId="",nativeGestureId="",relaySession="",relayVersion=-1;
+    const retiredRelaySessions=new Set(),seenShiftGestures=new Set();
+    const rememberGesture=id=>{seenShiftGestures.add(id);while(seenShiftGestures.size>16)seenShiftGestures.delete(seenShiftGestures.values().next().value);};
     const eventTarget=e=>(e.composedPath?.()||[]).find(node=>node instanceof Element)||e.target;
-    const rememberPointer = e => { pointer = { target: eventTarget(e), x: e.clientX, y: e.clientY }; };
-    document.addEventListener("mousemove", rememberPointer, { passive: true });
-    document.addEventListener("mouseover", e => {
+    const editing=node=>translationUnits.closestComposed(node,"input, textarea, select, [contenteditable]:not([contenteditable='false'])");
+    const eventTime=e=>typeof performance!=="undefined"&&Number.isFinite(performance.timeOrigin)&&Number.isFinite(e?.timeStamp)?performance.timeOrigin+e.timeStamp:Date.now();
+    const rememberPointer=e=>{pointer={target:eventTarget(e),x:e.clientX,y:e.clientY,at:eventTime(e)};};
+    getFramePointer=()=>({at:pointer?.at||0,inside:!!pointer&&isPageVisible()&&!translationUnits.closestComposed(pointer.target,"iframe, frame")});
+    const relay=(phase,id,event)=>{
+      if(!chrome.runtime.id)return;
+      try{chrome.runtime.sendMessage({action:"FRAME_SHIFT",phase,gestureId:id,at:eventTime(event)},()=>{void chrome.runtime.lastError;});}catch(_){}
+    };
+    /** 不改变网页焦点；只在鼠标实际所在的最内层文档执行，父文档不能采集 iframe 外壳。 */
+    const translateAtPointer=()=>{
+      if(!pointer||!STATE.hoverTranslate||!STATE.hoverRequireShift||!isPageVisible()||editing(document.activeElement))return;
+      let target=Number.isFinite(pointer.x)&&Number.isFinite(pointer.y)?document.elementFromPoint(pointer.x,pointer.y):pointer.target;
+      while(target?.shadowRoot){const inner=target.shadowRoot.elementFromPoint(pointer.x,pointer.y);if(!inner||inner===target)break;target=inner;}
+      if(translationUnits.closestComposed(target,"iframe, frame"))return;
+      return translateHoverBlock(target,true,{...pointer,gesture:hoverGesture});
+    };
+    receiveFrameShift=request=>{
+      if(relaySession!==request.sessionId){
+        if(retiredRelaySessions.has(request.sessionId))return;
+        if(relaySession)retiredRelaySessions.add(relaySession);
+        while(retiredRelaySessions.size>8)retiredRelaySessions.delete(retiredRelaySessions.values().next().value);
+        relaySession=request.sessionId;relayVersion=-1;
+      }
+      if(request.version<=relayVersion)return;relayVersion=request.version;
+      if(request.phase==="up"){shiftPressed=false;gestureId="";return;}
+      if(request.phase!=="down"||seenShiftGestures.has(request.gestureId))return;
+      rememberGesture(request.gestureId);
+      // 已按住 Shift 移入时，mouseover 已经处理该手势；不能被迟到广播再次还原。
+      if(shiftPressed&&!gestureId){gestureId=request.gestureId;return;}
+      shiftPressed=true;gestureId=request.gestureId;hoverGesture++;
+      void translateAtPointer();
+    };
+    document.addEventListener("mousemove",e=>{
       rememberPointer(e);
-      if (e.ctrlKey || e.altKey || e.metaKey) return;
-      if (STATE.hoverRequireShift && !e.shiftKey) return;
-      if (STATE.hoverRequireShift && !shiftPressed) {
-        shiftPressed = true;
-        hoverGesture++;
+      // 跨源框架可能保留旧 hover 路径而只触发 mousemove，首次发现按住 Shift 时补一次移入处理。
+      if(STATE.hoverRequireShift&&e.shiftKey&&!shiftPressed&&!e.ctrlKey&&!e.altKey&&!e.metaKey){
+        shiftPressed=true;gestureId="";hoverGesture++;
+        return translateHoverBlock(eventTarget(e),false,{x:e.clientX,y:e.clientY,gesture:hoverGesture});
       }
-      return translateHoverBlock(eventTarget(e), false, { x: e.clientX, y: e.clientY, gesture: STATE.hoverRequireShift ? hoverGesture : undefined });
+    },{passive:true});
+    document.addEventListener("mouseover",e=>{
+      rememberPointer(e);
+      if(e.ctrlKey||e.altKey||e.metaKey)return;
+      if(STATE.hoverRequireShift&&!e.shiftKey)return;
+      if(STATE.hoverRequireShift&&!shiftPressed){shiftPressed=true;gestureId="";hoverGesture++;}
+      return translateHoverBlock(eventTarget(e),false,{x:e.clientX,y:e.clientY,gesture:STATE.hoverRequireShift?hoverGesture:undefined});
     });
-    document.addEventListener("mouseout", e => { if (!e.relatedTarget) pointer = null; });
-    document.addEventListener("keydown", e => {
-      if (e.key !== "Shift") return;
-      if (e.repeat || shiftPressed) return;
-      shiftPressed = true;
-      hoverGesture++;
-      if (!STATE.hoverRequireShift || e.ctrlKey || e.altKey || e.metaKey || e.isComposing || e.defaultPrevented) return;
-      if (translationUnits.closestComposed(eventTarget(e),"input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
-      if (!pointer) return;
-      // 页面滚动后鼠标可能没动，使用当前位置命中元素，避免操作已经移走的旧段落。
-      let target = Number.isFinite(pointer.x) && Number.isFinite(pointer.y)
-        ? document.elementFromPoint(pointer.x, pointer.y) : pointer.target;
-      // document 命中宿主，逐层进入开放根；封闭组件保持原边界。
-      while(target?.shadowRoot){
-        const inner=target.shadowRoot.elementFromPoint(pointer.x,pointer.y);
-        if(!inner||inner===target)break;
-        target=inner;
-      }
-      return translateHoverBlock(target, true, { ...pointer, gesture: hoverGesture });
+    document.addEventListener("mouseout",e=>{if(!e.relatedTarget)pointer=null;});
+    document.addEventListener("keydown",e=>{
+      if(e.key!=="Shift"||e.repeat||nativeGestureId)return;
+      shiftPressed=true;hoverGesture++;
+      if(!STATE.hoverRequireShift||e.ctrlKey||e.altKey||e.metaKey||e.isComposing||e.defaultPrevented||editing(eventTarget(e)))return;
+      nativeGestureId="shift-"+Date.now()+"-"+Math.random();gestureId=nativeGestureId;
+      // 仅在按键时向活动框架查询最后鼠标命中，避免后台休眠丢失状态及其他框架旧坐标误翻译。
+      if(chrome.runtime.id){relay("down",gestureId,e);return;}
+      rememberGesture(gestureId);return translateAtPointer();
     });
-    document.addEventListener("keyup", e => { if (e.key === "Shift") shiftPressed = false; });
-    window.addEventListener("blur", () => { pointer = null; shiftPressed = false; });
+    document.addEventListener("keyup",e=>{
+      if(e.key!=="Shift")return;
+      const previous=nativeGestureId||gestureId;shiftPressed=false;gestureId="";nativeGestureId="";relay("up",previous,e);
+    });
+    const release=()=>{pointer=null;shiftPressed=false;gestureId="";nativeGestureId="";};
+    window.addEventListener("blur",release);
+    window.addEventListener("pagehide",release);
+    document.addEventListener("visibilitychange",()=>{if(document.hidden)release();});
   }
 
   let fabWrap = null;
@@ -1507,6 +1561,9 @@ function init() {
     if(IS_SUBFRAME)return;
     if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)){
       chrome.runtime.sendMessage({action:"OPEN_PDF_READER",url:location.href},()=>{void chrome.runtime.lastError;});return;
+    }
+    if(window.BT_IMAGE_DOCUMENT?.isImageDocument(document)){
+      chrome.runtime.sendMessage({action:"OPEN_OCR_READER",url:location.href},()=>{void chrome.runtime.lastError;});return;
     }
     if (panelModalEl) return;
     const mount = getMountNode();
@@ -2018,7 +2075,7 @@ function init() {
    * 无 document 的测试环境视作可见；真实网页使用 document.hidden。
    * @returns {boolean} 当前标签页文档是否可见。
    */
-  function isPageVisible(){return (typeof document==="undefined"||!document.hidden)&&(!IS_SUBFRAME||(frameSession.visible&&frameIntersecting));}
+  function isPageVisible(){return !pageRestoring&&(typeof document==="undefined"||!document.hidden)&&(!IS_SUBFRAME||(frameSession.visible&&frameIntersecting));}
   /**
    * 向后台报告可见性、阅读位置和递增状态版本，供排队优先级和临时暂停使用。
    * 回调读取 runtime.lastError 以吞掉页面离开时接收方消失的错误；不包含网页文本。
@@ -2033,8 +2090,9 @@ function init() {
   /**
    * 只绑定一次 visibilitychange/pageshow/pagehide，区分临时不可见与真正离开文档。
    * 隐藏时撤销补翻计时并报告暂停；返回时唤醒在途页面队列，但用户已取消则不能恢复会话。
-   * pagehide.persisted 表示进入浏览器往返缓存，只暂停新发送；其他离开情况取消当前页批次。
+   * pagehide.persisted 撤销旧批次并保留译文与暂停意图；pageshow 核验文档后用新批次恢复。
    */
+  function lifecycleConfig(){return JSON.stringify([STATE.engine,STATE.aiProvider,STATE.aiKeys,STATE.baiduAppId,STATE.baiduKey,STATE.from,STATE.to,STATE.glossary]);}
   function bindPageLifecycle(){
     if(pageLifecycleBound)return;
     pageLifecycleBound=true;
@@ -2053,13 +2111,30 @@ function init() {
     };
     document.addEventListener("visibilitychange",update);
     window.addEventListener("pagehide",event=>{
+      lifecycleVersion++;
       if(event.persisted){
+        cachedConfig=lifecycleConfig();pageRestoring=true;resetRequestBatch();
         STATE.visibilityPaused=true;
         STATE.pageStateVersion++;
         try{chrome.runtime.sendMessage({action:MSG.SET_PAGE_STATE,visible:false,stateVersion:STATE.pageStateVersion,viewportEpoch:STATE.viewportEpoch},()=>{void chrome.runtime.lastError;});}catch(_){}
       }else cancelTranslation();
     });
-    window.addEventListener("pageshow",update);
+    window.addEventListener("pageshow",event=>{
+      if(!event.persisted){update();return;}
+      const version=++lifecycleVersion;pageRestoring=true;resetRequestBatch();
+      chrome.runtime.sendMessage({action:"RESUME_DOCUMENT"},response=>{
+        const error=chrome.runtime.lastError;
+        if(version!==lifecycleVersion)return;
+        if(error||!response?.ok){pageRestoring=false;STATE.lastError="页面恢复连接失败，请重试或刷新页面";setFabBusy(false);setFabTranslated(STATE.translated);return;}
+        void reloadConfig().then(()=>{
+          if(version!==lifecycleVersion)return;
+          if(cachedConfig&&cachedConfig!==lifecycleConfig()){clearTranslations();STATE.lastError="";STATE.failedCount=0;STATE.languageNoticeCount=0;}
+          pageRestoring=false;
+          if(IS_SUBFRAME)applyFrameSession(response.data);else publishFrameSession();
+          update();
+        }).catch(()=>{if(version===lifecycleVersion){pageRestoring=false;STATE.lastError="恢复页面配置失败，请刷新重试";setFabBusy(false);}});
+      });
+    });
     STATE.visibilityPaused=!isPageVisible();notifyPageState();publishFrameSession();
   }
 
@@ -2263,7 +2338,7 @@ function init() {
     // 页面已有可挂载节点后再初始化悬浮球、观察器及自动翻译。
     const start = () => {
       createFab();
-      if(window.BT_PDF_DOCUMENT?.isPdfDocument(document))return;
+      if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)||window.BT_IMAGE_DOCUMENT?.isImageDocument(document))return;
       bindPageLifecycle();
       bindHoverTranslate();
       observeDynamicContent();

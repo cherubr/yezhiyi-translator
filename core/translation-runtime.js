@@ -214,7 +214,7 @@
     }
     /**
      * 执行单分片任务：检查缓存和手动重试、合并进行中请求，再按账号排队执行。
-     * @param {Object} r 单分片请求；bypassCache 用于强制真实连接测试。
+     * @param {Object} r 单分片请求；refreshCache 刷新缓存但保留调度限制，bypassCache 用于真实连接测试。
      * @returns {Promise<string>} 缓存结果或物理请求最终结果。
      */
     function run(r) {
@@ -225,7 +225,7 @@
         while(manualTokens.size>64)manualTokens.delete(manualTokens.keys().next().value);
       }
       const cached=r.bypassCache?undefined:cache.get(k);
-      if(cached&&cached.until>now()&&(!cached.error||!manual)){
+      if(cached&&!r.refreshCache&&cached.until>now()&&(!cached.error||!manual)){
         if(cached.error)return Promise.reject(cachedError(cached));
         cache.delete(k);cache.set(k,cached);diagnostic(r,"cache_hit");return Promise.resolve(cached.data);
       }

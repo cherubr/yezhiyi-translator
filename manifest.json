@@ -6,7 +6,8 @@
   "permissions": [
     "contextMenus",
     "storage",
-    "tabs"
+    "tabs",
+    "webNavigation"
   ],
   "host_permissions": [
     "https://translate.googleapis.com/*",
@@ -74,6 +75,7 @@
         "core/request-policy.js",
         "core/providers.js",
         "core/pdf-document.js",
+        "core/image-document.js",
         "content/content.js"
       ],
       "css": [
