@@ -1,36 +1,106 @@
-const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{execFileSync}=require('node:child_process');
-const {RELEASE_FILES,prepareRelease,verifyReleaseLogging}=require('./release-files.cjs');
-const quote=s=>"'"+s.replace(/'/g,"''")+"'";
+/**
+ * 跨平台发布 ZIP 入口：npm run package，Windows/macOS/Linux 使用同一 Node.js 实现。
+ * 顺序：版本检查 → 白名单临时副本 → 临时 ZIP → 逐条读回校验 → 原子发布正式文件。
+ * 不运行测试、不上传商店、不覆盖旧包；require 仅导出函数，不生成文件。
+ * adm-zip 是固定版本的开发依赖，不进入扩展安装包。
+ */
+const fs = require("node:fs"), path = require("node:path"), os = require("node:os");
+const AdmZip = require("adm-zip");
+const {prepareRelease, verifyReleaseLogging} = require("./release-files.cjs");
 
 /**
- * 创建发布 ZIP；已有同名包直接拒绝覆盖，不修改本地开发配置或历史包。
+ * 读回真正的 ZIP，逐条比较路径、数量和字节，不能只验证压缩前副本。
+ * 不解压到磁盘；不接受目录条目、重复条目或清单之外的路径。
+ * @param {string} archive ZIP 路径。
+ * @param {string} stage 本轮发布副本路径。
+ * @param {string[]} files 本轮复制生成的精确文件清单。
+ * @param {string} version 期望的 Manifest 版本。
+ * @returns {void} 结构、全部文件内容和生产日志校验通过后返回。
+ * @throws {Error} ZIP 损坏、缺少/额外文件、内容不符或日志未关闭。
  */
-function packageRelease(root=path.resolve(__dirname,'..')){
-  const manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.json')));
-  if(!/^\d+\.\d+\.\d+$/.test(manifest.version))throw Error('无效版本');
-  const dist=path.join(root,'dist');fs.mkdirSync(dist,{recursive:true});
-  const output=path.join(dist,'yezhiyi-translator-'+manifest.version+'.zip');
-  if(fs.existsSync(output))throw Error('打包文件已存在，请先另存旧包或手动删除后重试：'+output);
-  if(process.platform!=='win32')throw Error('当前打包脚本使用 Windows Compress-Archive；请在 Windows 下生成经日志校验的发布 ZIP');
-  const stage=fs.mkdtempSync(path.join(os.tmpdir(),'yezhiyi-release-'));
-  try{
-    prepareRelease(root,stage);
-    const command='Compress-Archive -LiteralPath @('+RELEASE_FILES.map(f=>quote(path.join(stage,f))).join(',')+') -DestinationPath '+quote(output);
-    execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],{stdio:'inherit'});
-    // 再读取实际 ZIP 中的配置验证，不能只检查压缩前的源码或临时副本。
-    const inspect='Add-Type -AssemblyName System.IO.Compression.FileSystem; '+
-      '$zip=[System.IO.Compression.ZipFile]::OpenRead('+quote(output)+'); '+
-      'try { $entry=$zip.Entries | Where-Object { $_.FullName.Replace("\\","/") -eq "core/constants.js" } | Select-Object -First 1; '+
-      'if(-not $entry){throw "Missing release constants"}; '+
-      '$reader=[System.IO.StreamReader]::new($entry.Open()); try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8; [Console]::Write($reader.ReadToEnd()) } finally { $reader.Dispose() } } finally { $zip.Dispose() }';
-    const archived=execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',inspect],{encoding:'utf8'});
-    verifyReleaseLogging(archived);
+function verifyReleaseArchive(archive, stage, files, version) {
+  const zip = new AdmZip(archive), entries = zip.getEntries();
+  const expected = new Set(files), seen = new Set();
+  if (entries.length !== expected.size) throw Error("安装包文件数量与发布清单不一致");
+  for (const entry of entries) {
+    const name = entry.entryName;
+    if (entry.isDirectory || !expected.has(name) || seen.has(name))
+      throw Error("安装包含非预期或重复路径：" + name);
+    seen.add(name);
+    // getData 会实际解压并检查 CRC，再与发布副本逐字节核对，覆盖二进制资源。
+    const data = entry.getData();
+    if (!data.equals(fs.readFileSync(path.join(stage, ...name.split("/")))))
+      throw Error("安装包文件内容校验失败：" + name);
+    if (name === "core/constants.js") verifyReleaseLogging(data.toString("utf8"));
+    if (name === "manifest.json" && JSON.parse(data.toString("utf8")).version !== version)
+      throw Error("安装包 Manifest 版本不一致");
+  }
+  if (!seen.has("manifest.json") || !seen.has("core/constants.js"))
+    throw Error("安装包缺少 Manifest 或日志配置");
+}
+
+/**
+ * 创建跨平台发布 ZIP；正式文件出现前已经完成全部检查。
+ * @param {string} [root] 项目根目录，默认取脚本上级目录。
+ * @returns {string} 通过校验的 dist/yezhiyi-translator-<版本>.zip 绝对路径。
+ * @throws {Error} 版本不一致、资源缺失、压缩/校验失败或同名包已存在。
+ */
+function packageRelease(root = path.resolve(__dirname, "..")) {
+  root = path.resolve(root);
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
+  const version = manifest.version;
+  // 版本校验在创建输出目录前完成，不因无效配置留下新产物。
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version) || version === "0.0.0" ||
+      version.split(".").some(n => Number(n) > 65535 || String(Number(n)) !== n))
+    throw Error("无效版本");
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const lock = JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf8"));
+  if (pkg.version !== version || lock.version !== version || lock.packages?.[""]?.version !== version)
+    throw Error("Manifest、package 和锁文件版本不一致");
+  const dist = path.join(root, "dist");
+  const output = path.join(dist, "yezhiyi-translator-" + version + ".zip");
+  // lstat 也能发现悬空符号链接，禁止覆盖任何同名文件系统条目。
+  try {fs.lstatSync(output); throw Error("打包文件已存在，请先另存旧包或手动删除后重试：" + output);}
+  catch (error) {if (error.code !== "ENOENT") throw error;}
+  fs.mkdirSync(dist, {recursive:true});
+  let stage, pending;
+  try {
+    stage = fs.mkdtempSync(path.join(os.tmpdir(), "yezhiyi-release-"));
+    // 临时 ZIP 位于 dist 同一文件系统，便于最后以硬链接原子发布且不覆盖竞态中新建的旧包。
+    pending = fs.mkdtempSync(path.join(dist, ".yezhiyi-package-"));
+    const files = prepareRelease(root, stage), zip = new AdmZip();
+    for (const name of files) {
+      // ZIP 名称固定用 /，不把 Windows 路径分隔符写入包内；权限统一为普通资源的 0644。
+      zip.addFile(name, fs.readFileSync(path.join(stage, ...name.split("/"))), "", 0o644);
+    }
+    const temporaryZip = path.join(pending, "validated.zip");
+    // wx 防止意外覆盖临时目标；正式文件名还没有出现，压缩失败不会留下半成品正式包。
+    fs.writeFileSync(temporaryZip, zip.toBuffer(), {flag:"wx"});
+    verifyReleaseArchive(temporaryZip, stage, files, version);
+    // 同卷硬链接是无覆盖的原子操作：并发打包只有一个成功，另一个得到 EEXIST。
+    // 不使用可覆盖目标的 rename，也不在失败时删除另一个进程生成的正式文件。
+    fs.linkSync(temporaryZip, output);
     return output;
-  }finally{
-    // 只清理本轮创建且已确认位于系统临时目录下的 staging，不递归操作项目和 dist。
-    if(path.dirname(stage)!==path.resolve(os.tmpdir())||!path.basename(stage).startsWith('yezhiyi-release-'))throw Error('临时目录超出预期范围');
-    fs.rmSync(stage,{recursive:true,force:true});
+  } finally {
+    // 清理范围仅限本轮创建的两个目录；移除临时链接不影响已发布 ZIP。
+    try {
+      if (pending) {
+        if (path.dirname(pending) !== dist || !path.basename(pending).startsWith(".yezhiyi-package-"))
+          throw Error("临时 ZIP 目录超出预期范围");
+        fs.rmSync(pending, {recursive:true, force:true});
+      }
+    } finally {
+      if (stage) {
+        if (path.dirname(stage) !== path.resolve(os.tmpdir()) || !path.basename(stage).startsWith("yezhiyi-release-"))
+          throw Error("发布副本目录超出预期范围");
+        fs.rmSync(stage, {recursive:true, force:true});
+      }
+    }
   }
 }
-if(require.main===module)console.log('扩展安装包（生产日志关闭并验证）：'+packageRelease());
-module.exports={packageRelease};
+
+if (require.main === module) {
+  try {console.log("扩展安装包（生产日志关闭并验证）：" + packageRelease());}
+  catch (error) {console.error(error.message); process.exitCode = 1;}
+}
+module.exports = {packageRelease, verifyReleaseArchive};

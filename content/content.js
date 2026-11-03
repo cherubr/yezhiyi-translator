@@ -1652,7 +1652,10 @@ function init() {
           </button>
           <a class="bt-modal-settings" id="btModalFeedback" href="https://github.com/cherubr/yezhiyi-translator/issues/new" target="_blank" rel="noopener noreferrer" title="前往 GitHub 提交问题">问题反馈 ↗</a>
         </div>
-        <button class="bt-modal-btn" id="btModalPdf">PDF 双语阅读 · 打开在线或本地文件</button>
+        <div class="bt-modal-documents">
+          <button type="button" class="bt-modal-settings" id="btModalPdf" title="打开在线或本地 PDF">PDF 双语阅读</button>
+          <button type="button" class="bt-modal-settings" id="btModalOcr" title="打开图片页，读取、识别并翻译文字">图片文字识别与翻译</button>
+        </div>
       </div>
     `;
     mount.appendChild(panelModalEl);
@@ -1760,6 +1763,7 @@ function init() {
       chrome.runtime.sendMessage({ action: "OPEN_SETTINGS" });
     };
     $("#btModalPdf").onclick=()=>chrome.runtime.sendMessage({action:"OPEN_PDF_READER"});
+    $("#btModalOcr").onclick=()=>chrome.runtime.sendMessage({action:"OPEN_OCR_READER"});
   }
 
   /**

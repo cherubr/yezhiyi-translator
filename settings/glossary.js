@@ -12,7 +12,7 @@
     language.prepend(new Option("所有语言","*"));language.value=entry.language;language.setAttribute("aria-label","术语目标语言");
     enabled.type=exact.type="checkbox";enabled.checked=entry.enabled!==false;exact.checked=entry.caseSensitive===true;
     const enabledLabel=document.createElement("label"),exactLabel=document.createElement("label");enabledLabel.append(enabled,"启用");exactLabel.append(exact,"区分大小写");
-    remove.type="button";remove.textContent="删除";remove.addEventListener("click",()=>{row.remove();revision++;});
+    remove.type="button";remove.className="settings-action settings-action--danger";remove.textContent="删除";remove.addEventListener("click",()=>{row.remove();revision++;});
     row.append(source,target,language,enabledLabel,exactLabel,remove);row._fields={source,target,language,enabled,exact};$("glossaryRows").append(row);
     row.addEventListener("input",()=>revision++);row.addEventListener("change",()=>revision++);
   }
