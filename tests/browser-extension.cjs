@@ -95,19 +95,6 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    assert.equal(await page.locator('.bt-translation-text').count(),2,'关闭面板不能取消已有译文');
    await send('OPEN_PANEL',{toggle:true});assert.equal(await page.locator('.bt-modal').count(),1);
    await send('OPEN_PANEL');await send('OPEN_PANEL');assert.equal(await page.locator('.bt-modal').count(),1);
-   // 文档入口走真实后台路由；PDF 沿用来源预填，图片入口打开空白页且不自动识别。
-   for(const [button,file] of [['#btModalPdf','pdf/reader.html'],['#btModalOcr','ocr/reader.html']]){
-     const opened=context.waitForEvent('page');await page.locator(button).click();const reader=await opened;
-     await reader.waitForLoadState();const readerUrl=new URL(reader.url());
-     assert.equal(readerUrl.protocol,'chrome-extension:');assert.equal(readerUrl.host,id);assert.equal(readerUrl.pathname,'/'+file);
-     if(file.startsWith('ocr/')){
-       assert.equal(readerUrl.hash,'');
-       assert.equal(await reader.locator('#sourceUrl').inputValue(),'');
-       assert.equal(await reader.locator('#sourceText').inputValue(),'');
-       assert.equal(await reader.locator('#recognize').isDisabled(),true);
-     }else assert.equal(readerUrl.hash,'#url='+encodeURIComponent(origin+'/fixture'));
-     await reader.close();await page.bringToFront();
-   }
    await page.locator('.bt-modal-close').click();
    assert.equal(calls.length,1,'切换面板不发起新的翻译请求');
 
@@ -151,15 +138,6 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    await settings.goto('chrome-extension://'+id+'/settings/settings.html');
    await settings.waitForFunction(expected=>document.querySelector('#version')?.textContent==='v'+expected,version);
    assert.equal(await settings.locator('#aboutVersion').textContent(),version);
-   // 文档功能集中在翻译工具页，基本设置不再重复放入口，真实点击仍打开原有工具页。
-   assert.equal(await settings.locator('[data-panel="general"] #openPdfReader, [data-panel="general"] a[href="../ocr/reader.html"]').count(),0);
-   await settings.locator('.nav-item[data-tab="tools"]').click();
-   assert.equal(await settings.locator('[data-panel="tools"].active .translation-tool').count(),2);
-   for(const [selector,file] of [['#openPdfReader','pdf/reader.html'],['[data-panel="tools"] a[href="../ocr/reader.html"]','ocr/reader.html']]){
-     const opened=context.waitForEvent('page');await settings.locator(selector).click();const reader=await opened;
-     await reader.waitForLoadState();assert.equal(reader.url(),'chrome-extension://'+id+'/'+file);
-     await reader.close();await settings.bringToFront();
-   }
    // 设置页真实操作 → 同步存储 → 已有网页译文：只更新外观，不能增加任何翻译请求。
    await settings.locator('.nav-item[data-tab="display"]').click();
    const styleCallsBefore={ai:calls.length,google:await worker.evaluate(()=>googleCalls.length)};

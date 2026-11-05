@@ -7,7 +7,7 @@ const fs = require("node:fs"),
   path = require("node:path"),
   vm = require("node:vm");
 
-// 仅复制运行必需目录；目录内资源和第三方许可证会随目录一起复制。
+// 仅复制运行必需目录，目录内文件还需通过下面的资源类型过滤。
 // 文档、脚本、测试、依赖及 .local 不入包，隐私网页由 GitHub Pages 独立提供。
 // Object.freeze 防止调用者无意修改当前进程中的白名单。
 const RELEASE_FILES = Object.freeze([
@@ -16,13 +16,10 @@ const RELEASE_FILES = Object.freeze([
   "content",
   "core",
   "settings",
-  "pdf",
-  "ocr",
   "assets",
 ]);
 // 目录白名单还需配合文件类型过滤，不能把运行目录内的笔记和调试文件一起复制。
-// 第三方许可证/来源说明另行保留，不能只按扩展名过滤掉无后缀 LICENSE。
-const RESOURCE_EXTENSION = /\.(?:js|mjs|html|css|json|png|svg|wasm|gz|traineddata|bcmap|icc|pfb|ttf)$/i;
+const RESOURCE_EXTENSION = /\.(?:js|mjs|html|css|json|png|svg)$/i;
 const EXCLUDED_DIRECTORIES = new Set(["node_modules", "__MACOSX", "coverage", "test-results", "playwright-report"]);
 
 /**
@@ -38,11 +35,7 @@ function isReleaseFile(relative) {
   if (!RELEASE_FILES.includes(parts[0]) || parts.length < 2) return false;
   const name = parts[parts.length - 1];
   if (RESOURCE_EXTENSION.test(name)) return true;
-  // 保留整个第三方资源树中的许可证，以及明确命名的来源/使用说明。
-  return /^(?:pdf|ocr)\/vendor\//.test(relative) && (
-    /(?:^|[._-])(?:LICENSE|NOTICE|COPYING)(?:[._-].*)?$/i.test(name) ||
-    /^(?:SOURCE|README)\.md$/i.test(name) || /-README\.md$/i.test(name)
-  );
+  return false;
 }
 
 /**

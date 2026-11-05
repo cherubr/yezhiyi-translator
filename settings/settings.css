@@ -1213,23 +1213,6 @@ button.service-card { width:100%;font:inherit;text-align:left;color:inherit; }
 .settings-action--danger { color: #b53c30; }
 .settings-action--danger:hover:not(:disabled) { background: #fff2f0; border-color: #c34a3e; color: #a12f25; }
 
-/* PDF 与图片入口独立分组，沿用设置页按钮；空间不足时自然排列成单列。 */
-.translation-tools { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; }
-.translation-tool { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 24px; border: 1px solid #e6e8eb; border-radius: 12px; background: #fff; }
-.translation-tool-icon { display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; margin-bottom: 18px; border-radius: 10px; background: #e6f2fb; color: #007acc; font-size: 13px; font-weight: 700; }
-.translation-tool h2 { margin: 0 0 10px; font-size: 16px; line-height: 1.5; }
-.translation-tool p { margin: 0 0 12px; color: #666; font-size: 13px; line-height: 1.8; }
-.translation-tool p.hint { margin-bottom: 22px; color: #888; font-size: 12px; }
-.translation-tool .settings-action { margin-top: auto; max-width: 100%; }
-.translation-tools-tip { margin: 20px 0 0; padding: 14px 16px; border-radius: 8px; background: #e6f2fb; color: #36516b; font-size: 13px; line-height: 1.8; }
-@media(prefers-color-scheme:dark) {
-  .translation-tool { background: #242424; border-color: #414c5e; }
-  .translation-tool-icon { background: #1e3a4d; color: #80caff; }
-  .translation-tool p { color: #b8c4d0; }
-  .translation-tool p.hint { color: #9ba7b7; }
-  .translation-tools-tip { background: #1e3a4d; color: #c1daed; }
-}
-
 /* 术语表保留原生复选框，编辑行与普通设置表单使用同一套输入外观。 */
 .glossary-options { display: flex; flex-direction: column; gap: 14px; margin-bottom: 14px; }
 .glossary-options label { display: flex; align-items: flex-start; gap: 8px; line-height: 1.6; }

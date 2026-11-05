@@ -1,20 +1,14 @@
-/** 真实扩展 iframe/术语/OCR 集成：本地页面、真实 Tesseract 与 PDF.js；仅翻译 API 模拟。 */
+/** 真实扩展 iframe/术语集成：本地页面与真实会话控制，仅翻译 API 模拟。 */
 const {chromium}=require('playwright'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
 const root=process.env.YEZHIYI_EXTENSION_DIR?path.resolve(process.env.YEZHIYI_EXTENSION_DIR):path.resolve(__dirname,'..');
-function scannedPdf(jpeg){
- const objects=['<< /Type /Catalog /Pages 2 0 R >>','<< /Type /Pages /Kids [3 0 R] /Count 1 >>','<< /Type /Page /Parent 2 0 R /MediaBox [0 0 800 240] /Resources << /XObject << /Image 4 0 R >> >> /Contents 5 0 R >>',Buffer.concat([Buffer.from('<< /Type /XObject /Subtype /Image /Width 1600 /Height 480 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length '+jpeg.length+' >>\nstream\n'),jpeg,Buffer.from('\nendstream')]),'<< /Length 33 >>\nstream\nq 800 0 0 240 0 0 cm /Image Do Q\nendstream'];
- const chunks=[Buffer.from('%PDF-1.4\n')],offsets=[0];let length=chunks[0].length;
- objects.forEach((obj,index)=>{offsets.push(length);const part=Buffer.concat([Buffer.from((index+1)+' 0 obj\n'),Buffer.isBuffer(obj)?obj:Buffer.from(obj),Buffer.from('\nendobj\n')]);chunks.push(part);length+=part.length;});
- chunks.push(Buffer.from('xref\n0 6\n0000000000 65535 f \n'+offsets.slice(1).map(value=>String(value).padStart(10,'0')+' 00000 n \n').join('')+'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n'+length+'\n%%EOF'));return Buffer.concat(chunks);
-}
 (async()=>{
  const profile=fs.mkdtempSync(path.join(os.tmpdir(),'yezhiyi-features-'));let context;
  try{
   context=await chromium.launchPersistentContext(profile,{channel:'chromium',headless:true,viewport:{width:1500,height:1000},args:['--disable-extensions-except='+root,'--load-extension='+root]});
   let worker=context.serviceWorkers()[0];if(!worker)worker=await context.waitForEvent('serviceworker');const id=new URL(worker.url()).host;
   await worker.evaluate(async()=>{
-   await chrome.storage.sync.set({engine:'google',from:'en',to:'zh-CN',autoTranslate:false});globalThis.calls=[];globalThis.delay=0;const original=fetch;
-   globalThis.fetch=(url,options)=>{if(String(url).startsWith('https://translate.googleapis.com/')){const text=new URL(url).searchParams.get('q');calls.push(text);return new Promise(resolve=>setTimeout(()=>resolve(new Response(JSON.stringify([[['译文：'+text]]]),{headers:{'Content-Type':'application/json'}})),delay));}return original(url,options);};
+   await chrome.storage.sync.set({engine:'google',from:'en',to:'zh-CN',autoTranslate:false});globalThis.calls=[];const original=fetch;
+   globalThis.fetch=(url,options)=>{if(String(url).startsWith('https://translate.googleapis.com/')){const text=new URL(url).searchParams.get('q');calls.push(text);return Promise.resolve(new Response(JSON.stringify([[['译文：'+text]]]),{headers:{'Content-Type':'application/json'}}));}return original(url,options);};
   });
   await context.route('https://frame.test/**',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html lang="en"><body><p id="source">Cross frame Linux kernel content</p></body></html>'}));
   await context.route('https://main.test/**',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><html lang="en"><body><p>Main Linux kernel content</p><iframe src="https://frame.test/child" width="700" height="250"></iframe><iframe srcdoc="<p>Inline frame kernel content</p>" width="700" height="250"></iframe></body></html>'}));
@@ -42,19 +36,7 @@ function scannedPdf(jpeg){
   const settings=await context.newPage();await settings.goto('chrome-extension://'+id+'/settings/settings.html');await settings.locator('[data-tab="glossary"]').click();await settings.waitForSelector('.glossary-row');
   await settings.locator('.glossary-row input[aria-label="术语译法"]').fill('核心');await settings.locator('#saveGlossary').click();await settings.waitForFunction(()=>document.querySelector('#glossaryStatus').textContent.includes('已保存'));
   assert.equal(await worker.evaluate(async()=>(await chrome.storage.local.get('glossary')).glossary.entries[0].target),'核心');
-  const image=await settings.evaluate(()=>{const canvas=document.createElement('canvas');canvas.width=1600;canvas.height=480;const c=canvas.getContext('2d');c.fillStyle='white';c.fillRect(0,0,1600,480);c.fillStyle='black';c.font='64px Arial';c.fillText('Linux kernel OpenShift',60,140);c.fillText('Hello OCR translation',60,260);c.font='72px "PingFang SC",sans-serif';c.fillText('简体中文文字识别',60,390);return {png:canvas.toDataURL('image/png').split(',')[1],jpeg:canvas.toDataURL('image/jpeg').split(',')[1]};});
-  const ocr=await context.newPage();ocr.on('pageerror',error=>errors.push(error.message));const requests=[];ocr.on('request',request=>requests.push(request.url()));await ocr.goto('chrome-extension://'+id+'/ocr/reader.html');await ocr.waitForFunction(()=>document.querySelector('#service').value==='google');
-  await ocr.locator('#localFile').setInputFiles({name:'source.png',mimeType:'image/png',buffer:Buffer.from(image.png,'base64')});await ocr.waitForFunction(()=>!document.querySelector('#recognize').disabled);const before=await worker.evaluate(()=>calls.length);
-  await ocr.locator('#recognize').click();await ocr.waitForFunction(()=>document.querySelector('#sourceText').value.includes('Linux'),{},{timeout:120000});assert.equal(await worker.evaluate(()=>calls.length),before,'识别不发送翻译请求');assert.match(await ocr.locator('#sourceText').inputValue(),/Hello OCR/);
-  await ocr.locator('#sourceText').fill('Linux kernel OpenShift');await ocr.locator('#translate').click();await ocr.waitForFunction(()=>document.querySelector('#result').textContent.includes('核心'));assert.match(await ocr.locator('#result').innerText(),/Linux 核心 OpenShift/);
-  await ocr.locator('#ocrLanguage').selectOption('chi_sim+eng');await ocr.locator('#recognize').click();await ocr.waitForFunction(()=>document.querySelector('#sourceText').value.includes('Linux'),{},{timeout:120000});assert.match((await ocr.locator('#sourceText').inputValue()).replace(/\s/g,''),/中文文字识别/,'真实识别简体中文');
-  await ocr.locator('#recognize').click();await ocr.locator('#cancel').click();await ocr.waitForTimeout(300);assert.match(await ocr.locator('#status').innerText(),/已取消/);assert.equal(await ocr.locator('#sourceText').inputValue(),'');
-  assert.ok(!requests.some(url=>/^https?:/.test(url)),'OCR 全过程仅使用随包附带的资源');
-  await ocr.evaluate(()=>{chrome.permissions.request=async()=>false;});await ocr.locator('#sourceUrl').fill('https://denied.test/image.png');await ocr.locator('#sourceForm button').click();await ocr.waitForFunction(()=>document.querySelector('#status').textContent.includes('尚未允许'));assert.ok(!requests.some(url=>url.includes('denied.test')),'授权拒绝不读取图片');
-  const pdf=await context.newPage(),pdfRequests=[];pdf.on('pageerror',error=>errors.push(error.message));pdf.on('request',request=>pdfRequests.push(request.url()));const beforePdf=await worker.evaluate(()=>calls.length);
-  await pdf.goto('chrome-extension://'+id+'/pdf/reader.html');await pdf.locator('#localFile').setInputFiles({name:'scan.pdf',mimeType:'application/pdf',buffer:scannedPdf(Buffer.from(image.jpeg,'base64'))});await pdf.waitForFunction(()=>document.querySelector('#status').textContent.includes('不支持扫描图片'));
-  assert.equal(await pdf.locator('#translate').isDisabled(),true,'纯扫描页无文字层，不能发起翻译');assert.equal(await pdf.locator('#recognize,#ocrLanguage').count(),0,'PDF 阅读页已移除识别入口');assert.ok(await pdf.locator('#pdfCanvas').evaluate(canvas=>canvas.width>0&&canvas.height>0),'扫描页仍可正常阅读');
-  assert.ok(!pdfRequests.some(url=>/ocr-runtime|\/ocr\//.test(url)),'PDF 阅读页不加载 OCR 引擎');assert.equal(await worker.evaluate(()=>calls.length),beforePdf,'无文字的扫描页不发送翻译请求');assert.equal(await pdf.locator('.pdf-overlay').count(),0);assert.deepEqual(errors,[]);
-  console.log('PASS Chromium: 术语编辑保存、真实中英文图片 OCR、本地资源、校对翻译、识别取消、扫描 PDF 阅读与无文字提示');
+  assert.deepEqual(errors,[]);
+  console.log('PASS Chromium: 术语设置保存与网页/iframe 统一规则');
  }finally{if(context)await context.close();fs.rmSync(profile,{recursive:true,force:true});}
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -22,7 +22,6 @@
         <button class="nav-item active" data-tab="general"><span class="nav-icon">⚙</span><span>基本设置</span></button>
         <button class="nav-item" data-tab="display"><span class="nav-icon">🎨</span><span>显示样式</span></button>
         <button class="nav-item" data-tab="service"><span class="nav-icon">🔌</span><span>翻译服务</span></button>
-        <button class="nav-item" data-tab="tools"><span class="nav-icon" aria-hidden="true">▦</span><span>翻译工具</span></button>
         <button class="nav-item" data-tab="behavior"><span class="nav-icon">🧠</span><span>行为偏好</span></button>
         <button class="nav-item" data-tab="glossary"><span class="nav-icon">术</span><span>技术术语表</span></button>
         <button class="nav-item" data-tab="about"><span class="nav-icon">ℹ</span><span>关于</span></button>
@@ -111,31 +110,6 @@
             <button class="back-btn" id="backToServices">← 返回服务列表</button>
             <div id="serviceDetailContent"></div>
           </div>
-        </section>
-
-
-        <section class="tab-panel" data-panel="tools">
-          <h1>翻译工具</h1>
-          <p class="desc">选择 PDF 或图片，使用已配置的翻译服务阅读文字。</p>
-          <div class="translation-tools">
-            <article class="translation-tool">
-              <div class="translation-tool-icon" aria-hidden="true">PDF</div>
-              <h2>PDF 双语阅读</h2>
-              <p>打开在线或本地 PDF，保留图形与排版，对照阅读原文和译文。</p>
-              <p class="hint">支持可提取文字的 PDF，最大 50 MB。</p>
-              <button type="button" class="settings-action" id="openPdfReader">打开 PDF 双语阅读</button>
-            </article>
-            <article class="translation-tool">
-              <div class="translation-tool-icon" aria-hidden="true">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8" cy="8" r="1.5"/><path d="m3 17 5-5 4 4 4-6 5 7"/></svg>
-              </div>
-              <h2>图片文字识别与翻译</h2>
-              <p>在本机识别图片中的英文或简体中文，校对文字后再翻译。</p>
-              <p class="hint">支持选择、粘贴和在线读取，最大 20 MB。</p>
-              <a class="settings-action" href="../ocr/reader.html" target="_blank" rel="noopener">打开图片翻译页</a>
-            </article>
-          </div>
-          <p class="translation-tools-tip">快捷打开：浏览 PDF 或独立图片时，点击页面上的页知译悬浮球，即可打开对应翻译页。页面未显示悬浮球时，也可点击浏览器工具栏中的扩展图标。</p>
         </section>
 
 
@@ -275,7 +249,7 @@
 
 
         <section class="tab-panel" data-panel="glossary">
-          <h1>技术术语表</h1><p class="desc">为网页、PDF 和图片翻译统一译法；术语只保存在本机。</p>
+          <h1>技术术语表</h1><p class="desc">为网页翻译统一译法；术语只保存在本机。</p>
           <div class="glossary-options">
             <label><input id="glossaryEnabled" type="checkbox"> 启用术语表</label>
             <label><input id="glossaryBuiltins" type="checkbox"> 保留内置术语原名：Linux、RHCE、OpenShift、Kubernetes、Red Hat</label>

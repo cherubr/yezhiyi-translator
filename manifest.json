@@ -32,9 +32,6 @@
     "https://*/*",
     "http://*/*"
   ],
-  "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
-  },
   "background": {
     "service_worker": "background/service-worker.js"
   },
@@ -74,8 +71,6 @@
         "core/translation-units.js",
         "core/request-policy.js",
         "core/providers.js",
-        "core/pdf-document.js",
-        "core/image-document.js",
         "content/content.js"
       ],
       "css": [

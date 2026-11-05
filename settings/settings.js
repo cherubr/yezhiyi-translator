@@ -6,7 +6,6 @@ const LOCAL_CONFIG_KEYS = new Set(["aiKeys", "baiduAppId", "baiduKey", "baiduVer
 
 // 当前设置页的配置草稿，由自动保存或独立请求设置入口写入。
 let cfg = { ...DEFAULT };
-document.getElementById("openPdfReader")?.addEventListener("click",()=>chrome.runtime.sendMessage({action:"OPEN_PDF_READER"}));
 // 当前服务详情类型；null 表示服务列表。
 let currentService = null;
 // 正在编辑的 AI 厂商，与实际默认服务 cfg.aiProvider 分开。

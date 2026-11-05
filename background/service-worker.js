@@ -9,8 +9,6 @@ importScripts(
   "../core/md5.js",
   "../core/languages.js",
   "../core/translation-runtime.js",
-  "../core/pdf-document.js",
-  "../core/image-document.js",
   "../core/glossary.js",
   "../core/frame-sessions.js"
 );
@@ -34,8 +32,6 @@ chrome.runtime.onInstalled.addListener(() => {
       title: "页知译 · 翻译选中文字",
       contexts: ["selection"]
     });
-    chrome.contextMenus.create({id:"translateImage",title:"页知译 · 识别并翻译图片文字",contexts:["image","action"]});
-    chrome.contextMenus.create({id:"translatePdf",title:"用页知译打开 PDF 双语阅读",contexts:["page","link","action"]});
   });
 });
 
@@ -45,10 +41,7 @@ chrome.runtime.onInstalled.addListener(() => {
  */
 chrome.action.onClicked.addListener((tab) => {
   if (!tab || !tab.id) return;
-  if(self.BT_PDF_DOCUMENT.isPdfUrl(tab.url)){openPdfReader(tab.url);return;}
-  if(self.BT_IMAGE_DOCUMENT.isImageUrl(tab.url)){void openImageReader(tab.url);return;}
-
-  safeSendToTab(tab.id, { action: MSG.OPEN_PANEL, toggle: true });
+  void safeSendToTab(tab.id, { action: MSG.OPEN_PANEL, toggle: true });
 });
 
 /**
@@ -57,8 +50,6 @@ chrome.action.onClicked.addListener((tab) => {
  * @param {Object} tab 触发菜单的标签页。
  */
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if(info.menuItemId==="translateImage"){void openImageReader(info.srcUrl);return;}
-  if(info.menuItemId==="translatePdf"){openPdfReader(info.linkUrl||info.pageUrl||tab?.url);return;}
   if (info.menuItemId === "translatePage") {
     safeSendToTab(tab.id, { action: MSG.START_TRANSLATION });
   } else if (info.menuItemId === "translateSelection") {
@@ -91,13 +82,14 @@ chrome.commands.onCommand.addListener(async (command) => {
  * 向指定标签页发送控制指令；页面不存在或尚未注入内容脚本时忽略发送失败。
  * @param {number} tabId 接收指令的标签页编号。
  * @param {Object} message 包含 action 及该指令需要的数据。
- * @returns {Promise<void>} 消息发送结束；失败不会继续向调用方抛出。
+ * @returns {Promise<boolean>} 是否成功投递；失败不会继续向调用方抛出。
  */
 async function safeSendToTab(tabId, message,frameId=0) {
   try {
     await chrome.tabs.sendMessage(tabId, message,{frameId});
+    return true;
   } catch (e) {
-
+    return false;
   }
 }
 
@@ -117,24 +109,6 @@ function openExtensionPage(relativePath) {
       chrome.tabs.create({ url });
     }
   });
-}
-
-/** PDF 单独打开阅读页，不修改或接管原 PDF 标签页；来源无效时仍可手动选文件。 */
-function openPdfReader(value) {
-  let hash="";
-  try{hash="#url="+encodeURIComponent(self.BT_PDF_DOCUMENT.sourceUrl(value).href);}catch(_){}
-  openExtensionPage("pdf/reader.html"+hash);
-}
-
-/** 从直接点击链申请精确来源权限，再打开图片页；识别和发送文字仍由用户主动开始。 */
-function openImageReader(value){
-  let url;try{url=self.BT_IMAGE_DOCUMENT.sourceUrl(value);}catch(_){openExtensionPage("ocr/reader.html");return Promise.resolve();}
-  const params=new URLSearchParams({url:url.href}),origins={origins:[url.origin+"/*"]};let permission;
-  // 必须先在点击链发起申请；已授权来源在非手势重入时仍可通过 contains 核验预览。
-  try{permission=chrome.permissions.request(origins);}catch(_){permission=chrome.permissions.contains(origins);}
-  return permission.catch(()=>chrome.permissions.contains(origins)).then(granted=>{
-    if(granted)params.set("load","1");openExtensionPage("ocr/reader.html#"+params);
-  }).catch(()=>openExtensionPage("ocr/reader.html#"+params));
 }
 
 // 批次表：key 对应 owner、cancelled 和消费者控制器集合；属于本轮后台内存。
@@ -350,10 +324,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     try{registerOwner(sender);}catch(_){sendResponse({ok:false,cancelled:true});return false;}
     const operation=action==="FRAME_READY"?frameSessions.ready(sender):frameSessions.publish(sender,request);
     operation.then(data=>sendResponse({ok:true,data})).catch(error=>sendResponse({ok:false,error:error.message}));return true;
-  }
-  if(action==="OPEN_OCR_READER"){void openImageReader(request.url);sendResponse({ok:true});return false;}
-  if(action==="OPEN_PDF_READER"){
-    openPdfReader(request.url||sender.tab?.url);sendResponse({ok:true});return false;
   }
   if(action==="GET_TRANSLATION_STYLES"){
     Promise.all(["core/translation-style.css","content/content.css"].map(file=>

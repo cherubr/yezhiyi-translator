@@ -11,6 +11,9 @@ if (window.__BT_INJECTED) {
  * 页面刷新会重建这些本地状态，不会清空后台缓存或用户配置。
  */
 function init() {
+  // 独立 PDF 和图片不是网页正文，不创建网页翻译入口或采集任务。
+  const documentMime=(document.contentType||"").split(";")[0].trim().toLowerCase();
+  if(documentMime==="application/pdf"||documentMime.startsWith("image/"))return;
   const { MSG } = window.BT_CONST;
   // 只有顶层页面显示控制面板；子框架通过扩展后台继承页面会话，不通过网页 postMessage 信任指令。
   const IS_SUBFRAME=!!window.top&&window.top!==window;
@@ -213,6 +216,8 @@ function init() {
       case MSG.CANCEL_TRANSLATION: cancelTranslation(); break;
       case MSG.TOGGLE_PANEL: toggleTranslation(); break;
       case MSG.OPEN_PANEL:
+        // 同步确认收到面板指令，面板的打开与关闭由当前页面管理。
+        sendResponse({handled:true});
         // 工具栏点击切换显隐；查看详情等普通打开消息仍保持幂等，不影响当前翻译任务。
         if(request.toggle===true&&panelModalEl)closeControlPanel();
         else openControlPanel();
@@ -556,13 +561,6 @@ function init() {
    */
   async function translatePage(force = false, automatic = false) {
     if(IS_SUBFRAME&&(!frameSession.started||frameSession.paused))return;
-    if(window.BT_IMAGE_DOCUMENT?.isImageDocument(document)){
-      if(!automatic)chrome.runtime.sendMessage({action:"OPEN_OCR_READER",url:location.href},()=>{void chrome.runtime.lastError;});return;
-    }
-    if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)){
-      if(!automatic)chrome.runtime.sendMessage({action:"OPEN_PDF_READER",url:location.href},()=>{void chrome.runtime.lastError;});
-      return;
-    }
     // 自动任务不能解除用户暂停；只有手动翻译入口可以恢复当前页面。
     if (automatic && ((!STATE.pageStarted && !STATE.autoTranslate) || STATE.pagePaused || STATE.cancelRequested)) return;
     if (!isPageVisible()) {
@@ -1559,12 +1557,6 @@ function init() {
    */
   function openControlPanel() {
     if(IS_SUBFRAME)return;
-    if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)){
-      chrome.runtime.sendMessage({action:"OPEN_PDF_READER",url:location.href},()=>{void chrome.runtime.lastError;});return;
-    }
-    if(window.BT_IMAGE_DOCUMENT?.isImageDocument(document)){
-      chrome.runtime.sendMessage({action:"OPEN_OCR_READER",url:location.href},()=>{void chrome.runtime.lastError;});return;
-    }
     if (panelModalEl) return;
     const mount = getMountNode();
     if (!mount) return;
@@ -1651,10 +1643,6 @@ function init() {
             <span>⚙</span> 更多设置
           </button>
           <a class="bt-modal-settings" id="btModalFeedback" href="https://github.com/cherubr/yezhiyi-translator/issues/new" target="_blank" rel="noopener noreferrer" title="前往 GitHub 提交问题">问题反馈 ↗</a>
-        </div>
-        <div class="bt-modal-documents">
-          <button type="button" class="bt-modal-settings" id="btModalPdf" title="打开在线或本地 PDF">PDF 双语阅读</button>
-          <button type="button" class="bt-modal-settings" id="btModalOcr" title="打开图片页，读取、识别并翻译文字">图片文字识别与翻译</button>
         </div>
       </div>
     `;
@@ -1762,8 +1750,6 @@ function init() {
     $("#btModalSettings").onclick = () => {
       chrome.runtime.sendMessage({ action: "OPEN_SETTINGS" });
     };
-    $("#btModalPdf").onclick=()=>chrome.runtime.sendMessage({action:"OPEN_PDF_READER"});
-    $("#btModalOcr").onclick=()=>chrome.runtime.sendMessage({action:"OPEN_OCR_READER"});
   }
 
   /**
@@ -2342,7 +2328,6 @@ function init() {
     // 页面已有可挂载节点后再初始化悬浮球、观察器及自动翻译。
     const start = () => {
       createFab();
-      if(window.BT_PDF_DOCUMENT?.isPdfDocument(document)||window.BT_IMAGE_DOCUMENT?.isImageDocument(document))return;
       bindPageLifecycle();
       bindHoverTranslate();
       observeDynamicContent();

@@ -31,8 +31,6 @@ Thumbs.db
 *.crx
 /*.tgz
 /*.tar.gz
-# PDF.js 调试映射；解析器、Worker、字体、解码器和许可证需要保留
-/pdf/vendor/**/*.map
 
 # 白名单脚本生成的安装包
 dist/

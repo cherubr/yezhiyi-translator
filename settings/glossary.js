@@ -22,7 +22,7 @@
   function render(value){const config=api.normalize(value);$("glossaryEnabled").checked=config.enabled;$("glossaryBuiltins").checked=config.builtins;$("glossaryRows").replaceChildren();config.entries.forEach(addRow);revision++;savedRevision=revision;}
   async function save(){
     if(writing)return;writing=true;$("saveGlossary").disabled=true;
-    try{const config=read(),version=revision;await BT_STORAGE.set({glossary:config});savedRevision=version;notice("术语表已保存，旧译文将清理；已开始翻译的网页会按新规则补翻，PDF/图片请重新开始翻译。");}
+    try{const config=read(),version=revision;await BT_STORAGE.set({glossary:config});savedRevision=version;notice("术语表已保存，旧译文将清理；已开始翻译的网页会按新规则补翻。");}
     catch(error){notice(error.message||"保存失败",true);}finally{writing=false;$("saveGlossary").disabled=false;}
   }
   $("addGlossary").addEventListener("click",()=>{if($("glossaryRows").children.length>=api.MAX_ENTRIES){notice("最多 500 条自定义术语",true);return;}addRow();revision++;});

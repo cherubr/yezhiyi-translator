@@ -1,6 +1,6 @@
 /**
  * 跨平台打包回归：只在独立临时项目生成小型 ZIP，不操作项目 dist 或真实商店。
- * 覆盖文件白名单、许可证、UTF-8/空格路径、生产日志、归档完整性、失败清理和无覆盖发布。
+ * 覆盖文件白名单、资源类型、UTF-8/空格路径、生产日志、归档完整性、失败清理和无覆盖发布。
  * 三系统 CI 使用同一脚本；Mac 实际项目包另用系统 unzip/Python 独立验收。
  * 执行：npm run test:package
  */
@@ -27,13 +27,11 @@ function createProject(name) {
   for (const [file, value] of Object.entries({
     "core/constants.js":constants, "content/content.js":"const value = '中文';",
     "content/empty.js":"", "assets/字 图.svg":"<svg>中文</svg>", "assets/bytes.png":binary,
-    "pdf/vendor/LICENSE":"Third party license", "pdf/vendor/LICENSE_PDFJS_OPENJPEG":"License",
-    "pdf/vendor/SOURCE.md":"Source", "pdf/vendor/build/pdf.mjs":"export const version = 1;",
-    "ocr/vendor/tesseract.min.js.LICENSE.txt":"License", "ocr/vendor/lang/eng-README.md":"Language source",
-    "ocr/vendor/lang/eng.traineddata.gz":binary, "ocr/vendor/core/engine.wasm":binary,
-    "content/notes.txt":"Private local notes", "pdf/vendor/build/pdf.mjs.map":"debug map",
-    "assets/.DS_Store":"system file", "pdf/.cache/ignored.js":"cache",
-    "ocr/vendor/node_modules/ignored.js":"dependency", "core/notes.md":"local notes",
+    "core/sample.mjs":"export const version = 1;", "core/sample.json":"{\"value\":1}",
+    "content/notes.txt":"Private local notes", "core/sample.mjs.map":"debug map",
+    "assets/.DS_Store":"system file", "background/.cache/ignored.js":"cache",
+    "content/node_modules/ignored.js":"dependency", "core/notes.md":"local notes",
+    "core/engine.wasm":binary, "core/language.gz":binary, "core/LICENSE":"license",
     "settings/settings.js.bak":"backup", "README.md":"project docs", ".local/notes.md":"local"
   })) {
     const target = path.join(root, ...file.split("/"));
@@ -55,12 +53,11 @@ try {
   const names = zip.getEntries().map(entry => entry.entryName);
   assert.ok(names.includes("manifest.json"));
   assert.ok(names.every(name => !name.includes("\\") && !name.startsWith("/")));
-  for (const name of ["content/notes.txt", "pdf/vendor/build/pdf.mjs.map", "assets/.DS_Store", "pdf/.cache/ignored.js", "ocr/vendor/node_modules/ignored.js", "core/notes.md", "settings/settings.js.bak", "README.md", ".local/notes.md", "package.json"])
+  for (const name of ["content/notes.txt", "core/sample.mjs.map", "assets/.DS_Store", "background/.cache/ignored.js", "content/node_modules/ignored.js", "core/notes.md", "core/engine.wasm", "core/language.gz", "core/LICENSE", "settings/settings.js.bak", "README.md", ".local/notes.md", "package.json"])
     assert.ok(!names.includes(name), "杂项不得入包：" + name);
-  for (const name of ["pdf/vendor/LICENSE", "pdf/vendor/LICENSE_PDFJS_OPENJPEG", "pdf/vendor/SOURCE.md", "ocr/vendor/tesseract.min.js.LICENSE.txt", "ocr/vendor/lang/eng-README.md"])
-    assert.ok(names.includes(name), "第三方说明必须保留：" + name);
+  for (const name of ["core/sample.mjs", "core/sample.json"])
+    assert.ok(names.includes(name), "允许的运行资源必须入包：" + name);
   assert.deepEqual(zip.readFile("assets/bytes.png"), binary);
-  assert.deepEqual(zip.readFile("ocr/vendor/lang/eng.traineddata.gz"), binary);
   assert.equal(zip.readAsText("assets/字 图.svg"), "<svg>中文</svg>");
   assert.equal(zip.readAsText("content/empty.js"), "");
   assert.match(zip.readAsText("core/constants.js"), /environment: "production"/);
@@ -91,7 +88,7 @@ try {
     assert.equal(isReleaseFile(file), false, file);
 
   for (const [name, mutate] of [
-    ["missing", value => fs.rmSync(path.join(value, "ocr"), {recursive:true})],
+    ["missing", value => fs.rmSync(path.join(value, "settings"), {recursive:true})],
     ["logging", value => fs.writeFileSync(path.join(value, "core/constants.js"), "missing logging config")],
     ["version", value => fs.writeFileSync(path.join(value, "package.json"), '{"version":"1.0.1"}')],
     ["lock", value => fs.writeFileSync(path.join(value, "package-lock.json"), '{"version":"1.0.2","packages":{"":{"version":"1.0.1"}}}')],
@@ -126,7 +123,7 @@ try {
   catch (error) {if (!["EPERM", "EACCES"].includes(error.code)) throw error; console.log("SKIP: 当前系统不允许创建符号链接夹具");}
   if (linked) {assert.throws(() => packageRelease(links), /符号链接/); cleanDist(links);}
 
-  console.log("PASS: " + process.platform + " 跨平台 ZIP、文件过滤/许可证、中文路径、生产日志、完整性、失败清理及竞态无覆盖");
+  console.log("PASS: " + process.platform + " 跨平台 ZIP、文件及资源类型过滤、中文路径、生产日志、完整性、失败清理及竞态无覆盖");
 } finally {
   if (path.dirname(fixture) !== path.resolve(os.tmpdir()) || !path.basename(fixture).startsWith("yezhiyi-package-test-"))
     throw Error("打包测试目录超出预期");

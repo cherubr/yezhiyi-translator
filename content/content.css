@@ -226,17 +226,6 @@
   cursor: pointer; font-size: 12px; font-family: inherit; transition: 0.15s;
 }
 .bt-modal-settings:hover { background: #f0f7ff; border-color: #007acc; }
-/* 文档入口共用底部按钮样式；空间不足时整项换行，保持文字横向可读。 */
-.bt-modal-documents {
-  display: flex; flex-wrap: wrap; gap: 8px;
-  padding: 0 16px 12px; background: #fafbfc; flex-shrink: 0;
-}
-.bt-modal-documents .bt-modal-settings {
-  flex: 1 1 140px; justify-content: center; min-height: 36px;
-  line-height: 20px; white-space: normal; overflow-wrap: anywhere;
-}
-.bt-modal-documents .bt-modal-settings:focus-visible { outline: 2px solid #007acc; outline-offset: 2px; }
-
 .bt-panel-toast {
   position: absolute; left: 50%; bottom: 60px;
   transform: translateX(-50%);
@@ -298,8 +287,6 @@
   .bt-modal-switch { background: #555; }
   .bt-modal-switch.on { background: #00a8e8; }
   .bt-modal-footer { background: #242424; border-top-color: #333; }
-  .bt-modal-documents { background: #242424; }
-  .bt-modal-documents .bt-modal-settings:focus-visible { outline-color: #65baf4; }
   .bt-modal-settings {
     background: #2a2a2a; color: #00a8e8; border-color: #2a4a5e;
   }

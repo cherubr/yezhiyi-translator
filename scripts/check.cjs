@@ -28,7 +28,7 @@ function check(file) {
 /**
  * 递归扫描入口指定的目录，逐个检查 .js、.cjs 和 .mjs。
  * 不从仓库根目录扫描，因此不会进入根目录的 node_modules 或 .local；
- * 指定目录内的子目录会继续扫描，包括 PDF/OCR 随包附带的 JS。
+ * 指定目录内的子目录会继续扫描。
  * @param {string} dir 本轮递归的目录绝对路径。
  * @returns {void} 文件读取或语法失败会向外抛出/退出，不跳过错误文件。
  */
@@ -46,8 +46,6 @@ for (const dir of [
   "content",
   "core",
   "settings",
-  "pdf",
-  "ocr",
   "scripts",
   "tests",
 ])
@@ -55,7 +53,7 @@ for (const dir of [
 
 // 只核对下面列出的 Manifest 字段：Worker、内容脚本 JS/CSS 和两组图标。
 // flatMap 把多个 content_scripts 配置展开；图标路径取各尺寸对应的值。
-// 资源存在并不代表内容正确，也不能代替阅读页 HTML/module 依赖检查。
+// 资源存在并不代表内容正确，也不能代替 HTML/module 依赖检查。
 for (const ref of [
   manifest.background.service_worker,
   ...manifest.content_scripts.flatMap((x) => [...x.js, ...x.css]),

@@ -18,7 +18,6 @@ const SETTINGS_SHOTS = Object.freeze({
   general: "settings",
   display: "display-style",
   service: "translation-services",
-  tools: "translation-tools",
   behavior: "behavior-preferences",
   glossary: "glossary",
   about: "about",
@@ -32,7 +31,7 @@ const SERVICE_SHOTS = Object.freeze({
 
 /**
  * 导出不同尺寸的品牌图标、宣传图及无个人配置的设置页截图。
- * 使用当前源码的真实设置页和 icon.svg；宣传图则由下面内联 HTML/CSS 独立排版。
+ * 使用当前源码的真实设置页及标准/小尺寸 SVG；宣传图由下面内联 HTML/CSS 独立排版。
  * @returns {Promise<void>} 所有图片写入并清理浏览器资料后完成。
  * @throws {Error} 浏览器启动、页面加载、图片解码、截图或清理失败。
  */
@@ -157,10 +156,13 @@ async function main() {
     }
 
     // SVG 以 data URL 直接嵌入截图页，不依赖额外图片服务器。
-    // 运行图标和宣传图共用同一图标源，修改品牌时只需维护 assets/icon.svg。
+    // 宣传图使用标准源；工具栏 16/32 像素使用同品牌的简化源，避免细节缩小后发虚。
     const svg = fs.readFileSync(path.join(root, "assets/icon.svg"), "utf8");
     const icon =
       "data:image/svg+xml;base64," + Buffer.from(svg).toString("base64");
+    const smallIcon = "data:image/svg+xml;base64," + Buffer.from(
+      fs.readFileSync(path.join(root, "assets/icon-small.svg"), "utf8"),
+    ).toString("base64");
     // 宣传图与图标使用另一页面，避免改变真实设置页的内容或视口。
     const render = await context.newPage();
 
@@ -171,7 +173,7 @@ async function main() {
       // 去掉浏览器默认 margin，用 img 填满视口，让 PNG 像素与目标尺寸一致。
       await render.setContent(
         '<style>html,body{margin:0;background:transparent}img{display:block;width:100vw;height:100vh}</style><img src="' +
-          icon +
+          (size <= 32 ? smallIcon : icon) +
           '">',
       );
       // 等待图片真正解码，避免只完成 DOM 写入就拍到空白图。
