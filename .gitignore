@@ -39,5 +39,6 @@ prototypes/
 # 个人参考、发布填写材料、原型与生成图片，仅保留在本地
 /.local/
 #AI
+/.continue/
 AGENTS.md
 /PROJECT-HANDOVER.md

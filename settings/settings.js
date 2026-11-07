@@ -260,6 +260,9 @@ async function init() {
     document.querySelector('.nav-item[data-tab="service"]').click();openServiceDetail(cfg.engine);
   };
   document.getElementById("manageTranslationServices").onclick=()=>document.querySelector('.nav-item[data-tab="service"]').click();
+  document.getElementById("openPdfViewer").onclick = () => {
+    chrome.tabs.create({url: chrome.runtime.getURL("pdf/reader.html")});
+  };
   await refreshShortcutDisplay();
 }
 

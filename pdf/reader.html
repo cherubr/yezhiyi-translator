@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF 阅读器 · 页知译</title>
+  <link rel="stylesheet" href="reader.css">
+</head>
+<body>
+  <main>
+    <header class="heading">
+      <div><h1>PDF 阅读器</h1><p>在浏览器本地阅读 PDF，支持分页、缩放与旋转。</p></div>
+      <span class="badge">页知译</span>
+    </header>
+    <section class="source-card" aria-label="打开 PDF">
+      <form id="urlForm">
+        <label for="pdfUrl">在线 PDF 地址</label>
+        <div class="source-row">
+          <input id="pdfUrl" type="url" placeholder="https://example.com/document.pdf" autocomplete="off" spellcheck="false" required>
+          <button id="loadUrl" type="submit" class="primary">读取在线 PDF</button>
+          <button id="selectFile" type="button">选择本地 PDF</button>
+          <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
+        </div>
+      </form>
+      <p class="hint">最大 50 MiB。在线读取需授权来源网站；需要登录或发生跳转时，请下载后选择本地文件。文件在本机处理；只有点击开始翻译后，可靠的本页文字才发送至所选服务。扫描页 OCR 尚未接入。</p>
+    </section>
+    <section class="toolbar" aria-label="阅读控制">
+      <div class="control-group">
+        <button id="previous" type="button" disabled>上一页</button>
+        <label for="pageNumber">第</label><input id="pageNumber" type="number" min="1" value="1" aria-label="页码" disabled>
+        <span id="pageCount">/ — 页</span>
+        <button id="next" type="button" disabled>下一页</button>
+      </div>
+      <div class="control-group view-controls">
+        <button id="zoomOut" type="button" aria-label="缩小" disabled>−</button>
+        <label for="zoom">缩放</label>
+        <select id="zoom" disabled>
+          <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option>
+          <option value="1" selected>100%</option><option value="1.25">125%</option><option value="1.5">150%</option>
+          <option value="2">200%</option><option value="3">300%</option><option value="4">400%</option>
+        </select>
+        <button id="zoomIn" type="button" aria-label="放大" disabled>＋</button>
+        <button id="rotate" type="button" disabled>顺时针旋转 90°</button>
+      </div>
+      <div class="control-group">
+        <button id="retry" type="button" disabled>重试渲染</button>
+        <button id="cancel" type="button" disabled>取消处理</button>
+        <button id="close" type="button" disabled>关闭文件</button>
+      </div>
+    </section>
+    <section class="translation-toolbar" aria-label="文字翻译">
+      <label>服务 <select id="translationService" disabled></select></label>
+      <label>源语言 <select id="translationFrom" disabled></select></label>
+      <label>目标语言 <select id="translationTo" disabled></select></label>
+      <button id="startTranslation" class="primary" type="button" disabled>开始翻译</button>
+      <button id="cancelTranslation" type="button" disabled>取消翻译</button>
+      <button id="refreshTranslationConfig" type="button">刷新翻译设置</button>
+      <button id="openTranslationSettings" type="button">配置服务</button>
+    </section>
+    <p id="translationStatus" role="status" aria-live="polite">读取 PDF 后点击开始翻译</p>
+    <p id="status" role="status" aria-live="polite">选择本地 PDF，或输入在线 PDF 地址</p>
+    <div class="reader-columns">
+    <section class="document-card" aria-label="PDF 原文">
+      <div class="document-heading"><strong>原 PDF</strong><span id="fileName"></span></div>
+      <div id="viewport" tabindex="0" aria-label="PDF 页面，可滚动查看" aria-busy="false">
+        <p id="empty">读取文件后将在此显示当前页。</p>
+        <div id="canvasHost"></div>
+      </div>
+    </section>
+    <section class="document-card translation-card" aria-label="原文与译文对照">
+      <div class="document-heading"><strong>文字对照（试用）</strong><span>基础段落对照，不覆盖原 PDF</span></div>
+      <div id="translationRows" tabindex="0"><p class="translation-empty">开始翻译后将在此显示本页文字对照。</p></div>
+    </section>
+    </div>
+    <noscript>需要启用 JavaScript 才能使用阅读器。</noscript>
+  </main>
+  <dialog id="passwordDialog" aria-labelledby="passwordTitle">
+    <form id="passwordForm">
+      <h2 id="passwordTitle">PDF 需要密码</h2>
+      <p id="passwordHint">输入密码以打开文件，密码仅用于本次读取。</p>
+      <label for="password">文件密码</label>
+      <input id="password" type="password" autocomplete="off" required>
+      <div class="dialog-actions"><button id="passwordCancel" type="button">取消读取</button><button class="primary" type="submit">打开文件</button></div>
+    </form>
+  </dialog>
+  <script src="../core/md5.js"></script>
+  <script src="../core/constants.js"></script>
+  <script src="../core/providers.js"></script>
+  <script src="../core/translation-units.js"></script>
+  <script src="errors.js"></script>
+  <script src="source-loader.js"></script>
+  <script src="document-reader.js"></script>
+  <script src="session.js"></script>
+  <script src="block-processor.js"></script>
+  <script src="translation-adapter.js"></script>
+  <script src="translation-session.js"></script>
+  <script src="reader.js"></script>
+</body>
+</html>

@@ -2,7 +2,7 @@
  * 开发/CI 的只读检查入口：npm run check。
  * 检查顺序为 JS 语法 → Manifest 直接引用的资源 → Manifest/package 版本。
  * 本脚本不会加载扩展、执行被检查的 JS、运行功能测试、打包或访问商店。
- * 依赖锁文件版本、所有 HTML 的脚本引用及真实浏览器行为不在本脚本检查范围内。
+ * 依赖锁文件版本、PDF 阅读页以外的 HTML 脚本引用及真实浏览器行为不在本脚本检查范围内。
  */
 // fs/path 用于读取项目；spawnSync 用当前 Node 启动语法检查子进程。
 const fs = require("node:fs"),
@@ -46,6 +46,7 @@ for (const dir of [
   "content",
   "core",
   "settings",
+  "pdf",
   "scripts",
   "tests",
 ])
@@ -61,6 +62,15 @@ for (const ref of [
   ...Object.values(manifest.action.default_icon),
 ])
   if (!fs.existsSync(path.join(root, ref))) throw Error("缺少扩展文件：" + ref);
+
+// PDF 独立页面不在内容脚本中，单独核对其本地脚本、CSS、Worker 与固定资源清单。
+const readerHtml = fs.readFileSync(path.join(root, "pdf/reader.html"), "utf8");
+const readerRefs = [...readerHtml.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => path.posix.normalize("pdf/" + match[1]));
+const pdfIntegrity = JSON.parse(fs.readFileSync(path.join(root, "pdf/vendor/integrity.json"), "utf8"));
+for (const ref of [...readerRefs, "pdf/vendor/build/pdf.mjs", "pdf/vendor/build/pdf.worker.mjs",
+  ...Object.keys(pdfIntegrity.files).map(file => "pdf/vendor/" + file)]) {
+  if (ref.startsWith("../") || path.posix.isAbsolute(ref) || !fs.existsSync(path.join(root, ref))) throw Error("缺少或无效的 PDF 资源：" + ref);
+}
 
 // 此处只比较两个版本字符串；不修改版本，也不校验 package-lock.json。
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json")));

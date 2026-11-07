@@ -113,6 +113,9 @@ function openExtensionPage(relativePath) {
 
 // 批次表：key 对应 owner、cancelled 和消费者控制器集合；属于本轮后台内存。
 const requestGroups = new Map();
+// PDF 阅读页专用通道；只保存可信 sender、批次与无凭据的配置版本。
+const pdfPorts = new Map();
+let pdfConfigRevision = 0;
 
 // 凭据指纹与最新测试身份的映射，阻止旧测试回写结果。
 const latestBaiduTests = new Map();
@@ -221,6 +224,12 @@ function routeFrameShift(sender,request){
  * @returns {void} 无标签页或发送失败时忽略通知。
  */
 function emitRequestState(sender,request,data) {
+  const pdf = pdfPorts.get(ownerKey(sender));
+  if (pdf && pdf.tokens.has(request.runToken)) {
+    try { pdf.port.postMessage({type:"REQUEST_STATE",runToken:request.runToken,
+      attempt:data.attempt,maxAttempts:data.maxAttempts,until:data.until,code:data.code}); } catch (_) {}
+    return;
+  }
   if(sender.tab?.id==null||!chrome.tabs?.sendMessage)return;
   // 优先精确发送到 documentId；缺少文档编号时回退到 frameId。
   const target=sender.documentId?{documentId:sender.documentId}:{frameId:sender.frameId || 0};
@@ -361,8 +370,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (action === MSG.TRANSLATE) {
+    let guard;
+    try { guard = pdfBatchGuard(request,sender); }
+    catch (_) { sendResponse({ok:false,cancelled:true}); return false; }
     trackedTranslate({ ...request, verifyBaidu: false },sender)
-      .then((data) => sendResponse({ ok: true, data }))
+      .then((data) => { if(guard)guard(); sendResponse({ ok: true, data }); })
       .catch((err) => sendResponse({ ok: false, error: err.message, code:err.code, retryable:err.retryable, permanent:err.permanent, exhausted:err.exhausted, cancelled:err.name==="AbortError" }));
     return true;
   }
@@ -397,6 +409,72 @@ chrome.storage.onChanged?.addListener((changes,area)=>{
 
     requestPolicyRevision++;
     translationRuntime.updatePolicies(changes.requestPolicies.newValue || {});
+  }
+});
+
+/** 阅读页配置摘要不含密钥；业务翻译仍通过原有 TRANSLATE 消息入口。 */
+function isPdfReader(sender = {}) {
+  return sender.id === chrome.runtime.id && (sender.frameId == null || sender.frameId === 0) &&
+    typeof sender.url === "string" && sender.url.split(/[?#]/)[0] === chrome.runtime.getURL("pdf/reader.html");
+}
+function pdfBatchGuard(request,sender) {
+  if(!isPdfReader(sender))return null;
+  const owner=ownerKey(sender),record=pdfPorts.get(owner);
+  const guard=()=>{
+    if(!record||pdfPorts.get(owner)!==record||record.tokens.get(request.runToken)!==pdfConfigRevision)throw cancelledError();
+  };
+  guard();return guard;
+}
+function retirePdfBatches(record) {
+  for(const token of record.tokens.keys())cancelRequestGroup({runToken:token},record.sender);
+  record.tokens.clear();
+}
+chrome.runtime.onConnect?.addListener(port=>{
+  if(port.name!=="BT_PDF_TRANSLATION")return;
+  if(!isPdfReader(port.sender)){port.disconnect();return;}
+  const sender=port.sender,owner=ownerKey(sender);
+  try{registerOwner(sender);}catch(_){port.disconnect();return;}
+  const previous=pdfPorts.get(owner);
+  if(previous){retirePdfBatches(previous);previous.port.disconnect();}
+  const record={port,sender,tokens:new Map()};pdfPorts.set(owner,record);
+  const reply=(id,data)=>{try{port.postMessage({type:"REPLY",id,...data});}catch(_){}};
+  port.onMessage.addListener(async message=>{
+    if(!message||pdfPorts.get(owner)!==record)return;
+    try{
+      registerOwner(sender);
+      if(message.type==="CONTEXT"){
+        const revision=pdfConfigRevision;
+        const stored=await self.BT_STORAGE.get(["engine","aiProvider","from","to","aiKeys","baiduAppId","baiduKey","baiduVerification"]);
+        if(revision!==pdfConfigRevision)throw Object.assign(new Error("配置已变化，请重新读取翻译设置"),{code:"CONFIG_CHANGED"});
+        const config={...self.BT_CONST.DEFAULTS,...stored};
+        reply(message.id,{ok:true,data:{revision,engine:config.engine,aiProvider:config.aiProvider,from:config.from,to:config.to,
+          services:self.BT_SERVICES.options(config)}});
+      }else if(message.type==="BIND_BATCH"){
+        if(message.revision!==pdfConfigRevision)throw Object.assign(new Error("配置已变化，请重新选择翻译设置"),{code:"CONFIG_CHANGED"});
+        if(typeof message.runToken!=="string"||!/^pdf:[a-zA-Z0-9-]{1,100}$/.test(message.runToken)||record.tokens.size>=4)throw cancelledError();
+        record.tokens.set(message.runToken,pdfConfigRevision);reply(message.id,{ok:true});
+      }else if(message.type==="END_BATCH"){
+        if(record.tokens.has(message.runToken)){
+          cancelRequestGroup({runToken:message.runToken},sender);record.tokens.delete(message.runToken);
+        }
+      }else if(message.type==="STATE"){
+        translationRuntime.setOwnerState(owner,{visible:message.visible!==false,
+          viewportEpoch:Number(message.viewportEpoch)||0,version:Number(message.stateVersion)||0});
+      }
+    }catch(error){reply(message.id,{ok:false,code:error.code||"PDF_CONTEXT_ERROR",error:"无法使用当前翻译配置，请重试或前往设置页",cancelled:error.name==="AbortError"});}
+  });
+  port.onDisconnect.addListener(()=>{
+    retirePdfBatches(record);
+    if(pdfPorts.get(owner)===record){pdfPorts.delete(owner);translationRuntime.removeOwner(owner);}
+  });
+});
+chrome.storage.onChanged.addListener(changes=>{
+  const keys=["engine","aiProvider","aiKeys","from","to","baiduAppId","baiduKey","baiduVerification","glossary","requestPolicies","requestPolicyVersion"];
+  if(!keys.some(key=>Object.hasOwn(changes,key)))return;
+  pdfConfigRevision++;
+  for(const record of pdfPorts.values()){
+    retirePdfBatches(record);
+    try{record.port.postMessage({type:"CONFIG_INVALIDATED",revision:pdfConfigRevision});}catch(_){}
   }
 });
 

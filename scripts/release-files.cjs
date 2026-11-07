@@ -17,6 +17,7 @@ const RELEASE_FILES = Object.freeze([
   "core",
   "settings",
   "assets",
+  "pdf",
 ]);
 // 目录白名单还需配合文件类型过滤，不能把运行目录内的笔记和调试文件一起复制。
 const RESOURCE_EXTENSION = /\.(?:js|mjs|html|css|json|png|svg)$/i;
@@ -35,7 +36,11 @@ function isReleaseFile(relative) {
   if (!RELEASE_FILES.includes(parts[0]) || parts.length < 2) return false;
   const name = parts[parts.length - 1];
   if (RESOURCE_EXTENSION.test(name)) return true;
-  return false;
+  // PDF 第三方资源类型和许可证仅在 vendor 树内放行；源码笔记、映射不入包。
+  return parts[0] === "pdf" && parts[1] === "vendor" && (
+    /\.(?:wasm|bcmap|icc|pfb|ttf)$/i.test(name) ||
+    /^(?:LICENSE|NOTICE|COPYING)(?:[._-].*)?$/i.test(name) || name === "SOURCE.md"
+  );
 }
 
 /**
