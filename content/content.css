@@ -140,6 +140,10 @@
 .bt-modal-close:hover { opacity: 1; background: rgba(255,255,255,0.15); }
 
 .bt-modal-body { padding: 14px 16px; overflow-y: auto; flex: 1; }
+/* 仅内容滚动区隐藏滚动条外观，滚轮/触控板滚动保留；头部与底部由 flex 布局固定。
+   overflow-x: clip 彻底禁止横向滚动（不产生横向滚动容器），不使用全局隐藏。 */
+.bt-modal .bt-modal-body { overflow-x: clip; scrollbar-width: none; }
+.bt-modal .bt-modal-body::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .bt-modal-hero {
   display: flex; justify-content: space-between; align-items: center; gap: 10px;
   padding: 12px 14px; background: #f7f9fb;
@@ -214,6 +218,21 @@
 .bt-modal-switch.on { background: #007acc; }
 .bt-modal-switch.on::after { transform: translateX(16px); }
 
+/* 通用 PDF 入口：紧凑单行，整行可点击，度量对齐 switch-row/hint。 */
+.bt-modal-tool-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border: 1px solid #eef0f3; border-radius: 8px;
+  cursor: pointer; transition: background 0.15s, border-color 0.15s;
+}
+.bt-modal-tool-row:hover { background: #f5f8fb; border-color: #d8e4ee; }
+.bt-modal-tool-row:focus-visible { outline: 2px solid #007acc; outline-offset: 1px; }
+.bt-modal-tool-icon { font-size: 16px; line-height: 1; flex-shrink: 0; }
+.bt-modal-tool-text { flex: 1; min-width: 0; }
+.bt-modal-tool-text .bt-modal-switch-title,
+.bt-modal-tool-text .bt-modal-hint { display: block; }
+.bt-modal-tool-text .bt-modal-hint { margin-top: 1px; }
+.bt-modal-tool-arrow { color: #bbb; font-size: 16px; line-height: 1; flex-shrink: 0; }
+
 .bt-modal-footer {
   padding: 10px 16px; border-top: 1px solid #f0f0f0;
   background: #fafbfc; display: flex; justify-content: space-between; align-items: center; gap: 12px;
@@ -258,6 +277,25 @@
 }
 .bt-popup-trans { color: #222; }
 
+/* 工具栏 Popup 宿主：复用同一面板样式，仅覆盖浮层定位与尺寸。
+   Popup 视口即自身窗口，固定宽度并解除网页内面板的 vw 收缩防御规则。 */
+body.bt-popup-host {
+  margin: 0; width: 360px;
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 13px; color: #333; background: #fff;
+}
+.bt-modal.bt-modal-popup { position: static; right: auto; bottom: auto; z-index: auto; max-width: none; }
+.bt-modal.bt-modal-popup .bt-modal-panel {
+  width: 360px; max-height: 560px; box-shadow: none; animation: none;
+}
+.bt-modal.bt-modal-popup .bt-modal-header { cursor: default; }
+/* PDF / 不支持模式下禁用设置区，仅保留 hero 操作与通用入口。 */
+.bt-modal-off .bt-modal-section-settings { opacity: 0.5; pointer-events: none; }
+/* PDF 模式只剩 hero 与通用入口，收紧留白使两种面板都无需垂直滚动。
+   带 .bt-modal 前缀以高于后方防御区 .bt-modal .bt-modal-hero 的权重。 */
+.bt-modal.bt-modal-pdf .bt-modal-hero { padding: 10px 12px; margin-bottom: 10px; gap: 8px; }
+.bt-modal.bt-modal-pdf .bt-modal-body { padding-top: 12px; padding-bottom: 12px; }
+
 @media (prefers-color-scheme: dark) {
   .bt-check-badge {
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5), 0 0 0 1.5px #1a1a1a;
@@ -294,6 +332,10 @@
   .bt-popup { background: #2a2a2a; color: #e0e0e0; }
   .bt-popup-orig { color: #999; border-bottom-color: #444; }
   .bt-popup-trans { color: #e0e0e0; }
+  .bt-modal-tool-row { border-color: #3a3a3a; }
+  .bt-modal-tool-row:hover { background: #333; border-color: #2a4a5e; }
+  .bt-modal-tool-arrow { color: #666; }
+  body.bt-popup-host { background: #2a2a2a; color: #e0e0e0; }
 }
 /* 表单、表格和网页弹框使用紧凑译文样式，减少对原有间距的影响。 */
 .bt-translation-text.bt-translation-compact {
@@ -325,6 +367,11 @@
 .bt-modal .bt-modal-hero-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .bt-modal .bt-modal-btn { flex: 0 0 auto; white-space: nowrap; word-break: keep-all; overflow-wrap: normal; writing-mode: horizontal-tb; }
 .bt-modal #btModalError { overflow-wrap: anywhere; line-height: 1.5; }
+/* PDF 来源名多为无空格连续字符串，单行省略防止撑出内容区横向滚动；全名由 title 悬停展示。 */
+.bt-modal #btModalPdfName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 双列语言网格：轨道按可用宽度均分，长选项文案不撑破容器。 */
+.bt-modal-field-row > .bt-modal-field { min-width: 0; }
+.bt-modal-field select { max-width: 100%; }
 /* 正文单元即使包在 span 中，也应在完整原文之后独立成段。 */
 .bt-translation-text.bt-translation-paragraph { display:block; }
 .bt-translation-text.bt-translation-inline {

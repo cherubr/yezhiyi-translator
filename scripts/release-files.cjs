@@ -18,6 +18,7 @@ const RELEASE_FILES = Object.freeze([
   "settings",
   "assets",
   "pdf",
+  "popup",
 ]);
 // 目录白名单还需配合文件类型过滤，不能把运行目录内的笔记和调试文件一起复制。
 const RESOURCE_EXTENSION = /\.(?:js|mjs|html|css|json|png|svg)$/i;

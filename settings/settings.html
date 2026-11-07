@@ -24,6 +24,7 @@
         <button class="nav-item" data-tab="service"><span class="nav-icon">🔌</span><span>翻译服务</span></button>
         <button class="nav-item" data-tab="behavior"><span class="nav-icon">🧠</span><span>行为偏好</span></button>
         <button class="nav-item" data-tab="glossary"><span class="nav-icon">术</span><span>技术术语表</span></button>
+        <button class="nav-item" data-tab="tools"><span class="nav-icon">🛠</span><span>翻译工具</span></button>
         <button class="nav-item" data-tab="about"><span class="nav-icon">ℹ</span><span>关于</span></button>
       </nav>
 
@@ -37,7 +38,6 @@
         <section class="tab-panel active" data-panel="general">
           <h1>基本设置</h1>
           <p class="desc">选择默认翻译服务与语言方向。连接和请求设置分别管理。</p>
-          <div class="settings-action-row"><button type="button" class="settings-action" id="openPdfViewer">打开 PDF 阅读器</button></div>
           <div class="field">
             <label for="engine">默认翻译服务</label>
             <select id="engine"></select>
@@ -282,6 +282,15 @@
               </dl>
             </div>
           </details>
+        </section>
+        <section class="tab-panel" data-panel="tools">
+          <h1>翻译工具</h1>
+          <p class="desc">独立翻译工具的集中入口；工具页面自行承担读取与翻译任务。</p>
+          <div class="card">
+            <h3>📄 PDF 文档翻译</h3>
+            <p>支持本地及在线 PDF 文档翻译。</p>
+            <div class="settings-action-row"><button type="button" class="settings-action settings-action--primary" id="openPdfReaderTool">打开 PDF 阅读器</button></div>
+          </div>
         </section>
         <section class="tab-panel" data-panel="about">
           <h1>关于</h1>

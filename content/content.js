@@ -11,9 +11,9 @@ if (window.__BT_INJECTED) {
  * 页面刷新会重建这些本地状态，不会清空后台缓存或用户配置。
  */
 function init() {
-  // 独立 PDF 和图片不是网页正文，不创建网页翻译入口或采集任务。
+  // 独立图片不是网页正文，不创建网页翻译入口或采集任务；PDF 页保留悬浮球入口，见 bootstrap 前的分流。
   const documentMime=(document.contentType||"").split(";")[0].trim().toLowerCase();
-  if(documentMime==="application/pdf"||documentMime.startsWith("image/"))return;
+  if(documentMime.startsWith("image/"))return;
   const { MSG } = window.BT_CONST;
   // 只有顶层页面显示控制面板；子框架通过扩展后台继承页面会话，不通过网页 postMessage 信任指令。
   const IS_SUBFRAME=!!window.top&&window.top!==window;
@@ -212,8 +212,8 @@ function init() {
       if(sender?.id===chrome.runtime.id)publishFrameSession();return;
     }
     switch (request.action) {
-      case MSG.START_TRANSLATION: translatePage(); break;
-      case MSG.CANCEL_TRANSLATION: cancelTranslation(); break;
+      case MSG.START_TRANSLATION: translatePage(request.force===true); sendResponse({ok:true}); break;
+      case MSG.CANCEL_TRANSLATION: cancelTranslation(); sendResponse({ok:true}); break;
       case MSG.TOGGLE_PANEL: toggleTranslation(); break;
       case MSG.OPEN_PANEL:
         // 同步确认收到面板指令，面板的打开与关闭由当前页面管理。
@@ -233,9 +233,32 @@ function init() {
           if(panelModalEl)refreshPanelModal();
         }
         break;
-      case MSG.GET_STATUS:
-        sendResponse({ translated: STATE.translated, translating: STATE.translating });
+      case MSG.GET_STATUS: {
+        // Popup 控制面板的展示快照；凭据字段不随消息传递，Popup 自行读取本机存储。
+        const snapshot = panelSnapshot();
+        delete snapshot.aiKeys; delete snapshot.baiduAppId;
+        delete snapshot.baiduKey; delete snapshot.baiduVerification;
+        sendResponse(Object.assign(snapshot, { pdfUrl: snapshot.pdfPage ? location.href : "" }));
         return true;
+      }
+      case MSG.PANEL_SETTING_CHANGE: {
+        // Popup 遥控修改翻译服务或语言；白名单过滤后走统一的批次切换实现。
+        const changes={};
+        for(const key of ["engine","aiProvider","from","to"])
+          if(typeof request.changes?.[key]==="string")changes[key]=request.changes[key];
+        if(Object.keys(changes).length)void changeTranslationSettings(changes);
+        sendResponse({ok:true});
+        break;
+      }
+      case MSG.PANEL_MODE_CHANGE:
+        setDisplayMode(request.mode);
+        sendResponse({ok:true});
+        break;
+      case MSG.PANEL_TOGGLE_PREF:
+        if(request.key==="autoTranslate")void setAutoTranslate(request.value===true);
+        else if(request.key==="hoverPanel")setHoverPanel(request.value===true);
+        sendResponse({ok:true});
+        break;
       case MSG.RELOAD_CONFIG: reloadConfig(); break;
     }
   });
@@ -551,6 +574,58 @@ function init() {
   }
 
   /**
+   * 识别当前顶层文档是否为在线 PDF 页：响应类型为 PDF、地址路径以 .pdf 结尾（含查询参数），
+   * 或空正文中除 PDF 类型 embed/object 外没有其他常见内容节点（PDF 专用外层文档）。
+   * 子框架一律返回 false，普通网页内嵌 PDF iframe 不构成整页 PDF；不预下载文件内容。
+   * @returns {boolean} 为真时悬浮球与翻译指令改走独立 PDF 阅读器入口。
+   */
+  function detectPdfPage() {
+    if(IS_SUBFRAME)return false;
+    if(((document.contentType||"").split(";")[0].trim().toLowerCase())==="application/pdf")return true;
+    try{if(/\.pdf$/i.test(new URL(location.href).pathname))return true;}catch(_){}
+    const body=document.body;
+    if(!body||body.textContent.trim())return false;
+    const hasPdfEmbed=Array.prototype.some.call(body.querySelectorAll("embed,object"),(el)=>{
+      const type=(el.getAttribute("type")||"").toLowerCase();
+      const src=el.getAttribute("src")||el.getAttribute("data")||"";
+      return type.includes("pdf")||/\.pdf(?:[?#]|$)/i.test(src);
+    });
+    if(!hasPdfEmbed)return false;
+    // 页面存在常见内容元素时视为普通网页，即使正文文字为空也不按 PDF 页处理。
+    return !body.querySelector("a,button,input,form,table,img,video,audio,canvas,p,ul,ol,h1,h2,h3,h4,h5,h6");
+  }
+
+  /**
+   * PDF 页展示名：优先取地址末段文件名，无法得到合适名称时显示截断的 host+路径。
+   * @returns {string} 用于控制面板 PDF 模式的来源说明。
+   */
+  function pdfDisplayName() {
+    try {
+      const url = new URL(location.href);
+      const name = decodeURIComponent(url.pathname.split("/").filter(Boolean).pop() || "");
+      if (/\.pdf$/i.test(name)) return name;
+      const short = url.host + url.pathname;
+      return short.length > 40 ? short.slice(0, 37) + "…" : short;
+    } catch (_) { return ""; }
+  }
+
+  /**
+   * PDF 页不执行网页翻译：通知后台以当前外层地址打开独立阅读器，地址校验与加载仍由阅读器负责。
+   */
+  function jumpPdfReader() {
+    const { MSG } = window.BT_CONST;
+    try{chrome.runtime.sendMessage({action:MSG.OPEN_PDF_READER,url:location.href},()=>{void chrome.runtime.lastError;});}catch(_){}
+  }
+
+  /**
+   * 通用入口：不携带地址打开空白阅读器，由用户自行选择在线地址或本地文件。
+   */
+  function openPdfReaderBlank() {
+    const { MSG } = window.BT_CONST;
+    try{chrome.runtime.sendMessage({action:MSG.OPEN_PDF_READER},()=>{void chrome.runtime.lastError;});}catch(_){}
+  }
+
+  /**
    * 整页调度主入口：检查会话 → 加载配置 → 固定本轮快照 → 采集/入队 → 等待排空。
    * 自动事件不能解除用户暂停；空扫描不进入忙碌外观，避免完成徽标和按钮来回闪烁。
    * 页面队列负责单元投递与滚动优先级，后台另行负责分块、QPS、并发、缓存和重试。
@@ -560,6 +635,8 @@ function init() {
    * @returns {Promise<void>} 本轮队列及在途文字单元排空后结束，不代表全页均翻译成功。
    */
   async function translatePage(force = false, automatic = false) {
+    // PDF 页的翻译入口统一跳转独立阅读器，不采集网页正文。
+    if (detectPdfPage()) { jumpPdfReader(); return; }
     if(IS_SUBFRAME&&(!frameSession.started||frameSession.paused))return;
     // 自动任务不能解除用户暂停；只有手动翻译入口可以恢复当前页面。
     if (automatic && ((!STATE.pageStarted && !STATE.autoTranslate) || STATE.pagePaused || STATE.cancelRequested)) return;
@@ -1563,102 +1640,13 @@ function init() {
 
     panelModalEl = document.createElement("div");
     panelModalEl.className = "bt-modal";
-    panelModalEl.innerHTML = `
-      <div class="bt-modal-panel">
-        <div class="bt-modal-header" id="btModalDrag">
-          <div class="bt-modal-brand">
-            <div class="bt-modal-logo">译</div>
-            <div>
-              <div class="bt-modal-title">页知译 · 网页双语翻译</div>
-              <div class="bt-modal-sub">控制面板</div>
-            </div>
-          </div>
-          <button class="bt-modal-close" title="关闭">✕</button>
-        </div>
-
-        <div class="bt-modal-body">
-          <div class="bt-modal-hero">
-            <div>
-              <div class="bt-modal-hero-label">当前页面</div>
-              <div class="bt-modal-hero-status" id="btModalStatus">未翻译</div>
-              <div class="bt-modal-hint" id="btModalError" role="status"></div>
-              <div class="bt-modal-hint" id="btModalLanguageNotice" role="status"></div>
-              <div class="bt-modal-hint" id="btModalRequestNotice" role="status"></div>
-            </div>
-            <div class="bt-modal-hero-actions">
-              <button class="bt-modal-btn bt-modal-btn-primary" id="btModalTranslate">翻译此页面</button>
-              <button class="bt-modal-btn bt-modal-btn-ghost" id="btModalCancel">取消翻译</button>
-            </div>
-          </div>
-
-          <div class="bt-modal-section">
-            <div class="bt-modal-section-title">翻译设置</div>
-            <div class="bt-modal-field">
-              <label>翻译服务</label>
-              <select id="btModalEngine"></select>
-              <div class="bt-modal-hint" id="btModalModel"></div>
-              <div class="bt-modal-hint" id="btModalRequestPolicy"></div>
-            </div>
-            <div class="bt-modal-field-row">
-              <div class="bt-modal-field">
-                <label>源语言</label>
-                <select id="btModalFrom"></select>
-              </div>
-              <div class="bt-modal-field">
-                <label>目标语言</label>
-                <select id="btModalTo"></select>
-              </div>
-            </div>
-          </div>
-
-          <div class="bt-modal-section">
-            <div class="bt-modal-section-title">显示模式</div>
-            <div class="bt-modal-seg" id="btModalModeSeg">
-              <button data-mode="bilingual" class="bt-modal-seg-btn">双语对照</button>
-              <button data-mode="translation-only" class="bt-modal-seg-btn">仅显示译文</button>
-            </div>
-          </div>
-
-          <div class="bt-modal-section">
-            <div class="bt-modal-section-title">行为偏好</div>
-            <div class="bt-modal-switch-row">
-              <div>
-                <div class="bt-modal-switch-title">打开网页时自动翻译</div>
-                <div class="bt-modal-hint">开启后自动启动当前及新网页；当前页启动后持续补翻，点击取消才停止。</div>
-              </div>
-              <div class="bt-modal-switch" id="btModalAuto"></div>
-            </div>
-            <div class="bt-modal-switch-row">
-              <div>
-                <div class="bt-modal-switch-title">悬停悬浮球显示快捷面板</div>
-                <div class="bt-modal-hint">关闭后悬浮球只用于点击翻译。</div>
-              </div>
-              <div class="bt-modal-switch" id="btModalHover"></div>
-            </div>
-          </div>
-        </div>
-
-        <div class="bt-modal-footer">
-          <button class="bt-modal-settings" id="btModalSettings">
-            <span>⚙</span> 更多设置
-          </button>
-          <a class="bt-modal-settings" id="btModalFeedback" href="https://github.com/cherubr/yezhiyi-translator/issues/new" target="_blank" rel="noopener noreferrer" title="前往 GitHub 提交问题">问题反馈 ↗</a>
-        </div>
-      </div>
-    `;
+    // 模板与展示逻辑同 Popup 共用 core/panel-ui.js，绑定和状态仍由本文件管理。
+    panelModalEl.innerHTML = window.BT_PANEL_UI.templateHtml();
     mount.appendChild(panelModalEl);
 
     bindPanelModal();
     makeModalDraggable();
     refreshPanelModal();
-  }
-
-  /**
-   * 通过共享服务目录填充面板下拉，保持与设置页相同的厂商、分组和可用性判断。
-   * 当前选项由 STATE 表示；未配置或百度未验证的选项不能在这里被自动启用。
-   */
-  function renderEngineOptions() {
-    window.BT_SERVICES.renderSelect(panelModalEl.querySelector("#btModalEngine"),STATE);
   }
 
   /**
@@ -1679,12 +1667,18 @@ function init() {
       cancelTranslation();
       refreshPanelModal();
     };
+    // PDF 模式主操作：携带当前外层地址打开独立阅读器；通用入口整行可点击，不携带地址。
+    $("#btModalOpenPdf").onclick = () => jumpPdfReader();
+    $("#btModalOpenPdfAny").onclick = () => openPdfReaderBlank();
+    $("#btModalOpenPdfAny").onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openPdfReaderBlank(); }
+    };
 
     $("#btModalEngine").onchange = (e) => {
       const v = e.target.value;
       if (!isEngineConfigured(v)) {
         showPanelToast(v === "baidu" ? "请先到设置页测试百度连接，成功后再选择" : "该引擎未配置，请先到设置页填写密钥", "warn");
-        renderEngineOptions();
+        refreshPanelModal();
         return;
       }
       const parsed=window.BT_SERVICES.parse(v,STATE.aiProvider);
@@ -1695,61 +1689,84 @@ function init() {
     $("#btModalTo").onchange = (e) => { changeTranslationSetting("to",e.target.value); };
 
     $("#btModalModeSeg").querySelectorAll(".bt-modal-seg-btn").forEach((btn) => {
-      btn.onclick = () => {
-        STATE.mode = btn.dataset.mode;
-        updateModalModeButtons(STATE.mode);
-        applyMode();
-        saveField("mode", STATE.mode);
-      };
+      btn.onclick = () => setDisplayMode(btn.dataset.mode);
     });
 
     // 保存成功才触发明确开启动作；代次变化意味着期间已取消/切换，旧回调不得恢复翻译。
-    $("#btModalAuto").onclick = async () => {
-      if (autoTranslateSaving) return;
-      const previous = STATE.autoTranslate;
-      const enabled = !previous;
-      const generation = STATE.cancelVersion;
-      const entry = { value: enabled };
-      autoTranslateSaving = true;
-      pendingPreferenceWrites.set("autoTranslate", entry);
-      autoPreferenceVersion++;
-      STATE.autoTranslate = enabled;
-      if (!enabled) stopAutomaticStart();
-      refreshPanelModal();
-      let saved = false;
-      try {
-        await saveField("autoTranslate", enabled);
-        saved = true;
-      } catch (error) {
-        autoPreferenceVersion++;
-        STATE.autoTranslate = previous;
-        if (previous && generation === STATE.cancelVersion) scheduleVisibleTranslation();
-        showPanelToast("保存自动翻译设置失败：" + error.message, "warn");
-      } finally {
-        autoTranslateSaving = false;
-        if (pendingPreferenceWrites.get("autoTranslate") === entry) pendingPreferenceWrites.delete("autoTranslate");
-        if (panelModalEl) refreshPanelModal();
-      }
-      if (!saved) return;
-      // 防止初始化定时器稍后重复启动；关闭开关不会撤回已有译文或中断当前任务。
-      clearTimeout(initialTranslateTimer);
-      initialTranslateTimer = null;
-      // 只响应本页的明确开启操作；保存期间若已取消或切换配置，旧回调不得重新启动。
-      if (enabled && STATE.autoTranslate && generation === STATE.cancelVersion &&
-          !STATE.translating) {
-        // 已有译文时只扫描遗漏内容，空扫描不闪烁；未翻译时立即启动当前页。
-        await translatePage(false, STATE.translated);
-      }
-    };
-    $("#btModalHover").onclick = () => {
-      STATE.hoverPanel = !STATE.hoverPanel;
-      $("#btModalHover").classList.toggle("on", STATE.hoverPanel);
-      saveField("hoverPanel", STATE.hoverPanel);
-    };
+    $("#btModalAuto").onclick = () => { void setAutoTranslate(!STATE.autoTranslate); };
+    $("#btModalHover").onclick = () => setHoverPanel(!STATE.hoverPanel);
 
     $("#btModalSettings").onclick = () => {
       chrome.runtime.sendMessage({ action: "OPEN_SETTINGS" });
     };
+  }
+
+  /**
+   * 切换显示模式并保存；面板分段按钮与 Popup 遥控消息共用同一实现。
+   * 只更新现有译文节点显示，不重新请求翻译。
+   * @param {string} mode bilingual 或 translation-only，其他值忽略。
+   */
+  function setDisplayMode(mode) {
+    if (mode !== "bilingual" && mode !== "translation-only") return;
+    STATE.mode = mode;
+    updateModalModeButtons(mode);
+    applyMode();
+    saveField("mode", mode);
+  }
+
+  /**
+   * 设置悬停快捷面板偏好；面板开关与 Popup 遥控消息共用同一实现。
+   * @param {boolean} value 期望的开关状态，与当前一致时不做任何操作。
+   */
+  function setHoverPanel(value) {
+    const next = value === true;
+    if (next === STATE.hoverPanel) return;
+    STATE.hoverPanel = next;
+    if (panelModalEl) panelModalEl.querySelector("#btModalHover").classList.toggle("on", STATE.hoverPanel);
+    saveField("hoverPanel", STATE.hoverPanel);
+  }
+
+  /**
+   * 设置自动翻译偏好；面板开关与 Popup 遥控消息共用同一实现。
+   * 使用保存锁、偏好版本和取消代次保护连续操作：保存失败回滚，
+   * 保存期间的取消/切换不会被旧回调覆盖；明确开启且保存成功才尝试启动当前页。
+   * @param {boolean} enabled 期望的开关状态。
+   */
+  async function setAutoTranslate(enabled) {
+    if (autoTranslateSaving) return;
+    const previous = STATE.autoTranslate;
+    const generation = STATE.cancelVersion;
+    const entry = { value: enabled };
+    autoTranslateSaving = true;
+    pendingPreferenceWrites.set("autoTranslate", entry);
+    autoPreferenceVersion++;
+    STATE.autoTranslate = enabled;
+    if (!enabled) stopAutomaticStart();
+    refreshPanelModal();
+    let saved = false;
+    try {
+      await saveField("autoTranslate", enabled);
+      saved = true;
+    } catch (error) {
+      autoPreferenceVersion++;
+      STATE.autoTranslate = previous;
+      if (previous && generation === STATE.cancelVersion) scheduleVisibleTranslation();
+      showPanelToast("保存自动翻译设置失败：" + error.message, "warn");
+    } finally {
+      autoTranslateSaving = false;
+      if (pendingPreferenceWrites.get("autoTranslate") === entry) pendingPreferenceWrites.delete("autoTranslate");
+      if (panelModalEl) refreshPanelModal();
+    }
+    if (!saved) return;
+    // 防止初始化定时器稍后重复启动；关闭开关不会撤回已有译文或中断当前任务。
+    clearTimeout(initialTranslateTimer);
+    initialTranslateTimer = null;
+    // 只响应本页的明确开启操作；保存期间若已取消或切换配置，旧回调不得重新启动。
+    if (enabled && STATE.autoTranslate && generation === STATE.cancelVersion &&
+        !STATE.translating) {
+      // 已有译文时只扫描遗漏内容，空扫描不闪烁；未翻译时立即启动当前页。
+      await translatePage(false, STATE.translated);
+    }
   }
 
   /**
@@ -1760,13 +1777,7 @@ function init() {
    */
   function showPanelToast(msg, type = "info") {
     if (!panelModalEl) return;
-    let toast = panelModalEl.querySelector(".bt-panel-toast");
-    if (toast) toast.remove();
-    toast = document.createElement("div");
-    toast.className = `bt-panel-toast bt-panel-toast-${type}`;
-    toast.textContent = msg;
-    panelModalEl.querySelector(".bt-modal-panel").appendChild(toast);
-    setTimeout(() => toast.remove(), 2600);
+    window.BT_PANEL_UI.showToast(panelModalEl, msg, type);
   }
 
   let pageNoticeEl = null;
@@ -1861,71 +1872,31 @@ function init() {
   }
 
   /**
-   * 按取消、不可见暂停、主动翻译、已有译文、未翻译的顺序更新面板按钮与状态文案。
-   * 补翻时可保留“重新翻译”按钮文案；忙碌动画由悬浮球独立反映，减少按钮跳变。
-   * 同时刷新模型、保存的请求参数、等待/失败/语言提示及服务和语言选项。
-   * 这里展示的是当前入口配置，不是后台跨页面合并后的实时账号限额。
+   * 组装面板展示所需的状态快照，供共享 UI 模块渲染；不包含密钥等敏感原文，
+   * aiKeys 仅在本机内存中传递给展示层用于解析当前模型名。
+   * 状态文案与按钮顺序规则见 core/panel-ui.js 的 applyState。
+   * @returns {Object} BT_PANEL_UI.applyState 所需的快照对象。
    */
+  function panelSnapshot() {
+    return {
+      pdfPage: detectPdfPage(), pdfName: pdfDisplayName(), autoTranslateSaving,
+      translating: STATE.translating, translated: STATE.translated,
+      cancelRequested: STATE.cancelRequested, visibilityPaused: STATE.visibilityPaused,
+      pageStarted: STATE.pageStarted, pagePaused: STATE.pagePaused,
+      backgroundTranslating: STATE.backgroundTranslating,
+      lastError: STATE.lastError, languageNoticeCount: STATE.languageNoticeCount,
+      requestNotice: STATE.requestNotice,
+      engine: STATE.engine, aiProvider: STATE.aiProvider, aiKeys: STATE.aiKeys,
+      requestPolicies: STATE.requestPolicies,
+      baiduAppId: STATE.baiduAppId, baiduKey: STATE.baiduKey, baiduVerification: STATE.baiduVerification,
+      from: STATE.from, to: STATE.to, mode: STATE.mode,
+      autoTranslate: STATE.autoTranslate, hoverPanel: STATE.hoverPanel
+    };
+  }
+
   function refreshPanelModal() {
     if (!panelModalEl) return;
-    const $ = (sel) => panelModalEl.querySelector(sel);
-
-    const statusEl = $("#btModalStatus");
-    const btnT = $("#btModalTranslate");
-    const btnC = $("#btModalCancel");
-
-    if (STATE.cancelRequested) {
-      statusEl.textContent = "取消中…";
-      btnT.textContent = "取消中…";
-      btnT.disabled = true;
-      btnC.disabled = true;
-    } else if (STATE.visibilityPaused && STATE.pageStarted && !STATE.pagePaused) {
-      statusEl.textContent="已暂停（页面不可见）";
-      btnT.textContent=STATE.translated?"重新翻译":"翻译此页面";
-      btnT.disabled=false;btnC.disabled=false;
-    } else if (STATE.translating && !STATE.backgroundTranslating) {
-      statusEl.textContent = "翻译中…";
-      btnT.textContent = "翻译中…";
-      btnT.disabled = true;
-      btnC.disabled = false;
-    } else if (STATE.translated) {
-      statusEl.textContent = "已翻译";
-      btnT.textContent = "重新翻译";
-      btnT.disabled = false;
-      btnC.disabled = false;
-    } else {
-      statusEl.textContent = "未翻译";
-      btnT.textContent = "翻译此页面";
-      btnT.disabled = false;
-      btnC.disabled = !STATE.pageStarted;
-      if (STATE.lastError) { statusEl.textContent = "翻译失败，请检查配置"; btnT.textContent = "重试翻译"; }
-    }
-
-    // 显示实际正在使用的模型与已保存参数，避免把编辑中的厂商或推荐值当成当前配置。
-    const modelEl=$("#btModalModel");
-    if(modelEl){
-      const model=(STATE.aiKeys[STATE.aiProvider]||{}).model||(window.AI_PROVIDERS[STATE.aiProvider]||{}).model||"";
-      modelEl.textContent=STATE.engine==="ai"?"当前模型："+(model||"接口默认模型"):"";
-    }
-    const policyEl=$("#btModalRequestPolicy");
-    if(policyEl){
-      const policy=window.BT_REQUEST_POLICY.resolve(STATE.engine,STATE.aiProvider,STATE.requestPolicies);
-      policyEl.textContent=(policy.mode==="manual"?"手动配置":"推荐配置")+"：每秒最多 "+policy.qps+" 次，同时最多 "+policy.maxConcurrent+" 个请求";
-    }
-    const requestEl=$("#btModalRequestNotice");
-    if(requestEl)requestEl.textContent=STATE.requestNotice;
-    const errorEl = $("#btModalError");
-    if (errorEl) {errorEl.textContent = STATE.lastError ? "部分内容未完成：" + STATE.lastError : "";errorEl.title=errorEl.textContent;}
-    const noticeEl = $("#btModalLanguageNotice");
-    if (noticeEl) noticeEl.textContent = STATE.languageNoticeCount
-      ? "语言提示：" + STATE.languageNoticeCount + " 处内容无法自动识别源语言，已跳过。请为 MyMemory 指定源语言或切换引擎。" : "";
-    renderEngineOptions();
-    window.BT_CONST.fillLanguageSelect($("#btModalFrom"),"from",STATE.from);
-    window.BT_CONST.fillLanguageSelect($("#btModalTo"),"to",STATE.to);
-    updateModalModeButtons(STATE.mode);
-    $("#btModalAuto").classList.toggle("on", STATE.autoTranslate);
-    $("#btModalAuto").setAttribute("aria-disabled", String(autoTranslateSaving));
-    $("#btModalHover").classList.toggle("on", STATE.hoverPanel);
+    window.BT_PANEL_UI.applyState(panelModalEl, panelSnapshot());
   }
 
   /**
@@ -2344,5 +2315,8 @@ function init() {
     }
     setTimeout(() => { if (!fabWrap) createFab(); }, 1500);
   }
+  // PDF 页先创建悬浮球并跳过配置加载、观察器与自动启动等网页翻译初始化；点击分流见 translatePage。
+  // 顶层 PDF 查看器页不执行内容脚本（阅读器是内置扩展 iframe），该类页面由工具栏与右键入口覆盖。
+  if(detectPdfPage()){createFab();return;}
   bootstrap();
 }

@@ -19,6 +19,10 @@
     permission.catch(() => {});
     return {url, permission};
   }
+  /** 只解析地址、不发起权限申请；供阅读页确认已授权后的自动加载复用同一加载流程。 */
+  function peek(value) {
+    try { return {url: parseUrl(value), permission: Promise.resolve(true)}; } catch (_) { return null; }
+  }
   function size(value) {
     if (value > MAX_BYTES) throw E.create("FILE_TOO_LARGE", "PDF 最大支持 50 MiB，请选择较小文件", "source", false);
   }
@@ -90,5 +94,5 @@
     E.check(signal); validate(bytes);
     return {bytes, sourceName, dispose() { bytes = null; }};
   }
-  global.BT_PDF_SOURCE = {authorize, load, MAX_BYTES};
+  global.BT_PDF_SOURCE = {authorize, peek, load, MAX_BYTES};
 })(window);

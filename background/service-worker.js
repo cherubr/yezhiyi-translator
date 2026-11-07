@@ -35,14 +35,30 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+// 工具栏图标由 manifest 的 action.default_popup 打开 Popup 控制面板，
+// 设置 default_popup 后 Chrome 不再触发 action.onClicked，后台无需点击入口。
+// 阅读器页本身就是翻译工具，不需要控制面板：该标签页按标签覆盖 Popup 为空串，
+// 点击图标无任何动作；离开阅读器页恢复默认 Popup。
+const PDF_READER_URL = chrome.runtime.getURL("pdf/reader.html");
+// setPopup 不接受 null，恢复默认必须显式传入 manifest 中同一相对路径。
+const DEFAULT_ACTION_POPUP = "popup/popup.html";
+
 /**
- * 工具栏图标入口：通知当前网页切换面板显隐，由内容脚本判断面板真实状态。
- * @param {Object} tab 用户点击图标时所在标签页。
+ * 按标签页同步工具栏 Popup：阅读器页禁用，其余标签恢复 manifest 默认值。
+ * @param {number} tabId 标签页编号。
+ * @param {string|undefined} url 标签页当前地址。
  */
-chrome.action.onClicked.addListener((tab) => {
-  if (!tab || !tab.id) return;
-  void safeSendToTab(tab.id, { action: MSG.OPEN_PANEL, toggle: true });
+function syncActionPopup(tabId, url) {
+  if (typeof tabId !== "number" || tabId < 0) return;
+  const isReader = typeof url === "string" && url.startsWith(PDF_READER_URL);
+  chrome.action.setPopup({ tabId, popup: isReader ? "" : DEFAULT_ACTION_POPUP });
+}
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url || changeInfo.status === "loading") syncActionPopup(tabId, tab.url || changeInfo.url);
 });
+chrome.tabs.onCreated.addListener((tab) => syncActionPopup(tab.id, tab.url));
+// 后台重启后补一次存量标签，避免漏掉已经在阅读器页的标签。
+chrome.tabs.query({}, (tabs) => { for (const tab of tabs || []) syncActionPopup(tab.id, tab.url); });
 
 /**
  * 右键菜单入口：把开始整页翻译或选中文字翻译的指令发送给当前页面。
@@ -109,6 +125,34 @@ function openExtensionPage(relativePath) {
       chrome.tabs.create({ url });
     }
   });
+}
+
+/**
+ * 打开独立 PDF 阅读器；携带来源时以 #url= 编码地址传递，阅读页按授权状态预填或自动加载。
+ * 已有阅读页标签时导航到目标来源并激活，避免连续点击叠出多个阅读页；并发调用只保留最后一次。
+ * @param {string} pdfUrl 需要携带的 PDF 原始地址；空串打开空白阅读页。
+ */
+let pdfReaderOpenSeq = 0;
+async function openPdfReader(pdfUrl) {
+  const seq = ++pdfReaderOpenSeq;
+  let hash = "";
+  if (pdfUrl) {
+    try {
+      const parsed = new URL(pdfUrl);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return;
+      hash = "#url=" + encodeURIComponent(parsed.href);
+    } catch (_) { return; }
+  }
+  const base = chrome.runtime.getURL("pdf/reader.html");
+  const tabs = await chrome.tabs.query({ url: base });
+  if (seq !== pdfReaderOpenSeq) return;
+  const existing = tabs && tabs[0];
+  if (existing) {
+    chrome.tabs.update(existing.id, { url: base + hash, active: true });
+    chrome.windows.update(existing.windowId, { focused: true });
+  } else {
+    chrome.tabs.create({ url: base + hash });
+  }
 }
 
 // 批次表：key 对应 owner、cancelled 和消费者控制器集合；属于本轮后台内存。
@@ -381,6 +425,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (action === MSG.OPEN_SETTINGS) {
     openExtensionPage("settings/settings.html");
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (action === MSG.OPEN_PDF_READER) {
+    openPdfReader(typeof request.url === "string" ? request.url : "");
     sendResponse({ ok: true });
     return false;
   }

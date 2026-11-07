@@ -146,6 +146,24 @@
   $("openTranslationSettings").onclick=()=>{
     try{chrome.runtime.sendMessage({action:"OPEN_SETTINGS"},()=>{void chrome.runtime.lastError;});}catch(_){}
   };
+  // 悬浮球、面板与工具栏以 #url=<编码地址> 携带来源；来源域名已授权时复用在线加载流程自动加载（不启动翻译），
+  // 未授权时仅预填，由用户点击加载补足授权手势。
+  function applyBridgeUrl() {
+    const hash = location.hash.slice(1);
+    if (!hash.startsWith("url=")) return;
+    let bridgeUrl = hash.slice(4);
+    try { bridgeUrl = decodeURIComponent(bridgeUrl); } catch (_) {}
+    if (!/^https?:\/\//i.test(bridgeUrl)) return;
+    $("pdfUrl").value = bridgeUrl;
+    const authorization = window.BT_PDF_SOURCE.peek(bridgeUrl);
+    if (!authorization) return;
+    chrome.permissions.contains({origins: [authorization.url.origin + "/*"]}, granted => {
+      if (granted && $("pdfUrl").value === bridgeUrl) void session.load({authorization});
+    });
+  }
+  applyBridgeUrl();
+  // 复用已有阅读页标签属于同文档 hash 导航；地址变化必须重读来源，避免跨入口复用旧来源。
+  window.addEventListener("hashchange", applyBridgeUrl);
   window.addEventListener("pagehide", () => { finishPassword(null); translation.dispose(); session.dispose(); });
   // 退回 BFCache 的页面已释放所有文档；重新载入干净阅读页，绝不恢复失效 Worker。
   window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });

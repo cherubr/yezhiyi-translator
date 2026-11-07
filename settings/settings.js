@@ -260,8 +260,9 @@ async function init() {
     document.querySelector('.nav-item[data-tab="service"]').click();openServiceDetail(cfg.engine);
   };
   document.getElementById("manageTranslationServices").onclick=()=>document.querySelector('.nav-item[data-tab="service"]').click();
-  document.getElementById("openPdfViewer").onclick = () => {
-    chrome.tabs.create({url: chrome.runtime.getURL("pdf/reader.html")});
+  // 统一走后台路由：复用已有阅读页标签，避免叠出多个阅读页；不携带来源地址。
+  document.getElementById("openPdfReaderTool").onclick = () => {
+    chrome.runtime.sendMessage({action: window.BT_CONST.MSG.OPEN_PDF_READER}, () => { void chrome.runtime.lastError; });
   };
   await refreshShortcutDisplay();
 }
