@@ -38,9 +38,11 @@ function isReleaseFile(relative) {
   const name = parts[parts.length - 1];
   if (RESOURCE_EXTENSION.test(name)) return true;
   // PDF 第三方资源类型和许可证仅在 vendor 树内放行；源码笔记、映射不入包。
+  // traineddata 为 OCR 语言模型；*.LICENSE.txt 为 npm 打包器附加的许可证声明。
   return parts[0] === "pdf" && parts[1] === "vendor" && (
-    /\.(?:wasm|bcmap|icc|pfb|ttf)$/i.test(name) ||
-    /^(?:LICENSE|NOTICE|COPYING)(?:[._-].*)?$/i.test(name) || name === "SOURCE.md"
+    /\.(?:wasm|bcmap|icc|pfb|ttf|traineddata)$/i.test(name) ||
+    /^(?:LICENSE|NOTICE|COPYING)(?:[._-].*)?$/i.test(name) ||
+    /\.(?:LICENSE|NOTICE)\.txt$/i.test(name) || name === "SOURCE.md"
   );
 }
 

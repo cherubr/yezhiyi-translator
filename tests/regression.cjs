@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const root = require('node:path').resolve(__dirname, '..');
-const context = { window: { addEventListener() {}, getComputedStyle:()=>({display:'block'}) }, self: {}, console, TextEncoder, setTimeout, clearTimeout,
+const context = { document: {contentType:'text/html'}, window: { addEventListener() {}, getComputedStyle:()=>({display:'block'}) }, self: {}, console, TextEncoder, setTimeout, clearTimeout,
   chrome: { runtime: { onMessage: { addListener() {} } }, storage: { onChanged: { addListener() {} } } } };
 context.self = context.window;
 vm.createContext(context);
@@ -62,7 +62,7 @@ class Element {
  setAttribute(k,v){this.attrs[k]=v;}
  removeAttribute(k){delete this.attrs[k];}
 }
-context.document={nodeType:9,isConnected:true,createElement:tag=>new Element(tag),querySelectorAll:()=>[]};
+context.document={nodeType:9,isConnected:true,contentType:'text/html',title:'Fixture',createElement:tag=>new Element(tag),querySelectorAll:()=>[]};
 const parents=[];
 for (const tag of ['p','li','td','h2']) {
  const parent=new Element('div'),el=new Element(tag),link=new Element('a');
@@ -121,7 +121,7 @@ let scheduled=0;context.setTimeout=()=>{scheduled++;return 1;};context.clearTime
 t.STATE.pagePaused=false;t.STATE.autoTranslate=true;t.STATE.cancelRequested=false;
 let observed;
 context.MutationObserver=class{constructor(fn){observed=fn;}observe(){}};
-context.document.body={};context.document.addEventListener=()=>{};
+context.document.body={textContent:'Fixture content'};context.document.addEventListener=()=>{};
 t.observeDynamicContent();
 const target={nodeType:1,closest:()=>null,hasAttribute:()=>false};
 observed([{target,type:'childList',addedNodes:[{nodeType:1,matches:()=>true}]}]);

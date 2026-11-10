@@ -64,11 +64,21 @@ for (const ref of [
   if (!fs.existsSync(path.join(root, ref))) throw Error("缺少扩展文件：" + ref);
 
 // PDF 独立页面不在内容脚本中，单独核对其本地脚本、CSS、Worker 与固定资源清单。
+// OCR 引擎资源由脚本运行时动态加载，不在 reader.html 中，按 tesseract 完整性清单核对存在性。
+// 导出 Worker 与 pdf-lib 同理：运行时按扩展 URL 创建/加载，故解析 importScripts 目标并按清单核对。
 const readerHtml = fs.readFileSync(path.join(root, "pdf/reader.html"), "utf8");
 const readerRefs = [...readerHtml.matchAll(/(?:src|href)="([^"]+)"/g)].map(match => path.posix.normalize("pdf/" + match[1]));
+const exportWorkerJs = fs.readFileSync(path.join(root, "pdf/export-worker.js"), "utf8");
+const exportWorkerRefs = [...exportWorkerJs.matchAll(/importScripts\(([^)]*)\)/g)]
+  .flatMap(match => [...match[1].matchAll(/"([^"]+)"/g)].map(item => path.posix.normalize("pdf/" + item[1])));
 const pdfIntegrity = JSON.parse(fs.readFileSync(path.join(root, "pdf/vendor/integrity.json"), "utf8"));
-for (const ref of [...readerRefs, "pdf/vendor/build/pdf.mjs", "pdf/vendor/build/pdf.worker.mjs",
-  ...Object.keys(pdfIntegrity.files).map(file => "pdf/vendor/" + file)]) {
+const ocrIntegrity = JSON.parse(fs.readFileSync(path.join(root, "pdf/vendor/tesseract/integrity.json"), "utf8"));
+const exportIntegrity = JSON.parse(fs.readFileSync(path.join(root, "pdf/vendor/pdf-lib/integrity.json"), "utf8"));
+for (const ref of [...readerRefs, ...exportWorkerRefs, "pdf/export-worker.js",
+  "pdf/vendor/build/pdf.mjs", "pdf/vendor/build/pdf.worker.mjs",
+  ...Object.keys(pdfIntegrity.files).map(file => "pdf/vendor/" + file),
+  ...Object.keys(ocrIntegrity.files).map(file => "pdf/vendor/tesseract/" + file),
+  ...Object.keys(exportIntegrity.files).map(file => "pdf/vendor/pdf-lib/" + file)]) {
   if (ref.startsWith("../") || path.posix.isAbsolute(ref) || !fs.existsSync(path.join(root, ref))) throw Error("缺少或无效的 PDF 资源：" + ref);
 }
 

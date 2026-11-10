@@ -5,6 +5,9 @@
   function create({onState, onCanvas, onClear, onPassword, onDocument = () => {}, onPage = () => {}, onViewReady = () => {}}) {
     let sourceGeneration = 0, viewGeneration = 0, reader = null, sourceController = null, viewController = null;
     let handle = null, viewTail = Promise.resolve(), visibleCanvas = null, disposed = false;
+    // P5-B：来源描述符（{file} 或 {authorization}）。原始字节在 open 时已转移给 PDF.js Worker 并被释放，
+    // 导出必须凭描述符重读；换文件、关闭、取消与加载失败都会清空，绝不指向失效来源。
+    let lastSource = null;
     const state = {source: "idle", view: "idle", page: 1, numPages: 0, scale: 1, rotation: 0, name: "", message: "选择本地 PDF，或输入在线 PDF 地址", error: null, reduced: false};
     const publish = () => { if (!disposed) onState({...state}); };
     function clearCanvas() {
@@ -14,6 +17,7 @@
     async function retire() {
       sourceGeneration++; viewGeneration++;
       onDocument(null);
+      lastSource = null;
       sourceController?.abort(); viewController?.abort(); handle?.cancel();
       sourceController = viewController = null;
       const previous = reader; reader = null;
@@ -24,6 +28,7 @@
       if (disposed || ["loading", "parsing"].includes(state.source)) return;
       const retired = retire(); // 同步退役，来源按钮立即进入 busy；权限申请已由点击链发起。
       const generation = sourceGeneration;
+      lastSource = source;
       const controller = new AbortController(); sourceController = controller;
       Object.assign(state, {source: "loading", view: "idle", numPages: 0, page: 1, scale: 1, rotation: 0, error: null, reduced: false, name: "", message: source.file ? "正在读取本地文件…" : "正在授权并读取在线 PDF…"});
       publish();
@@ -44,7 +49,8 @@
         if (generation !== sourceGeneration || disposed) return;
         state.source = "ready"; state.numPages = info.numPages; state.message = "PDF 已读取，正在渲染第一页…";
         sourceController = null; publish();
-        onDocument({id:crypto.randomUUID(),numPages:info.numPages,extractPage:currentReader.extractPage});
+        onDocument({id:crypto.randomUUID(),numPages:info.numPages,extractPage:currentReader.extractPage,
+          probePageContent:currentReader.probePageContent,renderPage:currentReader.renderPage});
         onPage(state.page); render();
       } catch (error) {
         if (generation !== sourceGeneration || disposed) return;
@@ -53,6 +59,7 @@
         if (previous) await previous.close();
         if (generation !== sourceGeneration || disposed) return;
         sourceController = null;
+        lastSource = null; // 加载失败的来源不可复用于导出重读
         Object.assign(state, {source: failure.code === "CANCELLED" ? "idle" : "failed", view: "idle", numPages: 0, error: failure.code === "CANCELLED" ? null : failure, message: failure.message});
         clearCanvas(); publish();
       } finally { result?.dispose(); }
@@ -80,7 +87,11 @@
           clearCanvas(); visibleCanvas = canvas; onCanvas(canvas); canvas = null;
           Object.assign(state, {view: "ready", reduced: info.reduced, error: null,
             message: "第 " + state.page + " / " + state.numPages + " 页 · " + Math.round(state.scale * 100) + "% · 旋转 " + state.rotation + "°" + (info.reduced ? "；为控制内存已降低渲染分辨率" : "")});
-          publish(); onViewReady();
+          publish();
+          // P3-B：转发渲染矩阵与页身份，供译文层做固定坐标→显示坐标映射；迟到结果已被代次校验挡下。
+          onViewReady({pageNumber: request.pageNumber, scale: request.scale, viewRotation: request.viewRotation,
+            width: info.width, height: info.height,
+            viewportTransform: info.viewportTransform, intrinsicRotation: info.intrinsicRotation});
         } catch (error) {
           if (disposed || documentGeneration !== sourceGeneration || generation !== viewGeneration) return;
           const failure = E.normalize(error, "render");
@@ -128,9 +139,18 @@
       Object.assign(state, {source: "idle", view: "idle", page: 1, numPages: 0, name: "", error: null, message: "文件已关闭，可重新选择 PDF"}); publish();
       await cleanup;
     }
+    /**
+     * P5-B 导出重读：按当前文档的来源描述符重新取得原始字节（本地 File 重读 / 在线来源重新下载）。
+     * 只读操作，不触碰阅读器与渲染状态；调用方负责 dispose 释放字节。
+     */
+    async function reloadBytes({signal, onProgress} = {}) {
+      if (disposed || !lastSource || state.source !== "ready")
+        throw E.create("EXPORT_FAILED", "当前没有可导出的文档，请先读取 PDF", "source", false);
+      return global.BT_PDF_SOURCE.load(lastSource, {signal, onProgress});
+    }
     function dispose() { disposed = true; void retire(); }
     publish();
-    return {load, navigate, zoom, rotate, cancel, close, retry: render, dispose};
+    return {load, navigate, zoom, rotate, cancel, close, retry: render, reloadBytes, dispose};
   }
   global.BT_PDF_SESSION = {create};
 })(window);

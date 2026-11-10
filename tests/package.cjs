@@ -33,6 +33,10 @@ function createProject(name) {
     "pdf/vendor/standard_fonts/sample.ttf":binary, "pdf/vendor/LICENSE":"license",
     "pdf/vendor/SOURCE.md":"source", "pdf/vendor/notes.md":"private notes",
     "pdf/vendor/build/pdf.mjs.map":"debug map", "pdf/private.wasm":binary,
+    "pdf/vendor/tesseract/worker.min.js":"const worker = 1;",
+    "pdf/vendor/tesseract/worker.min.js.LICENSE.txt":"license",
+    "pdf/vendor/tesseract/tessdata/eng.traineddata":binary,
+    "pdf/vendor/tesseract/tessdata/notes.md":"private notes",
     "core/sample.mjs":"export const version = 1;", "core/sample.json":"{\"value\":1}",
     "content/notes.txt":"Private local notes", "core/sample.mjs.map":"debug map",
     "assets/.DS_Store":"system file", "background/.cache/ignored.js":"cache",
@@ -59,9 +63,9 @@ try {
   const names = zip.getEntries().map(entry => entry.entryName);
   assert.ok(names.includes("manifest.json"));
   assert.ok(names.every(name => !name.includes("\\") && !name.startsWith("/")));
-  for (const name of ["pdf/vendor/notes.md", "pdf/vendor/build/pdf.mjs.map", "pdf/private.wasm", "content/notes.txt", "core/sample.mjs.map", "assets/.DS_Store", "background/.cache/ignored.js", "content/node_modules/ignored.js", "core/notes.md", "core/engine.wasm", "core/language.gz", "core/LICENSE", "settings/settings.js.bak", "README.md", ".local/notes.md", "package.json"])
+  for (const name of ["pdf/vendor/notes.md", "pdf/vendor/build/pdf.mjs.map", "pdf/private.wasm", "pdf/vendor/tesseract/tessdata/notes.md", "content/notes.txt", "core/sample.mjs.map", "assets/.DS_Store", "background/.cache/ignored.js", "content/node_modules/ignored.js", "core/notes.md", "core/engine.wasm", "core/language.gz", "core/LICENSE", "settings/settings.js.bak", "README.md", ".local/notes.md", "package.json"])
     assert.ok(!names.includes(name), "杂项不得入包：" + name);
-  for (const name of ["core/sample.mjs", "core/sample.json", "pdf/reader.html", "pdf/vendor/build/pdf.mjs", "pdf/vendor/wasm/openjpeg.wasm", "pdf/vendor/cmaps/sample.bcmap", "pdf/vendor/standard_fonts/sample.ttf", "pdf/vendor/LICENSE", "pdf/vendor/SOURCE.md"])
+  for (const name of ["core/sample.mjs", "core/sample.json", "pdf/reader.html", "pdf/vendor/build/pdf.mjs", "pdf/vendor/wasm/openjpeg.wasm", "pdf/vendor/cmaps/sample.bcmap", "pdf/vendor/standard_fonts/sample.ttf", "pdf/vendor/LICENSE", "pdf/vendor/SOURCE.md", "pdf/vendor/tesseract/worker.min.js", "pdf/vendor/tesseract/worker.min.js.LICENSE.txt", "pdf/vendor/tesseract/tessdata/eng.traineddata"])
     assert.ok(names.includes(name), "允许的运行资源必须入包：" + name);
   assert.deepEqual(zip.readFile("assets/bytes.png"), binary);
   assert.equal(zip.readAsText("assets/字 图.svg"), "<svg>中文</svg>");

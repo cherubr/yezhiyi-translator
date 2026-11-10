@@ -6,72 +6,172 @@
   <title>PDF 阅读器 · 页知译</title>
   <link rel="stylesheet" href="reader.css">
 </head>
-<body>
+<body data-view-mode="translated" data-comparison-open="false">
   <main>
-    <header class="heading">
-      <div><h1>PDF 阅读器</h1><p>在浏览器本地阅读 PDF，支持分页、缩放与旋转。</p></div>
-      <span class="badge">页知译</span>
-    </header>
-    <section class="source-card" aria-label="打开 PDF">
-      <form id="urlForm">
-        <label for="pdfUrl">在线 PDF 地址</label>
-        <div class="source-row">
-          <input id="pdfUrl" type="url" placeholder="https://example.com/document.pdf" autocomplete="off" spellcheck="false" required>
-          <button id="loadUrl" type="submit" class="primary">读取在线 PDF</button>
-          <button id="selectFile" type="button">选择本地 PDF</button>
-          <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
+    <header class="reader-header">
+      <div class="file-toolbar">
+        <div class="file-identity">
+          <span class="reader-brand">页知译 · PDF</span>
+          <h1 id="fileName">PDF 阅读器</h1>
+          <button id="translationConfigSummary" class="config-summary" type="button" aria-controls="readerPanel" aria-expanded="false" title="打开翻译设置">正在读取翻译设置…</button>
         </div>
-      </form>
-      <p class="hint">最大 50 MiB。在线读取需授权来源网站；需要登录或发生跳转时，请下载后选择本地文件。文件在本机处理；只有点击开始翻译后，可靠的本页文字才发送至所选服务。扫描页 OCR 尚未接入。</p>
-    </section>
-    <section class="toolbar" aria-label="阅读控制">
-      <div class="control-group">
-        <button id="previous" type="button" disabled>上一页</button>
-        <label for="pageNumber">第</label><input id="pageNumber" type="number" min="1" value="1" aria-label="页码" disabled>
-        <span id="pageCount">/ — 页</span>
-        <button id="next" type="button" disabled>下一页</button>
+        <div class="control-group file-controls" aria-label="文件与设置">
+          <button id="openFilePanel" type="button" aria-controls="readerPanel" aria-expanded="false">打开文件</button>
+          <button id="openSettingsPanel" type="button" aria-controls="readerPanel" aria-expanded="false">设置</button>
+          <button id="openExportPanel" type="button" aria-controls="readerPanel" aria-expanded="false">导出</button>
+        </div>
       </div>
-      <div class="control-group view-controls">
-        <button id="zoomOut" type="button" aria-label="缩小" disabled>−</button>
-        <label for="zoom">缩放</label>
-        <select id="zoom" disabled>
-          <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option>
-          <option value="1" selected>100%</option><option value="1.25">125%</option><option value="1.5">150%</option>
-          <option value="2">200%</option><option value="3">300%</option><option value="4">400%</option>
-        </select>
-        <button id="zoomIn" type="button" aria-label="放大" disabled>＋</button>
-        <button id="rotate" type="button" disabled>顺时针旋转 90°</button>
+      <section class="toolbar" aria-label="阅读与翻译控制">
+        <div class="control-group">
+          <button id="previous" type="button" title="上一页" aria-label="上一页" disabled>←</button>
+          <label for="pageNumber">第</label><input id="pageNumber" type="number" min="1" value="1" aria-label="页码" disabled>
+          <span id="pageCount">/ — 页</span>
+          <button id="next" type="button" title="下一页" aria-label="下一页" disabled>→</button>
+        </div>
+        <div class="control-group view-controls">
+          <button id="zoomOut" type="button" aria-label="缩小" disabled>−</button>
+          <label for="zoom">缩放</label>
+          <select id="zoom" disabled>
+            <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option>
+            <option value="1" selected>100%</option><option value="1.25">125%</option><option value="1.5">150%</option>
+            <option value="2">200%</option><option value="3">300%</option><option value="4">400%</option>
+          </select>
+          <button id="zoomIn" type="button" aria-label="放大" disabled>＋</button>
+          <button id="rotate" type="button" title="顺时针旋转 90°" disabled>旋转</button>
+        </div>
+        <div class="control-group mode-controls">
+          <label for="viewMode">阅读模式</label>
+          <select id="viewMode" title="原文：全宽显示原 PDF；译文：显示原位译文，可展开文字对照查看回退内容；双语：原 PDF 与文字对照联动">
+            <option value="original">原文</option><option value="translated" selected>译文</option><option value="bilingual">双语</option>
+          </select>
+          <button id="toggleTextComparison" type="button" aria-controls="translationCard" aria-expanded="false" title="展开文字对照">文字对照</button>
+        </div>
+        <div class="control-group translation-actions">
+          <button id="startTranslation" class="primary" type="button" disabled>开始翻译</button>
+          <button id="cancelTranslation" type="button" disabled>取消翻译</button>
+        </div>
+      </section>
+    </header>
+    <div class="reader-workspace">
+      <div class="reader-columns">
+        <section id="pdfCard" class="document-card" aria-label="PDF 页面">
+          <div class="document-heading"><strong id="pageViewTitle">原位译文</strong><span class="stage-caption">当前页</span></div>
+          <div id="viewport" tabindex="0" aria-label="PDF 页面，可滚动查看" aria-busy="false">
+            <p id="empty">点击「打开文件」，选择本地 PDF 或输入在线地址。</p>
+            <div id="canvasHost"></div>
+          </div>
+        </section>
+        <div id="comparisonSplitter" class="comparison-splitter" role="separator" aria-label="调整 PDF 与文字对照宽度" aria-orientation="vertical" aria-controls="pdfCard translationCard" aria-valuemin="35" aria-valuemax="75" aria-valuenow="60" tabindex="0" hidden></div>
+        <section id="translationCard" class="document-card translation-card" aria-label="原文与译文对照" hidden>
+          <div class="document-heading comparison-heading">
+            <strong>文字对照（试用）</strong>
+            <button id="closeTextComparison" type="button" aria-label="收起文字对照">收起</button>
+            <span id="translationStats">开始翻译后显示原位/回退统计</span>
+            <button id="showFailedTranslation" type="button" hidden>定位失败段落</button>
+          </div>
+          <div id="translationRows" tabindex="0"><p class="translation-empty">开始翻译后将在此显示本页文字对照。</p></div>
+        </section>
       </div>
-      <div class="control-group">
-        <button id="retry" type="button" disabled>重试渲染</button>
-        <button id="cancel" type="button" disabled>取消处理</button>
-        <button id="close" type="button" disabled>关闭文件</button>
-      </div>
-    </section>
-    <section class="translation-toolbar" aria-label="文字翻译">
-      <label>服务 <select id="translationService" disabled></select></label>
-      <label>源语言 <select id="translationFrom" disabled></select></label>
-      <label>目标语言 <select id="translationTo" disabled></select></label>
-      <button id="startTranslation" class="primary" type="button" disabled>开始翻译</button>
-      <button id="cancelTranslation" type="button" disabled>取消翻译</button>
-      <button id="refreshTranslationConfig" type="button">刷新翻译设置</button>
-      <button id="openTranslationSettings" type="button">配置服务</button>
-    </section>
-    <p id="translationStatus" role="status" aria-live="polite">读取 PDF 后点击开始翻译</p>
-    <p id="status" role="status" aria-live="polite">选择本地 PDF，或输入在线 PDF 地址</p>
-    <div class="reader-columns">
-    <section class="document-card" aria-label="PDF 原文">
-      <div class="document-heading"><strong>原 PDF</strong><span id="fileName"></span></div>
-      <div id="viewport" tabindex="0" aria-label="PDF 页面，可滚动查看" aria-busy="false">
-        <p id="empty">读取文件后将在此显示当前页。</p>
-        <div id="canvasHost"></div>
-      </div>
-    </section>
-    <section class="document-card translation-card" aria-label="原文与译文对照">
-      <div class="document-heading"><strong>文字对照（试用）</strong><span>基础段落对照，不覆盖原 PDF</span></div>
-      <div id="translationRows" tabindex="0"><p class="translation-empty">开始翻译后将在此显示本页文字对照。</p></div>
-    </section>
+      <!-- 配置面板只覆盖界面，不卸载或隐藏 PDF 渲染树；文字对照独立管理显隐。 -->
+      <aside id="readerPanel" class="reader-panel" aria-labelledby="readerPanelTitle" tabindex="-1" hidden>
+        <div class="panel-heading">
+          <h2 id="readerPanelTitle">打开文件</h2>
+          <button id="closeReaderPanel" type="button" aria-label="收起面板">收起</button>
+        </div>
+        <div class="panel-body">
+          <section id="filePanel" aria-label="打开 PDF" hidden>
+            <form id="urlForm">
+              <label for="pdfUrl">在线 PDF 地址</label>
+              <div class="source-row">
+                <input id="pdfUrl" type="url" placeholder="https://example.com/document.pdf" autocomplete="off" spellcheck="false" required>
+                <button id="loadUrl" type="submit" class="primary">读取在线 PDF</button>
+                <button id="selectFile" type="button">选择本地 PDF</button>
+                <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
+              </div>
+            </form>
+            <p id="filePanelStatus" class="panel-status" role="status"></p>
+            <p class="hint">最大 50 MiB。在线读取需授权来源网站；需要登录或发生跳转时，请下载后选择本地文件。文件在本机处理；只有点击开始翻译后，可靠的本页文字才发送至所选服务。扫描页与混排页的图片、乱码区域在本机自动 OCR（随包英语、简体中文模型，更多语言见「OCR 语言模型」按需下载），页面图像不上传。</p>
+            <div class="panel-actions" aria-label="当前文件操作">
+              <button id="retrySource" type="button" hidden>重新读取文件</button>
+              <button id="retry" type="button" disabled hidden>重试渲染</button>
+              <button id="cancel" type="button" disabled hidden>取消处理</button>
+              <button id="close" type="button" disabled hidden>关闭文件</button>
+            </div>
+          </section>
+          <section id="settingsPanel" aria-label="阅读器设置" hidden>
+            <section class="translation-toolbar" aria-label="文字翻译设置">
+              <h3>翻译设置</h3>
+              <p id="translationConfigHint" class="hint">选项仅用于本 PDF。修改后先应用配置，再开始翻译；不会自动发送翻译请求。</p>
+              <label>服务 <select id="translationService" disabled></select></label>
+              <label>源语言 <select id="translationFrom" disabled></select></label>
+              <label>目标语言 <select id="translationTo" disabled></select></label>
+              <div class="panel-actions">
+                <button id="applyTranslationConfig" class="primary" type="button" hidden>应用配置</button>
+                <button id="refreshTranslationConfig" type="button" title="从扩展设置重新读取配置，不会启动翻译">重新读取配置</button>
+                <button id="openTranslationSettings" type="button">配置服务</button>
+              </div>
+              <p id="translationPanelStatus" class="panel-status"></p>
+            </section>
+            <h3 class="resource-heading">本机资源</h3>
+            <p class="hint">OCR 随翻译自动处理；模型和字体仅在需要时下载，不上传页面图像。</p>
+            <details id="ocrModels" class="ocr-models">
+              <summary>OCR 语言模型</summary>
+              <p class="hint">已随包英语、简体中文；其余语言按需从固定来源下载，经 SHA-256 校验后仅保存在本机，可离线使用。页面图像不上传。</p>
+              <ul id="ocrModelList"></ul>
+              <p id="ocrModelStatus" class="panel-status" role="status"></p>
+            </details>
+            <details id="exportFonts" class="ocr-models">
+              <summary>导出字体</summary>
+              <p class="hint">内置标准字体覆盖西欧文字；简体中文与韩文译文按需从固定来源下载开源字体（OFL-1.1），经 SHA-256 校验后仅保存在本机，可离线复用。无对应字体的文字（如阿拉伯文、天城文、泰文）导出时会给出说明，不会生成缺字文件。</p>
+              <ul id="exportFontList"></ul>
+              <p id="exportFontStatus" class="panel-status" role="status"></p>
+            </details>
+          </section>
+          <section id="exportPanel" class="export-toolbar" aria-label="导出 PDF" hidden>
+            <h3>导出内容</h3>
+            <label>导出 <select id="exportMode" title="原文：源文件字节原样导出，不做任何修改；当前页：本页安全区域原位显示译文，其余译文进附录；所选页：按页码范围批量导出，未翻译页需先补译或确认按原文保留">
+              <option value="original">原文 PDF</option>
+              <option value="translated" selected>译文 PDF（当前页）</option>
+              <option value="range">译文 PDF（所选页）</option>
+            </select></label>
+            <p id="exportModeHint" class="hint"></p>
+            <label id="exportRangeField" hidden>页码范围 <input id="exportRange" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="1-3,5,8-9" title="留空表示当前页；一次最多 50 页"></label>
+            <label id="exportPairField" title="双语对照：在每页原文之后追加一张同尺寸同方向的对照页，遮罩与译文只落在对照页上，原文页内容不被改写；本页没有任何原位译文时不追加对照页。与阅读模式里的「双语」不是同一件事（那是原文画布＋对照面板）">
+              <input id="exportPair" type="checkbox">双语对照（成对页）</label>
+            <div id="exportPreflight" class="export-preflight" hidden>
+              <strong>所选页检查</strong>
+              <p id="exportPreflightSummary"></p>
+              <div class="panel-actions">
+                <button id="exportPrepare" type="button" hidden>翻译缺失页</button>
+                <button id="exportKeepMissing" type="button" hidden>缺失页保留原文导出</button>
+              </div>
+            </div>
+            <div class="panel-actions">
+              <button id="exportNow" class="primary" type="button" disabled>导出</button>
+              <button id="exportCancel" type="button" disabled>取消导出</button>
+            </div>
+            <p id="exportPanelStatus" class="panel-status"></p>
+            <button id="manageExportFonts" type="button">管理导出字体</button>
+            <details class="usage-details"><summary>导出说明</summary>
+            <p class="hint">导出不修改原始文件，不触发新的翻译或 OCR；页面图像与译文只在本机处理。所选页导出首次点击只做体检：缺译文的页会列出来，由你选择逐页补译或按原文保留，确认后才生成文件。勾选「双语对照」后按「原文页 → 对照页」成对输出，原文页不被改写，未入位译文仍集中到附录。西欧文字用内置字体，中日韩等文字按需下载开源字体后原位导出。</p>
+            </details>
+          </section>
+        </div>
+      </aside>
     </div>
+    <footer class="reader-status" aria-label="阅读器状态">
+      <div class="status-summary">
+        <span id="activityIndicator" class="activity-indicator" aria-hidden="true" hidden></span>
+        <p id="readerStatusSummary" role="status" aria-live="polite">选择本地 PDF，或输入在线 PDF 地址</p>
+        <button id="translationProgress" type="button" aria-controls="translationCard" title="查看本页文字对照与失败详情" hidden></button>
+        <button id="toggleStatusDetails" type="button" aria-controls="statusDetails" aria-expanded="false">详细状态</button>
+      </div>
+      <div id="statusDetails" class="status-details" hidden>
+        <div class="status-item"><span>读取</span><p id="status">选择本地 PDF，或输入在线 PDF 地址</p></div>
+        <div class="status-item"><span>翻译</span><p id="translationStatus">读取 PDF 后点击开始翻译</p></div>
+        <div class="status-item"><span>导出</span><p id="exportStatus">导出前请先读取 PDF</p></div>
+      </div>
+    </footer>
     <noscript>需要启用 JavaScript 才能使用阅读器。</noscript>
   </main>
   <dialog id="passwordDialog" aria-labelledby="passwordTitle">
@@ -93,7 +193,16 @@
   <script src="session.js"></script>
   <script src="block-processor.js"></script>
   <script src="translation-adapter.js"></script>
+  <script src="ocr-models.js"></script>
+  <script src="ocr-model-store.js"></script>
+  <script src="ocr-provider.js"></script>
   <script src="translation-session.js"></script>
+  <script src="layout-planner.js"></script>
+  <script src="pixel-evidence.js"></script>
+  <script src="translation-renderer.js"></script>
+  <script src="export-fonts.js"></script>
+  <script src="font-store.js"></script>
+  <script src="exporter.js"></script>
   <script src="reader.js"></script>
 </body>
 </html>

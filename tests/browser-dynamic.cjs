@@ -27,7 +27,7 @@ async function setup(browser,html,preferences={}) {
      setTimeout(()=>cb(window.languageMode?{ok:false,error:'需要指定源语言',code:'NEED_SOURCE_LANGUAGE'}:window.failMode?{ok:false,error:'模拟网络失败'}:{ok:true,data:window.returnSameText?request.text:'译：'+request.text}),window.responseDelay);
    }},storage:{sync:storage,local:{async get(){return {}},async set(){}},onChanged:{addListener(fn){window.storageChange=fn;}}}};
  },preferences);
- for(const file of ['core/constants.js','core/translation-style.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
+ for(const file of ['core/constants.js','core/translation-style.js','core/translation-units.js','core/request-policy.js','core/providers.js','core/panel-ui.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
  await page.addStyleTag({content:fs.readFileSync(path.join(root,'core/translation-style.css'),'utf8')+'\n'+fs.readFileSync(path.join(root,'content/content.css'),'utf8')});
  const source=fs.readFileSync(path.join(root,'content/content.js'),'utf8').replace('  bootstrap();',
  '  window.test={STATE,applyMode,openControlPanel,changeTranslationSetting,translatePage,cancelTranslation,collectBlocks,translatedElements,insertTranslation,clearTranslations,createFab,observeDynamicContent,scheduleVisibleTranslation,bindHoverTranslate,bindPageLifecycle};');
@@ -282,7 +282,9 @@ async function setup(browser,html,preferences={}) {
    test.openControlPanel();
  });
  assert.equal(await late.locator('#btModalAuto').getAttribute('aria-disabled'),'true');
- await late.evaluate(async()=>{releaseAutoSave();await toggleTask;});
+ // 点击处理器不返回保存 Promise；等待真实 busy 状态结束，再检查迟到保存不会重启翻译。
+ await late.evaluate(()=>releaseAutoSave());
+ await late.waitForFunction(()=>document.querySelector('#btModalAuto').getAttribute('aria-disabled')==='false');
  assert.equal(await late.evaluate(()=>test.STATE.pagePaused),true);
  assert.equal(await late.evaluate(()=>requests.length),0);
  assert.equal(await late.locator('.bt-translation-text').count(),0);
