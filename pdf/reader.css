@@ -13,7 +13,7 @@ h1 { font-size:16px; margin:0; } h2 { font-size:20px; margin-top:0; }
 .reader-header button,.reader-header input,.reader-header select { min-height:32px; padding:5px 10px; }
 .file-controls { flex:none; }
 .file-controls button[aria-expanded="true"] { color:var(--blue); border-color:var(--blue); background:var(--hover); }
-.mode-controls button[aria-expanded="true"] { color:var(--blue); border-color:var(--blue); background:var(--hover); }
+.comparison-controls button[aria-expanded="true"] { color:var(--blue); border-color:var(--blue); background:var(--hover); }
 .document-card { background:var(--card); border:1px solid var(--line); border-radius:8px; }
 .source-row { display:flex; gap:10px; margin-top:8px; flex-wrap:wrap; }
 input,select,button { font:inherit; color:var(--text); border:1px solid var(--line); border-radius:6px; background:var(--card); min-height:38px; padding:8px 12px; }
@@ -27,9 +27,9 @@ button:disabled,input:disabled,select:disabled { opacity:.5; cursor:not-allowed;
 .hint { font-size:12px; color:var(--muted); margin:10px 0 0; }
 .toolbar { display:flex; align-items:center; gap:16px; padding:8px 16px; overflow-x:auto; }
 .control-group { display:flex; flex:none; align-items:center; gap:8px; }
-.view-controls,.mode-controls,.translation-actions { border-left:1px solid var(--line); padding-left:16px; }
+.view-controls,.mode-controls,.translation-actions,.comparison-controls { border-left:1px solid var(--line); padding-left:16px; }
 .toolbar label,.toolbar #pageCount { white-space:nowrap; }
-#pageNumber { width:60px; } #zoom { width:88px; } #viewMode { width:90px; }
+#pageNumber { width:60px; } #zoom { width:110px; } #viewMode { width:90px; }
 .reader-status { padding:6px 16px; max-height:27vh; overflow:auto; border-top:1px solid var(--line); background:var(--card); font-size:12px; }
 .status-summary { display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px; }
 .status-summary p { flex:1 1 180px; min-width:0; margin:0; overflow-wrap:anywhere; }
@@ -96,12 +96,13 @@ dialog::backdrop { background:#14233d88; }
 .translation-card .document-heading span { color:var(--muted); font-size:12px; }
 .comparison-heading #translationStats { flex-basis:100%; overflow-wrap:anywhere; }
 #closeTextComparison { min-height:28px; padding:3px 8px; font-size:12px; }
-#translationRows { flex:1; min-height:0; overflow:auto; padding:0 18px; }
-.translation-row { padding:16px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
+#translationRows { flex:1; min-height:0; overflow:auto; padding:0 14px; }
+.translation-row { padding:10px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
 .translation-row:last-child { border-bottom:0; }
-.translation-source { font-size:13px; color:var(--muted); white-space:pre-wrap; margin:0 0 10px; }
-.translation-result { font-size:15px; line-height:1.75; white-space:pre-wrap; margin:0; }
-.translation-note { color:var(--muted); font-size:12px; margin:8px 0 0; }
+.translation-source { font-size:12px; line-height:1.55; color:var(--muted); white-space:pre-wrap; margin:0 0 5px; }
+.translation-result { font-size:15px; line-height:1.65; white-space:pre-wrap; margin:0; }
+.translation-note { color:var(--muted); font-size:12px; margin:5px 0 0; }
+.translation-result:empty,.translation-note:empty { display:none; }
 .translation-note[data-error="true"] { color:var(--error); }
 .translation-empty { color:var(--muted); padding:20px 0; }
 @media(max-width:950px) { .reader-columns { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr) minmax(0,1fr); } body[data-comparison-open="false"] .reader-columns { grid-template-rows:minmax(0,1fr); } }
@@ -117,11 +118,11 @@ dialog::backdrop { background:#14233d88; }
 /* 窄屏让操作换行，不将翻译、取消挤出可见工具栏；不使用 CSS 缩放页面。 */
 @media(max-width:1150px) {
   .toolbar { flex-wrap:wrap; overflow:visible; gap:8px 12px; }
-  .view-controls,.mode-controls,.translation-actions { padding-left:12px; }
+  .view-controls,.mode-controls,.translation-actions,.comparison-controls { padding-left:12px; }
 }
 @media(max-width:700px) {
   .toolbar { font-size:13px; }
-  .view-controls,.mode-controls,.translation-actions { border-left:0; padding-left:0; }
+  .view-controls,.mode-controls,.translation-actions,.comparison-controls { border-left:0; padding-left:0; }
   .reader-columns { padding:8px; gap:8px; }
   .reader-panel { inset:8px 8px 8px auto; width:calc(100% - 16px); }
   .document-heading { padding:8px 10px; }
@@ -155,6 +156,7 @@ dialog::backdrop { background:#14233d88; }
   background:rgba(191,121,0,.92); color:#fff; font:600 10px/16px system-ui,-apple-system,"Segoe UI",sans-serif;
   text-align:center; pointer-events:auto; cursor:pointer; }
 .pdf-marker:hover { background:rgba(150,95,0,.95); }
+.pdf-marker-active { outline:2px solid var(--blue); outline-offset:2px; }
 .pdf-marker-flash { position:absolute; border:2px solid rgba(191,121,0,.9); border-radius:4px; pointer-events:none; }
 .translation-row { cursor:pointer; }
 .translation-row:focus-visible { outline:2px solid var(--blue); outline-offset:-2px; }

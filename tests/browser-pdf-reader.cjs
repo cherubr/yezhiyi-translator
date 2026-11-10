@@ -143,6 +143,11 @@ function installResources() {
       await page.selectOption("#viewMode", mode);
       assert.equal(await visible("#translationCard"), mode === "bilingual");
       assert.equal(await visible(".page-overlay"), mode === "translated");
+      await page.click("#toggleTextComparison");
+      assert.equal(await visible("#translationCard"), mode !== "bilingual");
+      assert.equal(await page.inputValue("#viewMode"), mode, "comparison toggle must not change reading mode");
+      await page.click("#toggleTextComparison");
+      assert.equal(await visible("#translationCard"), mode === "bilingual");
       if (mode === "bilingual") {
         await page.locator("#comparisonSplitter").focus(); await page.keyboard.press("ArrowLeft");
         assert.equal(await page.locator("#comparisonSplitter").getAttribute("aria-valuenow"), "55");
@@ -167,6 +172,11 @@ function installResources() {
     assert.equal(await visible("#translationCard"), true);
     assert.equal(await visible("#readerPanel"), false, "marker reveals comparison behind configuration panel");
     assert.equal(await page.locator(".translation-row-active").count(), 1);
+    await page.locator(".translation-row-active").click();
+    await page.waitForSelector(".pdf-marker-flash");
+    assert.equal(await page.locator(".pdf-marker-active").getAttribute("data-block-id"),
+      await page.locator(".translation-row-active").getAttribute("data-block-id"));
+    assert.equal(await page.locator(".translation-row-active").getAttribute("aria-current"), "true");
     await page.keyboard.press("Escape"); assert.equal(await visible("#translationCard"), false);
     assert.equal(await calls(), before);
     await page.click("#toggleTextComparison");
@@ -177,6 +187,48 @@ function installResources() {
     await page.selectOption("#zoom", "1.25"); await waitReady();
     await page.click("#rotate"); await waitReady();
     assert.equal(await calls(), afterNext, "zoom and rotation must not request translations");
+    await page.selectOption("#viewMode", "original");
+    await page.selectOption("#zoom", "fit-page"); await waitReady();
+    const fitted = await page.evaluate(() => {
+      const viewport = document.getElementById("viewport"), canvas = viewport.querySelector("canvas"), style = getComputedStyle(viewport);
+      window.fittedCanvas = canvas;
+      return {width: canvas.getBoundingClientRect().width, height: canvas.getBoundingClientRect().height,
+        availableWidth: viewport.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+        availableHeight: viewport.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom),
+        scale: document.getElementById("zoom").value, page: document.getElementById("pageNumber").value,
+        rotation: document.getElementById("rotate").title};
+    });
+    assert.ok(fitted.width <= fitted.availableWidth && fitted.height <= fitted.availableHeight);
+    for (const mode of ["bilingual", "translated", "original"]) {
+      await page.selectOption("#viewMode", mode);
+      assert.equal(await page.inputValue("#zoom"), fitted.scale);
+      assert.equal(await page.inputValue("#pageNumber"), fitted.page);
+      assert.equal(await page.locator("#rotate").getAttribute("title"), fitted.rotation);
+      assert.equal(await page.evaluate(() => fittedCanvas === document.querySelector("#canvasHost canvas")), true);
+    }
+    await page.click("#translationProgress");
+    assert.equal(await page.inputValue("#viewMode"), "original", "opening issue details keeps original mode");
+    await page.waitForSelector(".pdf-marker-flash");
+    const flashMetrics = () => page.evaluate(() => {
+      const flash = document.querySelector(".pdf-marker-flash"), box = flash.getBoundingClientRect(), border = parseFloat(getComputedStyle(flash).borderLeftWidth);
+      const canvas = document.querySelector("#canvasHost canvas").getBoundingClientRect(), scale = Number(document.getElementById("zoom").value);
+      return [box.left - canvas.left + border, box.top - canvas.top + border, box.width - 2 * border, box.height - 2 * border].map(value => value / scale);
+    });
+    const beforeFitHighlight = await flashMetrics();
+    await page.selectOption("#zoom", "fit-width"); await waitReady();
+    assert.equal(await page.evaluate(() => {
+      const viewport = document.getElementById("viewport"), style = getComputedStyle(viewport), canvas = viewport.querySelector("canvas");
+      const available = viewport.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      return canvas.getBoundingClientRect().width <= available && available - canvas.getBoundingClientRect().width < 5;
+    }), true);
+    await page.click("#translationProgress"); await page.waitForSelector(".pdf-marker-flash");
+    const afterFitHighlight = await flashMetrics();
+    assert.ok(afterFitHighlight.every((value, index) => Math.abs(value - beforeFitHighlight[index]) < .5),
+      "rotated-page highlight keeps the same PDF coordinates after fit zoom");
+    await page.click("#zoomIn"); await waitReady();
+    assert.ok(Number(await page.inputValue("#zoom")) > 0);
+    assert.equal(await calls(), afterNext, "fit and mode changes reuse translated results");
+    await page.selectOption("#viewMode", "translated");
     console.log("PASS PDF UI: local load, modes, canvas identity, keyboard marker, page cache, zoom/rotation");
 
     await page.click("#openExportPanel"); await page.selectOption("#exportMode", "range");
@@ -275,6 +327,11 @@ function installResources() {
     assert.doesNotMatch(await page.locator("#translationRows").textContent(), /Reading example/);
     assert.ok(await page.evaluate(() => pdfUiTest.ocrCalls) > 0);
     assert.match(await page.locator("#translationRows").textContent(), /Recognized text/);
+    const ocrCount = await page.evaluate(() => pdfUiTest.ocrCalls), scanCalls = await calls();
+    await page.selectOption("#zoom", "fit-page"); await waitReady();
+    for (const mode of ["original", "bilingual", "translated"]) await page.selectOption("#viewMode", mode);
+    assert.equal(await page.evaluate(() => pdfUiTest.ocrCalls), ocrCount, "reading layout must not rerun OCR");
+    assert.equal(await calls(), scanCalls);
     await page.click("#openFilePanel"); await page.fill("#pdfUrl", "http://127.0.0.1:" + server.address().port + "/denied.pdf");
     await page.click("#loadUrl"); await page.waitForFunction(() => document.getElementById("status").dataset.error === "true");
     assert.match(await page.locator("#readerStatusSummary").innerText(), /403/);

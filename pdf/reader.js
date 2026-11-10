@@ -2,9 +2,9 @@
   "use strict";
   const $ = id => document.getElementById(id), E = window.BT_PDF_ERRORS;
   let state, passwordRequest = null, translationState = null, debugOverlay = false;
-  let lastRows = [], planSummary = null, viewMode = "translated";
-  // 译文模式的对照开关只属于界面；翻页和任务进度更新不会重置用户的展开状态。
-  let translatedComparisonOpen = false;
+  let lastRows = [], lastGeometry = null, planSummary = null, viewMode = "translated";
+  // 对照开关独立于阅读模式；模式只提供默认值，翻页和任务进度不重置用户选择。
+  let comparisonOpen = false, viewInfo = null, highlightedBlock = null, highlightTimer = null;
   // P5-B 导出：页侧只持有当前文档句柄与导出状态，导出编排全部在 BT_PDF_EXPORTER 内。
   let currentDocument = null, exportState = null;
   const translationCards = new Map();
@@ -89,8 +89,8 @@
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape" || event.defaultPrevented || $("passwordDialog").open) return;
     if (openPanel) { event.preventDefault(); showReaderPanel(null); }
-    else if (viewMode === "translated" && translatedComparisonOpen) {
-      event.preventDefault(); translatedComparisonOpen = false; updateTextComparison();
+    else if (comparisonOpen) {
+      event.preventDefault(); comparisonOpen = false; updateTextComparison();
     }
   });
   function updateConfigSummary() {
@@ -114,11 +114,11 @@
   }
   function revealComparisonRow(card) {
     if (!card) return;
-    if (viewMode === "original") { viewMode = "translated"; applyViewMode(); }
-    translatedComparisonOpen = true; updateTextComparison();
+    comparisonOpen = true; updateTextComparison();
     if (openPanel) showReaderPanel(null, false);
     card.element.scrollIntoView({block: "nearest", behavior: scrollBehavior()});
     card.element.focus({preventScroll: true}); highlightRow(card);
+    renderer.flashHighlight(card.element.dataset.blockId);
   }
   function showTranslationIssue() {
     const row = lastRows.find(item => item.result?.status === "failed") ||
@@ -134,7 +134,7 @@
       if (!card || viewMode !== "translated") return;
       revealComparisonRow(card);
     },
-    onPlanSummary(summary) { planSummary = summary; updateTranslationStats(); }});
+    onPlanSummary(summary) { planSummary = summary; updateTranslationStats(); queueMicrotask(syncMarkerHighlight); }});
   /** DOM 只使用 textContent；文件名、地址和异常不作为 HTML 插入。 */
   function showState(next) {
     const previousSource = state?.source;
@@ -160,7 +160,7 @@
     $("pageNumber").value = state.page;
     $("pageNumber").max = Math.max(1, state.numPages);
     $("pageCount").textContent = "/ " + (state.numPages || "—") + " 页";
-    $("zoom").value = String(state.scale);
+    syncZoomPicker();
     $("rotate").title = "顺时针旋转 90°（当前 " + state.rotation + "°）";
     $("rotate").setAttribute("aria-label", $("rotate").title);
     $("fileName").textContent = state.name || "PDF 阅读器";
@@ -255,7 +255,7 @@
   function renderRows(rows) {
     const host=$("translationRows"),keep=new Set();
     if(!rows.length){
-      host.replaceChildren();translationCards.clear();
+      clearBlockHighlight();host.replaceChildren();translationCards.clear();
       const empty=document.createElement("p");empty.className="translation-empty";
       empty.textContent="开始翻译后将在此显示本页文字对照。";host.append(empty);return;
     }
@@ -268,7 +268,7 @@
         element.className="translation-row";badge.className="translation-badge";badge.hidden=true;source.className="translation-source";target.className="translation-result";note.className="translation-note";
         source.dir=target.dir="auto";element.append(badge,source,target,note);
         element.dataset.blockId=block.id;element.tabIndex=0;element.setAttribute("role","button");element.setAttribute("aria-label","定位到 PDF 原文");
-        card={element,badge,source,target,note,timer:null};translationCards.set(block.id,card);
+        card={element,badge,source,target,note};translationCards.set(block.id,card);
       }
       // OCR 块始终展示识别文字（置信度状态见 note，供校对）；仅原生不可靠文字层用占位提示。
       const original=block.reliable||block.source==="ocr"?block.text:"本区域文字层不能可靠提取，请查看左侧 PDF 原文。";
@@ -281,11 +281,28 @@
       if(host.children[index]!==card.element)host.insertBefore(card.element,host.children[index]||null);
     });
     for(const [id,card] of translationCards)if(!keep.has(id)){card.element.remove();translationCards.delete(id);}
+    if (highlightedBlock && !keep.has(highlightedBlock)) clearBlockHighlight();
+  }
+  function syncMarkerHighlight() {
+    for (const marker of $("canvasHost").querySelectorAll(".pdf-marker")) {
+      const selected = marker.dataset.blockId === highlightedBlock;
+      marker.classList.toggle("pdf-marker-active", selected);
+      marker.setAttribute("aria-pressed", String(selected));
+    }
+  }
+  function clearBlockHighlight() {
+    if (highlightTimer) clearTimeout(highlightTimer);
+    highlightTimer = null; highlightedBlock = null;
+    for (const card of translationCards.values()) {
+      card.element.classList.remove("translation-row-active"); card.element.removeAttribute("aria-current");
+    }
+    syncMarkerHighlight();
   }
   function highlightRow(card) {
-    if (card.timer) clearTimeout(card.timer);
+    clearBlockHighlight(); highlightedBlock = card.element.dataset.blockId;
     card.element.classList.add("translation-row-active");
-    card.timer = setTimeout(() => { card.element.classList.remove("translation-row-active"); card.timer = null; }, 1600);
+    card.element.setAttribute("aria-current", "true"); syncMarkerHighlight();
+    highlightTimer = setTimeout(clearBlockHighlight, 1600);
   }
   /** 面板 → PDF：按 blockId 取显示矩形居中滚动并闪高亮；getDisplayRect 为 null（页不匹配/块不存在）时 no-op。 */
   function focusPdfBlock(blockId) {
@@ -298,6 +315,7 @@
     viewport.scrollTo({left: Math.max(0, ox + (rect.x + rect.right) / 2 - viewport.clientWidth / 2),
       top: Math.max(0, oy + (rect.y + rect.bottom) / 2 - viewport.clientHeight / 2), behavior: scrollBehavior()});
     renderer.flashHighlight(blockId);
+    const card = translationCards.get(blockId); if (card) highlightRow(card);
   }
   /** P3-D 三分类统计与行徽标：原位=overlay+unchanged；回退有译文=plan.fallbacks；未完成=null/failed/skipped。 */
   function updateTranslationStats() {
@@ -333,16 +351,20 @@
         $("translationFrom").value = draft.from; $("translationTo").value = draft.to;
       }
       updateConfigDraft();
-    },onRows(rows,geometry,meta){lastRows=rows;renderRows(rows);renderer.setModel(rows,geometry);updateTranslationStats();
+    },onRows(rows,geometry,meta){lastRows=rows;lastGeometry=geometry;renderRows(rows);renderer.setModel(rows,geometry);updateTranslationStats();
       // #debug=1 时输出页面分类与 OCR 区域（类型/原因/坐标与统计，不含文字内容）。
       if(debugOverlay&&meta)console.info("[pdf-ocr]",meta.classification?.type||"none",meta.ocr?.regions||[],meta.ocr?.stats||null);}
   });
   const session = window.BT_PDF_SESSION.create({onState: showState, onPassword: askPassword,
     // 导出需要文档句柄渲染独立证据位图；页侧自己留存一份，翻译会话行为不变。
-    onDocument(value){currentDocument=value;translation.setDocument(value);updateExportControls();},
+    onDocument(value){currentDocument=value;lastGeometry=null;translation.setDocument(value);updateExportControls();},
     onPage:translation.setPage,
-    onViewReady(info){translation.viewReady();renderer.setView(info);},
-    onClear() { $("canvasHost").replaceChildren(); $("empty").hidden = false; renderer.clear(); },
+    onViewReady(info){
+      viewInfo={...info,scale:state.scale};syncZoomPicker();translation.viewReady();renderer.setView(info);
+      // 缩放/旋转会重建 Canvas 并清空 Renderer；重新挂接本页已确认模型，不另行提取或启动文字任务。
+      if (lastGeometry?.pageNumber === info.pageNumber) renderer.setModel(lastRows,lastGeometry);
+    },
+    onClear() { viewInfo=null;clearBlockHighlight();$("canvasHost").replaceChildren(); $("empty").hidden = false; renderer.clear(); },
     onCanvas(canvas) {
       canvas.setAttribute("role", "img"); canvas.setAttribute("aria-label", "PDF 第 " + state.page + " 页原文图像");
       $("canvasHost").replaceChildren(renderer.mount(canvas)); $("empty").hidden = true;
@@ -404,8 +426,32 @@
     else { $("pageNumber").value = state.page; $("status").textContent = "请输入 1 至 " + state.numPages + " 之间的页码"; }
   };
   $("pageNumber").onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); $("pageNumber").blur(); } };
-  $("zoom").onchange = () => session.zoom(Number($("zoom").value));
-  const scales = [...$("zoom").options].map(option => Number(option.value));
+  /** 适配选项只计算一次真实缩放值；模式/侧栏切换不会擅自重新缩放或重建画布。 */
+  function syncZoomPicker() {
+    if (!state) return;
+    const picker = $("zoom"), custom = $("zoomCustom"), value = String(state.scale);
+    const fixed = [...picker.options].some(option => option !== custom && option.value === value);
+    custom.hidden = fixed; custom.value = fixed ? "" : value;
+    custom.textContent = fixed ? "" : (Math.round(state.scale * 1000) / 10) + "%";
+    picker.value = value;
+    for (const option of picker.options) if (option.value.startsWith("fit-")) {
+      option.disabled = state.view !== "ready" || !viewInfo || viewInfo.pageNumber !== state.page;
+    }
+  }
+  function fitCurrentPage(mode) {
+    if (!viewInfo || state?.view !== "ready" || viewInfo.pageNumber !== state.page) { syncZoomPicker(); return; }
+    const viewport = $("viewport"), style = getComputedStyle(viewport);
+    const width = viewport.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 2;
+    const height = viewport.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - 2;
+    const factor = mode === "fit-width" ? width / viewInfo.width : Math.min(width / viewInfo.width, height / viewInfo.height);
+    if (Number.isFinite(factor) && factor > 0) session.zoom(Math.floor(viewInfo.scale * factor * 1000) / 1000);
+    syncZoomPicker();
+  }
+  $("zoom").onchange = () => {
+    const value = $("zoom").value;
+    if (value.startsWith("fit-")) fitCurrentPage(value); else session.zoom(Number(value));
+  };
+  const scales = [...$("zoom").options].map(option => Number(option.value)).filter(value => Number.isFinite(value) && value > 0);
   $("zoomIn").onclick = () => session.zoom(scales.find(value => value > state.scale) || 4);
   $("zoomOut").onclick = () => session.zoom([...scales].reverse().find(value => value < state.scale) || 0.25);
   $("rotate").onclick = session.rotate;
@@ -464,28 +510,23 @@
   wideReader.addEventListener("change", () => { endSplitterDrag(); updateTextComparison(); });
   function updateTextComparison() {
     const card = $("translationCard"), toggle = $("toggleTextComparison");
-    const visible = viewMode === "bilingual" || (viewMode === "translated" && translatedComparisonOpen);
+    const visible = comparisonOpen;
     const returnFocus = (!visible && card.contains(document.activeElement)) ||
       ((!visible || !wideReader.matches) && document.activeElement === $("comparisonSplitter"));
     card.hidden = !visible;
     document.body.dataset.comparisonOpen = String(visible);
-    toggle.hidden = viewMode !== "translated";
     toggle.setAttribute("aria-expanded", String(visible));
     toggle.title = visible ? "收起文字对照" : "展开文字对照";
-    // 双语模式始终保留文字对照；需要全宽阅读时使用原文或译文模式。
-    $("closeTextComparison").hidden = viewMode !== "translated";
     $("comparisonSplitter").hidden = !visible || !wideReader.matches;
     if (!visible || !wideReader.matches) endSplitterDrag();
-    if (returnFocus) (viewMode === "translated" ? toggle : $("viewMode")).focus({preventScroll: true});
+    if (returnFocus) toggle.focus({preventScroll: true});
   }
   $("toggleTextComparison").onclick = () => {
-    if (viewMode !== "translated") return;
-    translatedComparisonOpen = !translatedComparisonOpen;
+    comparisonOpen = !comparisonOpen;
     updateTextComparison();
   };
   $("closeTextComparison").onclick = () => {
-    if (viewMode !== "translated") return;
-    translatedComparisonOpen = false;
+    comparisonOpen = false;
     updateTextComparison();
   };
   // 原文=全宽 PDF；译文=原位译文（对照默认收起）；双语=原 PDF+文字对照。
@@ -499,7 +540,7 @@
   }
   $("viewMode").onchange = () => {
     viewMode = $("viewMode").value;
-    translatedComparisonOpen = false;
+    comparisonOpen = viewMode === "bilingual";
     applyViewMode();
   };
   // P3-D 面板 → PDF 联动：委托点击与键盘（Enter/Space），定位失败 no-op，不跳错误块。
@@ -661,6 +702,7 @@
   // 复用已有阅读页标签属于同文档 hash 导航；地址变化必须重读来源，避免跨入口复用旧来源。
   window.addEventListener("hashchange", applyHashState);
   window.addEventListener("pagehide", () => { statusObserver.disconnect();
+    clearBlockHighlight();
     for (const task of [...modelDownloads.values(), ...fontDownloads.values()]) task.controller.abort();
     finishPassword(null); exporter.dispose(); translation.dispose(); session.dispose(); });
   // 退回 BFCache 的页面已释放所有文档；重新载入干净阅读页，绝不恢复失效 Worker。

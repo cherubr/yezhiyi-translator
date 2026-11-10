@@ -31,19 +31,24 @@
         <div class="control-group view-controls">
           <button id="zoomOut" type="button" aria-label="缩小" disabled>−</button>
           <label for="zoom">缩放</label>
-          <select id="zoom" disabled>
+          <select id="zoom" title="适合宽度／页面按当前区域计算一次；布局改变后可重新选择。缩放范围为 25%–400%。" disabled>
+            <option value="fit-width" title="按当前阅读区域计算，保持现有缩放范围">适合宽度</option>
+            <option value="fit-page" title="按当前阅读区域计算，保持现有缩放范围">适合页面</option>
             <option value="0.25">25%</option><option value="0.5">50%</option><option value="0.75">75%</option>
             <option value="1" selected>100%</option><option value="1.25">125%</option><option value="1.5">150%</option>
             <option value="2">200%</option><option value="3">300%</option><option value="4">400%</option>
+            <option id="zoomCustom" value="" hidden disabled></option>
           </select>
           <button id="zoomIn" type="button" aria-label="放大" disabled>＋</button>
           <button id="rotate" type="button" title="顺时针旋转 90°" disabled>旋转</button>
         </div>
         <div class="control-group mode-controls">
           <label for="viewMode">阅读模式</label>
-          <select id="viewMode" title="原文：全宽显示原 PDF；译文：显示原位译文，可展开文字对照查看回退内容；双语：原 PDF 与文字对照联动">
+          <select id="viewMode" title="原文：原 PDF，对照默认收起；译文：原位译文，对照默认收起；双语：原 PDF，对照默认展开。文字对照可独立开关，不改变阅读模式。">
             <option value="original">原文</option><option value="translated" selected>译文</option><option value="bilingual">双语</option>
           </select>
+        </div>
+        <div class="control-group comparison-controls">
           <button id="toggleTextComparison" type="button" aria-controls="translationCard" aria-expanded="false" title="展开文字对照">文字对照</button>
         </div>
         <div class="control-group translation-actions">
@@ -64,7 +69,7 @@
         <div id="comparisonSplitter" class="comparison-splitter" role="separator" aria-label="调整 PDF 与文字对照宽度" aria-orientation="vertical" aria-controls="pdfCard translationCard" aria-valuemin="35" aria-valuemax="75" aria-valuenow="60" tabindex="0" hidden></div>
         <section id="translationCard" class="document-card translation-card" aria-label="原文与译文对照" hidden>
           <div class="document-heading comparison-heading">
-            <strong>文字对照（试用）</strong>
+            <strong>文字对照</strong>
             <button id="closeTextComparison" type="button" aria-label="收起文字对照">收起</button>
             <span id="translationStats">开始翻译后显示原位/回退统计</span>
             <button id="showFailedTranslation" type="button" hidden>定位失败段落</button>
