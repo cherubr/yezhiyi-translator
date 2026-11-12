@@ -20,9 +20,146 @@
     return "";
   }
   function code(text, mono) {
-    return /^\s*(?:#include\b|(?:const|let|var|def|function|class|return|import)\s+|(?:for|if|while)\s*\()/u.test(text) ||
-      (mono && /[{};=]|=>|\+\+|\b(?:true|false|null)\b/.test(text)) ||
-      (/[{}]/.test(text)&&/[:;=]/.test(text));
+    // 行号仅参与语法辨认时跳过；原始字符、坐标和锚点不移除。
+    const value=text.replace(/^\s*\d+\s+(?=\S)/u,"");
+    return /^\s*[%$]?[A-Za-z_]\w*\s*:=\s*\S/u.test(value)||assembly(value,mono)>=2||/^\s*(?:#include\b|(?:const|let|var|def|function|class|return|import)\s+|(?:for|if|while)\s*\()/u.test(value) ||
+      (mono && /[{};=]|=>|\+\+|\b(?:true|false|null)\b/.test(value)) ||
+      (/[{}]/.test(value)&&/[:;=]/.test(value));
+  }
+  // 注释符只在对应代码语法、且不在字符串内部时成立；网址和汇编立即数不按注释拆开。
+  function commentAt(text,family) {
+    let quote="",escaped=false;
+    for(let i=0;i<text.length;i++){
+      const ch=text[i];
+      if(quote){if(escaped)escaped=false;else if(ch==="\\")escaped=true;else if(ch===quote)quote="";continue;}
+      if(ch==='"'||ch==="'"||ch==='`'){quote=ch;continue;}
+      if(family!=="python"&&text.startsWith("//",i)&&text[i-1]!==":")return i;
+      if(family==="python"&&ch==="#")return i;
+      if(family==="asm"&&ch===";")return i;
+    }
+    return -1;
+  }
+  function assembly(text,mono) {
+    const at=commentAt(text,"asm"),value=(at<0?text:text.slice(0,at)).trim();
+    if(value==="...")return mono?1:0;
+    if(/^[.$A-Za-z_][\w.$]*:$/u.test(value))return /[._\d]/u.test(value.slice(0,-1))?2:mono?1:0;
+    const match=value.match(/^([A-Za-z][\w.]*)\s*(.*)$/u);if(!match)return 0;
+    const known=/^(?:mov(?:sx|zx|s|q|l|w|b)?|lea|ld[rbhw]?|lw|sw|str[bh]?|st|push|pop|add|sub|mul|imul|div|idiv|and|or|xor|not|neg|inc|dec|shl|shr|sar|cmp|test|guard|j[a-z]+|b(?:l|ne|eq)?|call|ret|nop)$/i.test(match[1]);
+    if(!known&&!mono)return 0;
+    const operands=match[2].trim();if(!operands)return known?(mono&&/^(?:ret|nop)$/iu.test(match[1])?2:1):0;
+    // 每个操作数只接受标识符、数值、内存寻址及大小限定，拒绝把普通英文句子当指令。
+    const atom=/^(?:(?:byte|word|dword|qword|ptr|offset)\s+)*(?:[%$#]?(?:[A-Za-z_.$][\w.$@]*|(?:0x[\da-f]+|[+-]?\d+))(?:(?:\([\w.%+*\-\s,]+\)|\[[\w.$%+*\-\s]+\]))?|\[[\w.$%+*\-\s]+\])$/iu;
+    const parts=[];let start=0,depth=0;
+    for(let i=0;i<operands.length;i++){
+      if("([".includes(operands[i]))depth++;else if(")]".includes(operands[i]))depth--;
+      else if(operands[i]===","&&depth===0){parts.push(operands.slice(start,i));start=i+1;}
+      if(depth<0)return 0;
+    }
+    parts.push(operands.slice(start));
+    if(depth!==0||!parts.every(part=>atom.test(part.trim())||/^[+-]?\d*\([\w.%+*\-\s,]+\)$/u.test(part.trim())))return 0;
+    const register=/(?:^|[^\w])(?:[er]?(?:ax|bx|cx|dx|si|di|bp|sp)|[xyz]mm\d+|r\d+[dwb]?|[xwvsdq]\d+|pc|lr|ra|zero)(?:$|[^\w])/iu.test(operands);
+    return register||mono&&known&&/^[+-]?\d+$/u.test(operands)||/[\[\]()]|\b0x[\da-f]+\b|[_.$%#]|\b(?:true|false|null)\b/iu.test(operands)?2:known?1:0;
+  }
+  function commentSegments(text) {
+    const parts=[];
+    for(const segment of splitProtected(text)){
+      if(segment.protected){parts.push(segment);continue;}
+      let offset=0;
+      for(const match of segment.text.matchAll(/^\s*(?:\/\/|#|;)\s*|\b0x[\da-f]+\b|\b[A-Za-z_$][\w$]*(?:[._:][\w$]+)+\b|\b[A-Za-z_$][\w$]*(?=\s*\()/giu)){
+        if(match.index>offset)parts.push({text:segment.text.slice(offset,match.index)});
+        parts.push({text:match[0],protected:true});offset=match.index+match[0].length;
+      }
+      if(offset<segment.text.length)parts.push({text:segment.text.slice(offset)});
+    }
+    return parts;
+  }
+  /** 在普通段落拼接前保护代码。只在原生 textItem 边界拆注释，不猜字符在 PDF 中的位置。 */
+  function annotateCode(rows,page) {
+    const chunks=[];
+    for(const row of rows){
+      let group=[];
+      const flush=()=>{
+        if(!group.length)return;
+        let text="";const spans=[];
+        for(const f of group){const previous=spans.at(-1)?.fragment;if(previous)text+=separator(previous.text,f.text,f.rect.x-previous.rect.right,f.height);
+          const start=text.length;text+=f.text;spans.push({fragment:f,start,end:text.length});}
+        const syntax=text.replace(/^\s*\d+\s+(?=\S)/u,""),mono=group.every(f=>f.mono),asm=assembly(syntax,mono),leading=/^\s*(?:\/\/|#(?!include\b)|;)/u.test(syntax);
+        const python=/^\s*(?:def\s|class\s|from\s+\S+\s+import\b|(?:if|for|while)\s+.+:\s*$)/u.test(syntax);
+        chunks.push({text,spans,mono,row,rect:rectOf(group.flatMap(f=>[[f.rect.x,f.rect.y],[f.rect.right,f.rect.bottom]])),height:median(group.map(f=>f.height)),
+          family:asm?"asm":python?"python":"clike",rank:leading?0:asm||((python||code(text,mono))?2:0),font:group[0].fontName,cell:group[0].cell?.id,priorFlow:group[0].flow?.id});group=[];
+      };
+      for(const f of [...row.fragments].sort((a,b)=>a.rect.x-b.rect.x)){
+        if(f.reason||f.flow?.type==="figure"){flush();continue;}
+        const prev=group.at(-1);
+        if(prev&&(f.columnBreakBefore||prev.cell?.id!==f.cell?.id||prev.flow?.id!==f.flow?.id||prev.mono!==f.mono||f.rect.x-prev.rect.right>Math.max(f.height,prev.height)*1.8))flush();
+        group.push(f);
+      }
+      flush();
+    }
+    // PDF 常把指令和操作数拆成不同文字项/制表列；先用完整语法确认，不能把操作数漏成正文。
+    for(let i=0;i<chunks.length-1;i++){
+      const c=chunks[i],next=chunks[i+1];
+      if(c.rank===1&&c.family==="asm"&&/^\s*[A-Za-z]+\s*$/u.test(c.text)&&c.row===next.row&&c.cell===next.cell&&c.priorFlow===next.priorFlow&&
+        c.font===next.font&&assembly(c.text+" "+next.text,c.mono)>=2){c.rank=2;next.rank=0;}
+    }
+    // 同一清单的嵌套缩进可能超过两个字高；用实际横向交叠连接相邻代码行，不能跨到另一栏。
+    const near=(a,b)=>(a.font===b.font||a.mono&&b.mono)&&a.cell===b.cell&&a.priorFlow===b.priorFlow&&
+      (Math.abs(a.rect.x-b.rect.x)<=Math.max(a.height,b.height)*2||Math.min(a.rect.right,b.rect.right)-Math.max(a.rect.x,b.rect.x)>=Math.max(a.height,b.height))&&
+      Math.abs(a.rect.y-b.rect.y)<=Math.max(a.height,b.height)*3;
+    for(const chunk of chunks)chunk.active=chunk.rank>=2;
+    // 无操作数指令和简单标签必须邻接已确认代码，单独的英文单词不触发保护。
+    for(const ordered of [chunks,[...chunks].reverse()])for(let i=0;i<ordered.length;i++){
+      const c=ordered[i];if(c.rank!==1||c.active)continue;
+      if(ordered.slice(Math.max(0,i-64),i).some(p=>p.active&&near(c,p)))c.active=true;
+    }
+    const groups=[];
+    for(let i=0;i<chunks.length;i++){
+      const c=chunks[i];if(!c.active)continue;
+      const previous=chunks.slice(Math.max(0,i-64),i).reverse().find(p=>p.active&&near(c,p));
+      c.owner=previous?.owner||{id:page.pageNumber+":code:"+c.spans[0].fragment.index,members:[]};
+      if(!previous)groups.push(c.owner);c.owner.members.push(c);
+      const at=commentAt(c.text,c.family),boundary=at>=0?c.spans.findIndex(span=>span.start<=at&&span.end>at):-1;
+      const safe=boundary>=0&&!c.spans[boundary].fragment.text.slice(0,at-c.spans[boundary].start).trim();
+      c.assign=c.spans.map((span,index)=>({fragment:span.fragment,side:safe&&index>=boundary?"comment":"code"}));
+      if(at>=0&&!safe)c.mixed=true;
+    }
+    const codeByRow=new Map();
+    for(const c of chunks.filter(c=>c.active)){if(!codeByRow.has(c.row))codeByRow.set(c.row,[]);codeByRow.get(c.row).push(c);}
+    for(const c of chunks.filter(c=>!c.active)){
+      // 单独的行号只有紧邻同一基线上的已确认指令才归入代码，不按数字内容猜测正文性质。
+      if(/^\s*\d+\s*$/u.test(c.text)){
+        const right=(codeByRow.get(c.row)||[]).filter(p=>p.cell===c.cell&&p.priorFlow===c.priorFlow&&p.rect.x>=c.rect.right&&
+          p.rect.x-c.rect.right<=Math.max(p.height,c.height)*2).sort((a,b)=>a.rect.x-b.rect.x)[0];
+        if(right){c.owner=right.owner;c.paired=right;c.owner.members.push(c);c.assign=c.spans.map(span=>({fragment:span.fragment,side:"code"}));continue;}
+      }
+      const left=(codeByRow.get(c.row)||[]).filter(p=>p.cell===c.cell&&p.priorFlow===c.priorFlow&&p.rect.right<=c.rect.x).sort((a,b)=>b.rect.right-a.rect.right)[0];
+      if(!left)continue;
+      const comment=commentAt(c.text,left.family)===c.text.search(/\S/u);
+      const continuation=left.font===c.font&&(left.family==="asm"&&assembly(left.text+" "+c.text,left.mono)>=2||/^\s*(?:#|\/\/|;)/u.test(c.text));
+      if(!comment&&!continuation)continue;
+      c.owner=left.owner;c.paired=left;c.mixed=!comment&&commentAt(c.text,left.family)>=0;
+      c.owner.members.push(c);c.assign=c.spans.map(span=>({fragment:span.fragment,side:comment?"comment":"code"}));
+    }
+    // 独立注释行也属于相邻代码区域，不能与后面的正文或其他注释拼成长段。
+    for(let i=0;i<chunks.length;i++){
+      const c=chunks[i];if(c.active||c.owner||!/^\s*(?:\/\/|#|;)/u.test(c.text))continue;
+      const adjacent=chunks.slice(Math.max(0,i-64),i+65).filter(p=>p.active&&near(c,p)&&commentAt(c.text,p.family)===c.text.search(/\S/u))
+        .sort((a,b)=>Math.abs(a.rect.y-c.rect.y)-Math.abs(b.rect.y-c.rect.y))[0];
+      if(!adjacent)continue;
+      c.owner=adjacent.owner;c.owner.members.push(c);c.assign=c.spans.map(span=>({fragment:span.fragment,side:"comment"}));
+    }
+    for(const group of groups){
+      const rect=rectOf(group.members.flatMap(c=>c.spans.flatMap(({fragment:f})=>[[f.rect.x,f.rect.y],[f.rect.right,Math.max(f.rect.bottom,f.inkBottom)]])));
+      const flow={id:group.id,type:"code",rect,sourceRect:{...rect}};
+      // 一条原生基线就是一行；行号、指令和操作数即使分属不同 textItem 也不能拆成多行。
+      const lines=[...new Set(group.members.map(c=>c.row))].sort((a,b)=>a.baseline-b.baseline);
+      const lineNumbers=new Map(lines.map((line,index)=>[line,index]));
+      for(const c of group.members)for(const {fragment:f,side} of c.assign){
+        f.codeRole=side;f.codeMixed=!!c.mixed;
+        // 表格和已有图形关系优先；新增关系只组织普通代码清单。
+        if(!f.table&&!f.flow)f.flow={...flow,column:0,part:group.id+":"+lineNumbers.get(c.row),line:lineNumbers.get(c.row)};
+      }
+    }
   }
   function formula(text) {
     // 片段级保护只认含运算符的真公式：裸数字（年份、统计值）不再加保护标记，
@@ -32,10 +169,22 @@
     const words=text.match(/\p{L}+/gu)||[];
     return words.every(word=>Array.from(word).length<=2||/^(?:sin|cos|tan|log|ln|exp|max|min)$/i.test(word));
   }
+  // 数字、脚注和符号无需翻译，但不是公式；原生与 OCR 共用同一分类。
+  function roleOf(text,mono=false) {
+    if(code(text,mono))return "code";
+    if(formula(text))return "formula";
+    if(!/\p{L}/u.test(text))return /\p{N}/u.test(text)?"number":"symbol";
+    if(/^(?:doi:\s*)?10\.\d{4,9}\/\S+$/iu.test(text.trim()))return "identifier";
+    if(/^[A-Za-z_]\w*(?:[._:][A-Za-z_]\w*)+$/u.test(text.trim()))return "identifier";
+    if(/^[+-]?\d+(?:[.,]\d+)?(?:e[+-]?\d+)?\s*(?:%|[munpkMGTµμ]?(?:s|m|g|Hz|B|b|W|V|A|Pa|K)|°[CF])$/u.test(text.trim()))return "measurement";
+    return text.trim().split(/\s+/u).every(part=>/^(?:https?:\/\/|www\.)\S+$/.test(part)||/^[\w.+-]+@[\w.-]+$/.test(part))?"identifier":"text";
+  }
+  const protectedReason=role=>role==="number"?"数字或引用编号保持原样":role==="symbol"?"符号保持原样":role==="code"?"代码保持原样":role==="formula"?"公式保持原样":
+    role==="author"?"作者姓名与标记保持原样":role==="affiliation"?"作者机构保持原样":role==="measurement"?"数值与单位保持原样":"链接或标识符保持原样";
   function splitProtected(text, protect=false) {
     if(protect)return [{text,protected:true}];
     const parts=[];let offset=0;
-    for(const match of text.matchAll(/(?:https?:\/\/|www\.)[^\s<>]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|`[^`\n]+`/gu)){
+    for(const match of text.matchAll(/(?:https?:\/\/|www\.)[^\s<>]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:doi:\s*)?10\.\d{4,9}\/[^\s<>]+|\[\d+(?:\s*[-,]\s*\d+)*\]|`[^`\n]+`/giu)){
       if(match.index>offset)parts.push({text:text.slice(offset,match.index)});
       parts.push({text:match[0],protected:true});offset=match.index+match[0].length;
     }
@@ -47,11 +196,34 @@
     if(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]$/u.test(a)&&/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(b))return "";
     return gap>height*0.12 ? " " : "";
   }
+  // 在拼行前辨认局部重复的栏间留白。只标记原生项之间的真实间隙，
+  // 不切开 textItem，也不把页眉跨栏、单个大空格或已有表格关系当成新栏。
+  function markColumnBreaks(rows) {
+    const gaps=rows.map(row=>{
+      const fragments=[...row.fragments].sort((a,b)=>a.rect.x-b.rect.x),out=[];
+      for(let i=1;i<fragments.length;i++){
+        const left=fragments[i-1],right=fragments[i],em=Math.max(left.height,right.height);
+        if(left.reason||right.reason||left.table||right.table||left.flow||right.flow)continue;
+        if(right.rect.x-left.rect.right>=em*.75)out.push({start:left.rect.right,end:right.rect.x,right,em});
+      }
+      return out;
+    });
+    for(let i=0;i<rows.length;i++)for(const gap of gaps[i]){
+      const cut=(gap.start+gap.end)/2,support=[];
+      for(let j=Math.max(0,i-8);j<Math.min(rows.length,i+9);j++){
+        if(Math.abs(rows[j].baseline-rows[i].baseline)>gap.em*8)continue;
+        const other=gaps[j].find(g=>g.start<=cut&&g.end>=cut);
+        if(other)support.push({gap:other,y:rows[j].baseline});
+      }
+      if(support.length>=3&&Math.max(...support.map(s=>s.y))-Math.min(...support.map(s=>s.y))>=gap.em*2)
+        for(const item of support)item.gap.right.columnBreakBefore=true;
+    }
+  }
   /** XY 空白切分：先分栏，再按全宽标题等水平区域分层；不跨栏逐行拼句。 */
   function readingOrder(blocks, depth=0) {
     if(blocks.length<2||depth>16)return [...blocks].sort((a,b)=>a.rect.y-b.rect.y||a.rect.x-b.rect.x);
     const height=median(blocks.map(b=>b.height));
-    for(const [start,end,minimum] of [["x","right",height*1.5],["y","bottom",height]]){
+    for(const [start,end,minimum] of [["x","right",height*.75],["y","bottom",height]]){
       const intervals=blocks.map(b=>[b.rect[start],b.rect[end]]).sort((a,b)=>a[0]-b[0]);
       let edge=intervals[0][1],cut=null,gap=0;
       for(const interval of intervals.slice(1)){
@@ -68,9 +240,11 @@
     }
     return [...blocks].sort((a,b)=>a.rect.y-b.rect.y||a.rect.x-b.rect.x);
   }
-  function process(page) {
+  function process(page,probe) {
     if(page.items.length>MAX_ITEMS)throw global.BT_PDF_ERRORS.create("TEXT_BUDGET", "本页文字项过多，暂不自动翻译", "extract",false);
-    let chars=0;const fragments=[],seen=new Set();
+    let chars=0;const fragments=[],seen=new Set(),damagedFonts=new Set();
+    const tags=new Map();
+    for(const tag of page.structure?.tags||[]){const prior=tags.get(tag.id);tags.set(tag.id,prior&&prior.group!==tag.group?{conflict:true}:tag);}
     for(let index=0;index<page.items.length;index++){
       const item=page.items[index];if(typeof item.str!=="string"||!item.str.trim())continue;
       chars+=item.str.length;
@@ -93,17 +267,45 @@
         [top[0]-vertical[0]*height,top[1]-vertical[1]*height]];
       const rect=rectOf(quad),key=item.str+":"+Math.round(rect.x)+":"+Math.round(rect.y);
       if(seen.has(key))continue;seen.add(key);
-      const reason=quality(item.str)||((item.dir==="ttb"||Math.abs(unit[1])>0.15||unit[0]<0)?"旋转或竖排阅读顺序暂不能确认":"");
-      fragments.push({text:item.str,index,rect,height,baseline:matrix[5],inkBottom,direction:item.dir==="rtl"?"rtl":"ltr",
+      const encoding=quality(item.str);if(encoding)damagedFonts.add(item.fontName);
+      const reason=encoding||((item.dir==="ttb"||Math.abs(unit[1])>0.15||unit[0]<0)?"旋转或竖排阅读顺序暂不能确认":"");
+      const tagged=(item.markedIds||[]).map(id=>tags.get(id)).filter(tag=>tag&&!tag.conflict),tag=tagged.at(-1);
+      fragments.push({text:item.str,index,rect,height,baseline:matrix[5],inkBottom,tag,direction:item.dir==="rtl"?"rtl":"ltr",
+        fontName:item.fontName,fontFamily:style.fontFamily||"",
         mono:/mono|courier|console/i.test(style.fontFamily||""),reason,hasEOL:item.hasEOL});
     }
+    // 同一字体映射已出现损坏时，其他碰巧落入合法 Unicode 的片段也不能视为可靠。
+    // 仅在当前页、当前字体内传播证据；不凭“像哪种语言”猜测，也不影响其他正常字体。
+    for(const fragment of fragments)if(!fragment.reason&&damagedFonts.has(fragment.fontName))fragment.reason="同字体文字映射不能可靠确认";
+    const structure=global.BT_PDF_READING_STRUCTURE;
+    const tables=structure?structure.detect(fragments,probe?.rules,page.pageNumber):[];
+    for(const fragment of fragments)structure?.assign(fragment,tables);
+    structure?.contributors(fragments,page.pageNumber);
+    const figures=structure?.figures(fragments,probe,tables,page.pageNumber)||[];
+    const em=median(fragments.map(f=>f.height));
+    const contains=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y&&inner.right<=outer.right&&inner.bottom<=outer.bottom;
+    // 不能重建的图片/大绘图不静默丢失：结构化导出保留对应源页，不把它们猜成表格或流程图。
+    const graphics=[...(probe?.images||[]).map(image=>image.rect),...(probe?.vectorRects||[])
+      .filter(rect=>(rect.right-rect.x)*(rect.bottom-rect.y)>=em*em*4)];
+    const inline=structure?.inlineFragments(fragments)||{complete:false,groups:0};
     const rows=[];
-    for(const fragment of fragments.sort((a,b)=>a.baseline-b.baseline||a.rect.x-b.rect.x)){
-      const row=rows[rows.length-1];
-      if(row&&Math.abs(row.baseline-fragment.baseline)<=Math.max(2,Math.min(row.height,fragment.height)*0.3))row.fragments.push(fragment);
-      else rows.push({baseline:fragment.baseline,height:fragment.height,fragments:[fragment]});
+    for(const fragment of fragments.sort((a,b)=>(a.rowBaseline??a.baseline)-(b.rowBaseline??b.baseline)||a.rect.x-b.rect.x)){
+      const row=rows[rows.length-1],baseline=fragment.rowBaseline??fragment.baseline;
+      if(row&&Math.abs(row.baseline-baseline)<=Math.max(2,Math.min(row.height,fragment.height)*0.3))row.fragments.push(fragment);
+      else rows.push({baseline,height:fragment.height,fragments:[fragment]});
     }
     const lines=[];
+    markColumnBreaks(rows);
+    annotateCode(rows,page);
+    const byIndex=new Map(fragments.map(fragment=>[fragment.index,fragment]));
+    for(const fragment of fragments)if(fragment.inlineOwner!==undefined){
+      const owner=byIndex.get(fragment.inlineOwner);
+      if(owner){fragment.codeRole=owner.codeRole;fragment.flow=owner.flow;fragment.columnBreakBefore=false;}
+    }
+    const fontWeights=new Map();
+    for(const f of fragments)if(!f.reason&&!f.flow&&!f.table&&!f.mono&&f.text.length>=20)
+      fontWeights.set(f.fontName,(fontWeights.get(f.fontName)||0)+f.text.length);
+    const bodyFont=[...fontWeights].sort((a,b)=>b[1]-a[1])[0]?.[0];
     for(const row of rows){
       let group=[];
       const flush=()=>{
@@ -111,50 +313,121 @@
         const directional=group.filter(f=>/\p{L}/u.test(f.text));
         const directions=new Set(directional.map(f=>f.direction)),rtl=directions.size===1&&directions.has("rtl");
         const ordered=rtl?[...group].reverse():group;
-        const segments=[];let previous=null;
+        const segments=[],runs=[];let previous=null,offset=0;
+        const append=part=>{segments.push(part);offset+=part.text.length;};
+        const attached=new Set(ordered.filter(f=>f.inlineOwner!==undefined).map(f=>f.inlineOwner));
         for(const f of ordered){
           const gap=previous?(rtl?previous.rect.x-f.rect.right:f.rect.x-previous.rect.right):0;
-          if(previous)segments.push({text:separator(previous.text,f.text,gap,f.height)});
-          segments.push(...splitProtected(f.text,code(f.text,f.mono)||formula(f.text)));previous=f;
+          if(previous){const join=f.inlineOwner===previous.index||f.inlineOwner!==undefined&&f.inlineOwner===previous.inlineOwner?"":separator(previous.text,f.text,gap,f.height);if(join)append({text:join});}
+          const owner=ordered.find(item=>item.index===f.inlineOwner),shift=owner?f.baseline-owner.baseline:0;
+          const run={text:f.text,start:offset,end:offset+f.text.length,height:f.height,shift,fontName:f.fontName,fontFamily:f.fontFamily,index:f.index};
+          runs.push(run);
+          if(f.inlineOwner!==undefined){
+            const last=segments.at(-1);
+            // 空连接符不打断原子；短变量和附标共用一个保护标记，翻译服务不能拆散 T 与下标。
+            const target=last;
+            if(target?.inlineHost===f.inlineOwner){target.text+=f.text;target.runs.push({...run,start:undefined,end:undefined});offset+=f.text.length;}
+            else append({text:f.text,protected:true,runs:[{...run,start:undefined,end:undefined}],attachPrevious:true});
+          }else if(f.codeRole==="comment")for(const part of commentSegments(f.text))append(part);
+          else{
+            const protect=f.codeRole==="code"||!!f.contributorRole||/^[®©™†‡*#+\s]+$/u.test(f.text)||code(f.text,f.mono)||formula(f.text);
+            const tail=attached.has(f.index)&&!protect?f.text.match(/[\p{L}\p{N}\p{M}_]+$/u):null;
+            // 只把独立的短变量并入原子，不把自然语言单词或整句错误地保护起来。
+            const atomic=tail&&/^\p{L}\p{M}*[\p{N}_]*$/u.test(tail[0])&&(tail.index===0||/[\s([{]$/u.test(f.text.slice(0,tail.index)));
+            if(atomic){
+              for(const part of splitProtected(f.text.slice(0,tail.index)))append(part);
+              append({text:tail[0],protected:true,inlineHost:f.index,runs:[{...run,text:tail[0],start:undefined,end:undefined,shift:0}]});
+            }else for(const part of splitProtected(f.text,protect))append(part);
+          }
+          previous=f;
         }
         const text=segments.map(p=>p.text).join("").trim();
         const rect=rectOf(group.flatMap(f=>[[f.rect.x,f.rect.y],[f.rect.right,f.rect.bottom]]));
-        lines.push({text,segments,rect,height:median(group.map(f=>f.height)),inkBottom:Math.max(...group.map(f=>f.inkBottom)),indices:group.map(f=>f.index),direction:rtl?"rtl":"ltr",
+        const base=group.filter(f=>f.inlineOwner===undefined),dominant=[...base].sort((a,b)=>b.text.length-a.text.length)[0]||group[0];
+        const tagged=base.filter(f=>f.tag),tag=base.length&&tagged.length===base.length&&tagged.every(f=>f.tag.group===tagged[0].tag.group)?tagged[0].tag:null;
+        lines.push({text,segments,runs,rect,tag,inlineUncertain:group.some(f=>f.inlineUncertain),table:group[0].table,cell:group[0].cell,flow:group[0].flow,runInBody:group[0].runInBody,contributorRole:group.find(f=>f.contributorRole)?.contributorRole,
+          fontName:dominant.fontName,fontFamily:dominant.fontFamily,
+          height:median(base.map(f=>f.height)),inkBottom:Math.max(...group.map(f=>f.inkBottom)),indices:group.map(f=>f.index),anchorIndices:group.filter(f=>f.inlineOwner===undefined).map(f=>f.index),direction:rtl?"rtl":"ltr",
+          codeRole:group[0].codeRole,codeMixed:group.some(f=>f.codeMixed),
           reason:group.find(f=>f.reason)?.reason||(directions.size>1?"双向混排顺序需人工确认":""),
           mono:group.every(f=>f.mono)});
         group=[];
       };
       for(const fragment of row.fragments.sort((a,b)=>a.rect.x-b.rect.x)){
         const previous=group[group.length-1];
-        if(previous&&(fragment.rect.x-previous.rect.right>Math.max(fragment.height,previous.height)*1.8 ||
-          Math.min(fragment.height,previous.height)/Math.max(fragment.height,previous.height)<0.7))flush();
+        // 行首短语与后文在原生字体项边界发生样式转换，且有句点/冒号：保留行内小标题身份。
+        // 不切开 textItem，不根据译文长度反推标题结束位置。
+        const prefix=group.map(f=>f.text).join("").trim();
+        const headingPrefix=previous&&!fragment.flow&&!fragment.table&&!fragment.codeRole&&/^\d+(?:\.\d+)*\.?$/u.test(prefix)&&
+          fragment.fontName===previous.fontName&&(previous.height>em*1.12||bodyFont&&previous.fontName!==bodyFont)&&
+          Math.abs(fragment.baseline-previous.baseline)<previous.height*.2&&fragment.rect.x-previous.rect.right<=previous.height*3;
+        if(previous&&bodyFont&&fragment.fontName===bodyFont&&previous.fontName!==bodyFont&&!fragment.flow&&!fragment.table&&!fragment.codeRole&&!fragment.reason&&
+          group.every(f=>f.fontName===previous.fontName&&!f.reason)&&group.length&&prefix.length<=80&&
+          /\p{L}.*[.:：]$/u.test(prefix)&&!/^\d+[.)]$/u.test(prefix)&&/^[\s\p{L}]/u.test(fragment.text)&&
+          !fragment.columnBreakBefore&&Math.abs(fragment.baseline-previous.baseline)<previous.height*.2&&fragment.rect.x-previous.rect.right>=-previous.height*.1&&fragment.rect.x-previous.rect.right<previous.height){
+          flush();const heading=lines.at(-1);Object.assign(heading,{kind:"subheading",headingLevel:2,headingEvidence:"run-in-style",runIn:true});fragment.runInBody={x:heading.rect.x};
+        }
+        if(previous&&(fragment.columnBreakBefore&&!headingPrefix||fragment.tag&&previous.tag&&fragment.tag.group!==previous.tag.group||fragment.codeRole!==previous.codeRole||fragment.cell?.id!==previous.cell?.id||fragment.flow?.id!==previous.flow?.id||fragment.flow?.column!==previous.flow?.column||
+          fragment.flow?.part!==previous.flow?.part||fragment.flow?.caption!==previous.flow?.caption||!headingPrefix&&fragment.rect.x-previous.rect.right>Math.max(fragment.height,previous.height)*1.8 ||
+          (fragment.inlineOwner===undefined&&previous.inlineOwner===undefined&&Math.min(fragment.height,previous.height)/Math.max(fragment.height,previous.height)<0.7)))flush();
         group.push(fragment);
       }
       flush();
     }
+    structure?.annotateLines(lines,page);
     const paragraphs=[];
     for(const line of lines.sort((a,b)=>a.rect.y-b.rect.y||a.rect.x-b.rect.x)){
-      const role=code(line.text,line.mono)?"code":(!/[\p{L}]/u.test(line.text)||formula(line.text))?"formula":/^(?:https?:\/\/|www\.)\S+$/.test(line.text)||/^[\w.+-]+@[\w.-]+$/.test(line.text)?"identifier":"text";
+      const role=line.tag?.role==="Formula"?"formula":line.tag?.role==="Code"?"code":line.codeRole==="code"?"code":line.codeRole==="comment"?"text":line.contributorRole||roleOf(line.text,line.mono);
+      line.isCaption=/^(?:fig(?:ure)?\.?|table|图|圖|表)\s*\d/iu.test(line.text);
+      const startsStructure=["heading","subheading"].includes(line.kind)||/^(?:(?:[-•◦]|\d+[.)])\s|(?:fig(?:ure)?\.?|table|图|圖|表)\s*\d)/iu.test(line.text);
       let parent=null;
-      if(role==="text"&&!line.reason){
-        parent=paragraphs.slice(-128).reverse().find(p=>p.role==="text"&&!p.reason&&p.direction===line.direction&&
+      if(role==="text"&&["heading","subheading"].includes(line.kind)&&!line.runIn&&!/^\d+(?:\.\d+)*(?:\.|\s)/u.test(line.text)){
+        parent=paragraphs.slice(-16).reverse().find(p=>p.kind===line.kind&&p.headingLevel===line.headingLevel&&!p.runIn&&!p.reason&&
+          !p.flow&&!p.table&&(!p.tag||!line.tag||p.tag.group===line.tag.group)&&p.lines.length<3&&p.fontName===line.fontName&&p.direction===line.direction&&
+          Math.min(p.height,line.height)/Math.max(p.height,line.height)>.9&&
+          line.rect.y-p.rect.bottom>=-line.height*.2&&line.rect.y-p.rect.bottom<line.height*.7&&
+          (Math.abs(p.rect.x-line.rect.x)<line.height*.5||Math.abs(p.rect.x+p.rect.right-line.rect.x-line.rect.right)<line.height));
+      }
+      if(role==="text"&&!line.reason&&!startsStructure){
+        parent=paragraphs.slice(-128).reverse().find(p=>p.role==="text"&&!p.reason&&!p.isCaption&&!["heading","subheading"].includes(p.kind)&&
+          (!p.tag||!line.tag||p.tag.group===line.tag.group)&&p.codeRole===line.codeRole&&p.direction===line.direction&&p.cell?.id===line.cell?.id&&
+          p.flow?.id===line.flow?.id&&p.flow?.column===line.flow?.column&&p.flow?.part===line.flow?.part&&p.flow?.caption===line.flow?.caption&&
           line.rect.y-p.rect.bottom>=-line.height*0.25&&line.rect.y-p.rect.bottom<line.height*0.9&&
-          Math.abs((line.direction==="rtl"?line.rect.right:line.rect.x)-(line.direction==="rtl"?p.rect.right:p.rect.x))<line.height*0.8&&
+          (Math.abs((line.direction==="rtl"?line.rect.right:line.rect.x)-(line.direction==="rtl"?p.rect.right:p.rect.x))<line.height*0.8||
+            p.runInBody&&Math.abs(line.rect.x-p.runInBody.x)<line.height*.8||
+            line.flow?.type==="figure"&&!!line.flow.part)&&
           Math.min(p.height,line.height)/Math.max(p.height,line.height)>0.8);
       }
       if(parent){
-        const join=/\p{Script=Han}$/u.test(parent.text)&&/^\p{Script=Han}/u.test(line.text)?"":" ";
+        const last=parent.segments.at(-1),hyphen=last&&!last.protected&&/[\p{Script=Latin}][\-\u00ad]$/u.test(parent.text)&&/^\p{Ll}/u.test(line.text);
+        if(hyphen){parent.text=parent.text.slice(0,-1);last.text=last.text.replace(/[\-\u00ad]$/u,"");
+          const run=parent.runs.at(-1);if(run)parent.runs[parent.runs.length-1]={...run,text:run.text.slice(0,-1),end:run.end-1};}
+        const join=hyphen||/\p{Script=Han}$/u.test(parent.text)&&/^\p{Script=Han}/u.test(line.text)?"":" ";
+        const runOffset=parent.text.length+join.length;
+        parent.runs.push(...line.runs.map(run=>({...run,start:run.start+runOffset,end:run.end+runOffset})));
         parent.text+=join+line.text;parent.segments.push({text:join},...line.segments);parent.lines.push(line);
         parent.inkBottom=Math.max(parent.inkBottom,line.inkBottom);
+        parent.inlineUncertain=parent.inlineUncertain||line.inlineUncertain;
         parent.rect={x:Math.min(parent.rect.x,line.rect.x),y:Math.min(parent.rect.y,line.rect.y),right:Math.max(parent.rect.right,line.rect.right),bottom:Math.max(parent.rect.bottom,line.rect.bottom)};
-      }else paragraphs.push({...line,role,lines:[line],segments:[...line.segments]});
+      }else paragraphs.push({...line,role,lines:[line],segments:[...line.segments],runs:[...line.runs]});
     }
-    const blocks=readingOrder(paragraphs).map((block,order)=>({...block,id:page.pageNumber+":"+order+":"+block.lines.flatMap(l=>l.indices).join("-"),
+    let blocks=readingOrder(paragraphs).map((block,order)=>({...block,id:page.pageNumber+":"+order+":"+block.lines.flatMap(l=>l.indices).join("-"),
+      editAnchor:page.pageNumber+":native:"+block.lines.flatMap(l=>l.anchorIndices||l.indices).join("-"),
       order,source:"native",quad:[[block.rect.x,block.rect.y],[block.rect.right,block.rect.y],[block.rect.right,block.rect.bottom],[block.rect.x,block.rect.bottom]],
       quality:{text:block.reason?"uncertain":"reliable",order:block.reason?"uncertain":"reliable",reasons:block.reason?[block.reason]:[]},
       placement:{mode:"text-only",reasons:["P2 基础段落对照"]},
       reliable:!block.reason,eligible:!block.reason&&block.role==="text",
-      reason:block.reason||(block.role!=="text"?"保留代码、公式或标识符":"")}));
+      reason:block.reason||(block.codeMixed?"代码与注释共用文字项，无法可靠分离；整行保留":block.role!=="text"?protectedReason(block.role):"")}));
+    structure?.describe(blocks,page);
+    const visuals=structure?.visuals(blocks,probe,figures,tables,page)||[];
+    // 保持既有段落 ID：视觉节点只参与排序，不作为新的翻译任务或译文数据源。
+    const visualAtoms=visuals.filter(v=>!v.flow).map(v=>({id:v.id,visual:v,rect:v.rect,height:em,direction:"ltr"}));
+    if(structure){
+      const ordered=structure.order([...blocks,...visualAtoms],readingOrder);
+      blocks=ordered.flatMap((block,order)=>{if(block.visual){block.visual.order=order;return [];}return [{...block,order}];});
+      for(const visual of visuals.filter(v=>v.flow))visual.order=Math.min(...blocks.filter(b=>b.flow?.id===visual.id).map(b=>b.order));
+    }
+    for(const block of blocks)block.rawText=block.lines.map(line=>line.text).join("\n");
     // inkLimit = 同列后续最近块的结构顶：遮罩向 inkBottom 扩展时的硬上限，保证不越入邻段。
     for(const block of blocks){
       let limit=Infinity;
@@ -165,13 +438,15 @@
       block.inkLimit=limit;
     }
     return {pageNumber:page.pageNumber,width:page.width,height:page.height,blocks,
+      tables,visuals,structure:{version:3,tagged:!!page.structure?.tags?.length,inline},retainSourceGraphics:graphics.some(rect=>!tables.some(table=>contains(table.rect,rect))&&!visuals.some(visual=>contains(visual.rect,rect))),
       empty:!blocks.length,unreliable:blocks.filter(b=>!b.reliable).length};
   }
   // P4-B OCR 置信度分层：≥75 可信赖（允许原位遮罩）；60–75 送翻但仅对照显示；<60 不自动送翻。
   const OCR_HIGH = 75, OCR_LOW = 60;
   /** 页面类型分类：可靠文字量、文字层可靠性与位图/文字/绘制算子数多信号联合判定，不用单一覆盖率阈值。 */
   function classifyPage(processed, probe) {
-    const reliable = processed.blocks.filter(b => b.reliable && b.eligible);
+    // 无需翻译的代码、数字、标识符也能证明原生文字层可靠，不能因此整页改走 OCR。
+    const reliable = processed.blocks.filter(b => b.reliable);
     const reliableChars = reliable.reduce((n,b) => n + b.text.length, 0);
     const images = probe?.imageOps || 0, showText = probe?.showTextOps || 0, total = probe?.totalOps || 0;
     // 有正文量、或无位图时存在任何可靠文字，都走原生文字路径；位图主导且文字缺失/不可靠才判扫描。
@@ -208,15 +483,16 @@
       if (!Number.isFinite(rect.x + rect.y) || rect.right <= rect.x || rect.bottom <= rect.y) return;
       const confidence = Math.max(0, Math.min(100, Number(line.confidence) || 0));
       lineModels.push({text, confidence, rect, height: Math.max(rect.bottom - rect.y, 1), indices: [index], direction: "ltr", mono: false, reason: "",
+        layoutGroup:typeof line.layoutGroup==="string"?line.layoutGroup:"",
         regions: Number.isInteger(line.regionIndex) ? [line.regionIndex] : [],
         segments: splitProtected(text, code(text, false) || formula(text))});
     });
     const paragraphs = [];
-    for (const line of lineModels) {
-      const role = code(line.text, false) ? "code" : (!/[\p{L}]/u.test(line.text) || formula(line.text)) ? "formula" : "text";
+    for (const line of lineModels.sort((a,b)=>a.rect.y-b.rect.y||a.rect.x-b.rect.x)) {
+      const role = roleOf(line.text);
       let parent = null;
       if (role === "text") {
-        parent = paragraphs.slice(-64).reverse().find(p => p.role === "text" &&
+        parent = paragraphs.slice(-64).reverse().find(p => p.role === "text" &&p.regions.join(":")===line.regions.join(":")&&p.layoutGroup===line.layoutGroup&&
           line.rect.y - p.rect.bottom >= -line.height * 0.35 && line.rect.y - p.rect.bottom < line.height * 0.9 &&
           Math.abs(line.rect.x - p.rect.x) < line.height * 0.8 &&
           Math.min(p.height, line.height) / Math.max(p.height, line.height) > 0.7);
@@ -236,9 +512,8 @@
     }
     const blocks = readingOrder(paragraphs).map((paragraph, order) => {
       const confidence = paragraph.textLength ? Math.round(paragraph.confidenceSum / paragraph.textLength) : 0;
-      const reason = paragraph.role !== "text" ? "保留代码、公式或标识符"
-        : confidence < OCR_LOW ? "OCR 置信度过低，未自动翻译"
-        : confidence < OCR_HIGH ? "OCR 置信度中等，不做原位遮罩" : "";
+      const reason = confidence < OCR_LOW ? "OCR 置信度过低，未自动翻译"
+        : confidence < OCR_HIGH ? "OCR 置信度中等，不做原位遮罩" : paragraph.role!=="text"?protectedReason(paragraph.role):"";
       return {id: pageNumber + ":ocr:" + order + ":" + paragraph.indices.join("-"), order, source: "ocr",
         text: paragraph.text, segments: paragraph.segments, lines: paragraph.lines, rect: paragraph.rect,
         height: paragraph.height, direction: "ltr", role: paragraph.role, mono: false, confidence,
@@ -248,9 +523,10 @@
         quality: {text: confidence >= OCR_HIGH ? "reliable" : "uncertain", order: confidence >= OCR_HIGH ? "reliable" : "uncertain",
           reasons: reason && paragraph.role === "text" ? [reason] : []},
         placement: {mode: "text-only", reasons: ["P4-B OCR 段落对照"]},
-        reliable: confidence >= OCR_HIGH && paragraph.role === "text",
+        reliable: confidence >= OCR_HIGH,
         eligible: confidence >= OCR_LOW && paragraph.role === "text", reason};
     });
+    global.BT_PDF_READING_STRUCTURE?.describe(blocks,{width,height,pageNumber});
     return {pageNumber, width, height, blocks, empty: !blocks.length,
       unreliable: blocks.filter(b => !b.reliable).length, source: "ocr",
       engine: result?.engine || "", engineVersion: result?.engineVersion || "", modelVersion: result?.modelVersion || ""};
@@ -293,7 +569,7 @@
    */
   function planOCR(model, probe) {
     const warnings = [], candidates = [];
-    const reliable = model.blocks.filter(b => b.reliable && b.eligible).map(b => b.rect);
+    const reliable = model.blocks.filter(b => b.reliable).map(b => b.rect);
     const imageRects = [];
     for (const image of probe?.images || []) {
       const rect = clampRect(image.rect, model.width, model.height);
@@ -304,7 +580,7 @@
       if (covered >= rectArea(rect) * HIDDEN_COVERAGE) continue;
       candidates.push({type: "image", rank: 0, reason: "图片区域缺少可靠文字层", rect});
     }
-    const garbled = model.blocks.filter(garbledBlock).map(b => inflateRect(b.rect, 2));
+    const garbled = model.blocks.filter(garbledBlock).map(b => inflateRect(b.rect, Math.max(2,b.height*.35)));
     for (const cluster of clusterRects(garbled, 6)) {
       const rect = clampRect(cluster.rect, model.width, model.height);
       if (rect) candidates.push({type: "garbled", rank: 1, reason: "文字层乱码或映射不可靠", rect});
@@ -342,7 +618,8 @@
    * order 按合并后阅读顺序重排；返回 source:"mixed" 的新模型与统计。
    */
   function merge(model, ocrModel) {
-    const reliable = model.blocks.filter(b => b.reliable && b.eligible).map(b => b.rect);
+    // 邮箱、数字、公式同样是可靠原生文字；不能因为无需翻译就再次混入 OCR 副本。
+    const reliable = model.blocks.filter(b => b.reliable).map(b => b.rect);
     const kept = [];
     let deduped = 0;
     for (const block of ocrModel.blocks) {
@@ -364,7 +641,17 @@
       if (garbledBlock(block) && kept.some(k => rectsOverlap(k.rect, block.rect))) { replaced++; continue; }
       native.push(block);
     }
-    const blocks = readingOrder([...native, ...kept]).map((block, order) => ({...block, order}));
+    const structure=global.BT_PDF_READING_STRUCTURE;
+    if(structure)for(const block of kept){
+      structure.assign(block,model.tables||[]);
+      if(!block.table){
+        const owner=native.find(item=>item.flow?.type==="figure"&&block.rect.x>=item.flow.rect.x&&block.rect.right<=item.flow.rect.right&&
+          block.rect.y>=item.flow.rect.y&&block.rect.bottom<=item.flow.rect.bottom);
+        if(owner)block.flow={...owner.flow,caption:false,part:"ocr"};
+      }
+    }
+    const ordered=structure?structure.order([...native,...kept],readingOrder):readingOrder([...native,...kept]);
+    const blocks = ordered.map((block, order) => ({...block, order}));
     return {...model, blocks, empty: !blocks.length, unreliable: blocks.filter(b => !b.reliable).length,
       source: "mixed", engine: ocrModel.engine, engineVersion: ocrModel.engineVersion, modelVersion: ocrModel.modelVersion,
       stats: {native: native.length, ocr: kept.length, deduped, replaced}};

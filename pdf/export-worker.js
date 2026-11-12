@@ -1,13 +1,14 @@
 /* P5-B/P5-C/P5b/P5-D 导出 Worker（classic）：按页码升序复制原 PDF 页对象 → 同一布局契约下以导出字体真实度量
    逐页重算原位规划 → 全部门禁通过后才落笔叠加遮罩与译文 → 所有未入位译文合成一份全局附录（多页按「第 N 页」分组）
    → 另存新文件。绝不修改源字节，绝不发起翻译/OCR/网络。任务载荷为 pages:[{snapshot,evidence,markerNumbers}]，
-   字体字段（fontCode/fontLabel/fontMetrics/fontBytes）在任务顶层共享：同一次导出只用一只字体，子集字形跨页累加。
+   主字体字段（fontCode/fontLabel/fontMetrics/fontBytes）在任务顶层共享，混排回退级由 fallbackFonts:[{code,label,bytes}] 追加；
+   同一次导出按码点逐级绘制，子集字形跨页累加。
    importScripts 相对路径以本文件（pdf/）解析；布局规划器注入字体度量后不依赖 DOM/canvas。
    fontkit 用于自定义字体子集嵌入与逐字缺字判定；字体字节由页侧按需下载后随任务转移进来。
    「缺失页保留原文导出」时该页条目只有 {page}：无快照即原样复制源页，不规划、不绘制、不进附录。
    job.mode="bilingual"（P5-D 双语导出）：每页先照录原文页，再在真有原位译文时追加一张同尺寸同 /Rotate 的对照页
    （drawPage 引用原文页内容后叠遮罩与译文），输出按「原文页 → 对照页」相邻成对；附录仍集中在末尾不单另成对。 */
-importScripts("layout-planner.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-lib/fontkit.umd.min.js");
+importScripts("structured-reader.js", "reflow-model.js", "layout-planner.js", "reflow-document.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-lib/fontkit.umd.min.js");
 (function(global) {
   "use strict";
   const P = global.BT_PDF_LAYOUT_PLANNER;
@@ -52,48 +53,177 @@ importScripts("layout-planner.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-
   }
 
   /**
-   * 建立导出字体、垂直度量与逐字覆盖判定。
+   * 能否安全子集：只有 sfnt 表目录里带 glyf（TrueType 轮廓）且不带 fvar（可变字体）的静态字体可以。
+   * P7-B 用同一批汉字、同一绘制坐标做四格实测，逐字统计栅格图墨迹（CoreGraphics）并用 Chrome 内置
+   * PDF 引擎复核，结论（详见 docs/pdf/progress.md）：
+   *   CFF/OTTO + 子集 = 前三个绘制字形必失（与是哪个字无关，换顺序后空白跟着换位），Chrome 里整页零字；
+   *   可变字体 + 子集 = 六个字只出一个；两者整表嵌入都正常，静态 glyf 子集六个全出且文件仅十几 KB。
+   * 也就是说 @pdf-lib/fontkit 1.1.1 的子集器只对「静态 TrueType」可靠，CFF 子集产物是无效字体程序，
+   * 这正是此前中文/韩文译文「导出成功但看不到字」「阅读器显示与导出不一致」的根因。
+   * CFF 因此整表嵌入：宁可导出文件变大，也不产出缺字的 PDF。ttcf 是字体集合，表目录不在固定位置，一并走整表。
+   */
+  function canSubsetFont(bytes) {
+    if (String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]) === "ttcf") return false;
+    const numTables = (bytes[4] << 8) | bytes[5];
+    let glyf = false;
+    for (let i = 0; i < numTables; i++) {
+      const p = 12 + i * 16;
+      if (p + 4 > bytes.length) return false;
+      const key = String.fromCharCode(bytes[p], bytes[p + 1], bytes[p + 2], bytes[p + 3]);
+      if (key === "fvar") return false;
+      if (key === "glyf") glyf = true;
+    }
+    return glyf;
+  }
+
+  /**
+   * 准备一个字体分级并派生其度量与逐字覆盖判定。
    * 内置分级：pdf-lib 标准字体不暴露 ascender，度量由页侧注册表声明（Helvetica AFM 0.718 / 1.25，
    * 与 P5-B 完全一致）；能否绘制等价于 pdf-lib 的 WinAnsi 编码是否接受该字符。
-   * 自定义分级：fontkit 子集嵌入；度量与覆盖判定取自 pdf-lib 内部实际用于子集化的同一个 fontkit 字体对象，
-   * 既不二次解析 8 MiB 字体，也保证判定口径与真正嵌入的字形一致（内部字段缺失时才回退自行解析）。
+   * 自定义分级：先只解析度量与字形覆盖（决定能不能画、画多宽），子集嵌入推迟到该级真的落笔时（ensure）。
+   * 推迟是必须的：pdf-lib 在 save() 里才生成子集，一个字形都没用到的分级会编码出空子集，
+   * 实测抛 RangeError 且不被 Worker 的 try/catch 接住——整单导出连错误码都拿不到，直接进程级失败。
+   * 页侧注册表与真实字形可能有偏差（如某级根本用不上），落笔时嵌入也顺带消除了这种「多给一级就炸」。
+   * 宽度按 fontkit 逐码点字宽求和：与 pdf-lib CustomFont.widthOfTextAtSize 实测逐样本完全相等（差 0），
+   * 因此嵌入前就能规划，且不会改变任何排版常量。
    * 垂直度量必须按字体派生：汉字级字体上升比 1.16、行高比 1.448，沿用 Helvetica 常量会让译文顶出行盒并压到邻行。
    */
-  async function setupFont(out, job) {
-    if (!job.fontBytes) {
-      const metrics = job.fontMetrics;
+  async function embedTier(out, entry) {
+    const label = entry.label || entry.code || "导出字体";
+    if (!entry.bytes) {
+      const metrics = entry.metrics;
       if (!metrics || !Number.isFinite(metrics.ascent) || !(metrics.lineHeight > 0))
         throw error("EXPORT_FAILED", "缺少内置字体度量，无法安全排版");
       const font = await out.embedFont(StandardFonts.Helvetica);
-      return {font, custom: false, ascent: metrics.ascent, lineHeight: metrics.lineHeight,
-        canRender: ch => { try { font.widthOfTextAtSize(ch, 1); return true; } catch (_) { return false; } }};
+      return {code: entry.code || "builtin", label, custom: false, metrics, used: false,
+        covers: cp => { try { font.widthOfTextAtSize(String.fromCodePoint(cp), 1); return true; } catch (_) { return false; } },
+        widthOf: (text, size) => font.widthOfTextAtSize(text, size),
+        ensure: async () => font};
     }
     if (!fontkit) throw error("EXPORT_FAILED", "字体组件未加载，无法嵌入导出字体；请重新加载扩展后重试");
-    const bytes = toBytes(job.fontBytes);
+    const bytes = toBytes(entry.bytes);
     if (!sniffFont(bytes))
-      throw error("EXPORT_FONT_FAILED", "导出字体文件已损坏（文件头无效），未生成文件；请在导出字体管理中删除后重新下载");
+      throw error("EXPORT_FONT_FAILED", "导出字体（" + label + "）文件头无效，未生成文件；请在导出字体管理中删除后重新下载");
     out.registerFontkit(fontkit);
-    let font, parsed;
+    let parsed;
     try {
-      font = await out.embedFont(bytes, {subset: true});
-      parsed = font.embedder?.font;
+      parsed = fontkit.create(bytes);
     } catch (cause) {
-      throw error("EXPORT_FONT_FAILED", "导出字体嵌入失败，未生成文件" +
+      throw error("EXPORT_FONT_FAILED", "导出字体（" + label + "）解析失败，未生成文件" +
         (cause && cause.message ? "（" + String(cause.message).slice(0, 120) + "）" : ""));
     }
-    if (!parsed || typeof parsed.hasGlyphForCodePoint !== "function") parsed = fontkit.create(bytes);
-    if (!parsed || !Number.isFinite(parsed.ascent) || !(parsed.unitsPerEm > 0))
-      throw error("EXPORT_FONT_FAILED", "导出字体度量不可读，无法安全排版");
-    const upem = parsed.unitsPerEm;
-    return {font, custom: true, ascent: parsed.ascent / upem,
-      lineHeight: (parsed.ascent - parsed.descent) / upem,
-      canRender: ch => parsed.hasGlyphForCodePoint(ch.codePointAt(0))};
+    if (!parsed || typeof parsed.hasGlyphForCodePoint !== "function")
+      throw error("EXPORT_FONT_FAILED", "导出字体（" + label + "）字形不可读，无法判定能否绘制；请在导出字体管理中删除该字体后重新下载");
+    let ascent, descent, upem;
+    try {
+      // 字体头部完好但 head/OS2 表被截断时，fontkit 的度量 getter 自身就会抛 TypeError；
+      // 不接住它会以裸错误冒出去，用户看到的是内部报错而不是「字体异常、可重新下载」。
+      ascent = parsed.ascent;
+      descent = parsed.descent;
+      upem = parsed.unitsPerEm;
+    } catch (_) {
+      throw error("EXPORT_FONT_FAILED", "导出字体（" + label + "）内部数据损坏，未生成文件；请在导出字体管理中删除该字体后重新下载");
+    }
+    if (!Number.isFinite(ascent) || !(upem > 0))
+      throw error("EXPORT_FONT_FAILED", "导出字体（" + label + "）度量不可读，无法安全排版；请在导出字体管理中删除该字体后重新下载");
+    // 实测：pdf-lib 的非子集分支靠 fontkit 的 font.cff 判定轮廓味型，而 vendor 的 fontkit UMD 没有该
+    // getter，于是 CFF 整表被写成 /CIDFontType2 + /FontFile2（规范要求 FontFile2 必须是 glyf 程序）。
+    // Chrome 内置引擎与 macOS 预览都能读出并画出全部字形（P7-B 截图取证），Acrobat/WPS 待人工验证；
+    // 修正这处声明需要改 vendor 或事后重写字体对象，属核心高风险项，按任务书只报告不擅自实施。
+    const subsets = canSubsetFont(bytes);
+    let font = null;
+    return {code: entry.code, label, custom: true, used: false, subsets,
+      metrics: {ascent: ascent / upem, lineHeight: (ascent - descent) / upem},
+      covers: cp => {
+        try { return parsed.hasGlyphForCodePoint(cp); }
+        catch (_) { throw error("EXPORT_FONT_FAILED", "导出字体（" + label + "）字形表损坏，无法判定能否绘制；请在导出字体管理中删除该字体后重新下载"); }
+      },
+      widthOf: (text, size) => {
+        let total = 0;
+        for (const ch of String(text)) {
+          const glyph = parsed.glyphForCodePoint(ch.codePointAt(0));
+          if (!glyph) return NaN;
+          total += glyph.advanceWidth;
+        }
+        return total / upem * size;
+      },
+      ensure: async () => {
+        if (font) return font;
+        try {
+          font = await out.embedFont(bytes, {subset: subsets});
+        } catch (cause) {
+          throw error("EXPORT_FONT_FAILED", "导出字体（" + label + "）嵌入失败，未生成文件" +
+            (cause && cause.message ? "（" + String(cause.message).slice(0, 120) + "）" : ""));
+        }
+        return font;
+      }};
+  }
+
+  /**
+   * 建立本次导出的字体分级集合：主字体（job.fontBytes/fontMetrics/fontLabel）决定行高与上升部，
+   * job.fallbackFonts 只补主字体没有的字形——混排（如中英韩）任何单级都缺字，整单拒绝会让用户无论改选哪级都导出失败。
+   * 逐字判定按「主级 → 回退级」次序取第一个真有字形的分级，因此单语言文本的绘制结果与单字体时逐字节相同；
+   * 基线与行高始终由主字体派生，回退级不参与垂直度量（不新增排版常量，也不改动原位安全阈值）。
+   */
+  async function setupFont(out, job) {
+    const tiers = [await embedTier(out, {code: job.fontCode, label: job.fontLabel,
+      bytes: job.fontBytes, metrics: job.fontMetrics})];
+    for (const extra of Array.isArray(job.fallbackFonts) ? job.fallbackFonts : [])
+      tiers.push(await embedTier(out, extra));
+    const main = tiers[0], chosen = new Map();
+    // CFF 的标准拉丁数字在部分阅读器中会发生 CID 错映射；可用 WinAnsi 字形优先由标准字体绘制。
+    // 不修改 vendor/嵌入映射；主字体仍决定安全行高，混排宽度统一按实际绘制分级重算。
+    let standard=tiers.find(tier=>!tier.custom);
+    if(!standard){standard=await embedTier(out,{code:"builtin",label:"内置标准字体",metrics:{ascent:.718,lineHeight:1.25}});tiers.push(standard);}
+    // 同一码点只判定一次分级：分段与缺字门禁共用该结论，宽度也按判定出的那只字体实测。
+    const tierFor = cp => {
+      if (!chosen.has(cp)) chosen.set(cp, standard.covers(cp)?standard:tiers.find(tier => tier.covers(cp)) || null);
+      return chosen.get(cp);
+    };
+    const runWidth = (tier, text, size) => {
+      try { return tier.widthOf(text, size); } catch (_) { return NaN; }
+    };
+    /** 一行文本按实际绘制级切成连续段；任一段无级可绘制返回 null（调用方按不可绘制处理）。 */
+    function runs(text, size) {
+      const list = [];
+      for (const ch of String(text)) {
+        const tier = tierFor(ch.codePointAt(0));
+        if (!tier) return null;
+        const last = list[list.length - 1];
+        if (last && last.tier === tier) { last.text += ch; continue; }
+        list.push({tier, text: ch});
+      }
+      for (const run of list) {
+        const width = runWidth(run.tier, run.text, size);
+        if (!Number.isFinite(width)) return null;
+        run.width = width;
+      }
+      return list;
+    }
+    /** 一行文本的真实宽度 = 各级分段宽度之和；不可绘制返回 Infinity → fitBlock 失败 → 回退附录。 */
+    const measure = (text, size) => {
+      const list = runs(text, size);
+      return list ? list.reduce((total, run) => total + run.width, 0) : Infinity;
+    };
+    /** 落笔前嵌入该级子集并记为「本次真的用到」：统计只报实际参与绘制的分级。 */
+    async function drawRun(target, run, x, y, size, ink, rotate) {
+      const font = await run.tier.ensure();
+      run.tier.used = true;
+      target.drawText(run.text, {x, y, size, font, color: ink, rotate});
+    }
+    return {custom: main.custom, ascent: main.metrics.ascent,
+      lineHeight: main.metrics.lineHeight, labels: tiers.map(tier => tier.label),
+      codes: tiers.map(tier => tier.code), runs, measure, drawRun,
+      usedCodes: () => tiers.filter(tier => tier.used).map(tier => tier.code),
+      /** 实际落笔但只能整表嵌入的分级（CFF 轮廓）：页侧据此如实说明导出文件为什么变大。 */
+      fullCodes: () => tiers.filter(tier => tier.custom && tier.used && !tier.subsets).map(tier => tier.code),
+      canRender: ch => tierFor(ch.codePointAt(0)) !== null};
   }
 
   /**
    * 逐字缺字门禁（default-deny）：任何将要绘制的字符没有字形就整单拒绝，绝不输出缺字方框文件。
    * 只看实际绘制的字符串——规划器已把空白折叠为 U+0020，页侧已剔除零宽与双向控制字符，
-   * 因此不可见字符不会造成误判；页侧注册表只决定用哪一级字体，权威判定在这里。
+   * 因此不可见字符不会造成误判；页侧注册表只决定嵌入哪几级，权威判定在这里（逐级 hasGlyphForCodePoint）。
    */
   function assertRenderable(setup, label, texts, what) {
     const missing = [];
@@ -205,9 +335,9 @@ importScripts("layout-planner.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-
     return entries;
   }
 
+  /** 自然分页的纯译文阅读版；复用相同的字体选级、逐字门禁与有效译文快照。 */
   async function exportTranslated(job) {
     const {requestId} = job;
-    const fontLabel = job.fontLabel || "导出字体";
     const jobs = Array.isArray(job.pages) ? job.pages : null;
     const progress = (stage, message) => postMessage({type: "progress", requestId, stage, message});
     if (!jobs || !jobs.length) throw error("EXPORT_FAILED", "缺少导出页数据，请重新读取并翻译后再导出");
@@ -250,14 +380,34 @@ importScripts("layout-planner.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-
     // 复制源页必须按页码升序：输出页序与阅读顺序一致，附录按页分组也以此为序。
     targets.sort((a, b) => a.page - b.page);
 
-    progress("font", job.fontBytes ? "正在子集嵌入导出字体…" : "正在准备内置导出字体…");
     const out = await PDFDocument.create();
     const setup = await setupFont(out, job);
-    const font = setup.font, ascent = setup.ascent;
-    // 注入规划器的宽度度量即导出字体的真实度量；不可绘制字符返回 Infinity → fitBlock 失败 → 回退附录。
-    const measure = (text, fontSize) => {
-      try { return font.widthOfTextAtSize(text, fontSize); } catch (_) { return Infinity; }
+    if(job.mode==="structured")return global.BT_PDF_REFLOW_DOCUMENT.compose({out,setup,targets,job,loaded,userBox,error,rgb,degrees,addOutlines});
+    const ascent = setup.ascent;
+    // 此处只完成度量与字形覆盖判定（解析），子集嵌入推迟到各级真正落笔时进行。
+    progress("font", setup.codes.length > 1 ? "正在准备导出字体（混排 " + setup.codes.length + " 级）…"
+      : job.fontBytes ? "正在解析导出字体…" : "正在准备内置导出字体…");
+    const fontLabel = setup.labels.join(" + ");
+    /**
+     * 落笔前的逐级分段。返回 null 意味着该字符实际画不出来（字体文件被截断/损坏时，覆盖判定可能
+     * 仍通过而宽度读不出）。这里必须显式报字体异常并中止导出：既不能让 for..of 抛出生涩的 TypeError，
+     * 更不能跳过这一段——静默少画就是「导出成功但看不到字」。
+     */
+    const splitRuns = (text, size) => {
+      const list = setup.runs(text, size);
+      if (list) return list;
+      // 指到具体字符：覆盖判定说画得出、实际分段失败时，用户和排查者都需要知道是哪一个字。
+      let miss = "";
+      for (const ch of String(text)) {
+        if (!setup.canRender(ch) || !Number.isFinite(setup.measure(ch, size))) { miss = ch; break; }
+      }
+      throw error("EXPORT_FONT_FAILED", "导出字体（" + fontLabel + "）无法绘制" +
+        (miss ? "「" + miss + "」(U+" + miss.codePointAt(0).toString(16).toUpperCase().padStart(4, "0") + ")" : "译文") +
+        "，字体文件可能不完整或已损坏；请在导出字体管理中删除该字体后重新下载");
     };
+    // 注入规划器的宽度度量即各级导出字体的真实度量（按绘制级分段实测后求和）；
+    // 不可绘制字符返回 Infinity → fitBlock 失败 → 回退附录，缺字门禁随后按逐级判定整单拒绝。
+    const measure = setup.measure;
 
     progress("plan", targets.length > 1 ? "正在按导出字体度量规划 " + targets.length + " 页原位译文…"
       : "正在按导出字体度量规划原位译文…");
@@ -361,13 +511,17 @@ importScripts("layout-planner.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-
         const ink = luminance(mc) < 0.55 ? INK_LIGHT : INK_DARK;
         target.drawRectangle({x: box.x, y: box.y, width: box.width, height: box.height,
           color: rgb(mc[0] / 255, mc[1] / 255, mc[2] / 255)});
-        pl.lines.forEach((line, index) => {
+        for (const [index, line] of pl.lines.entries()) {
           // 基线锚点：行盒顶 + i×行高 + 上升部；右对齐块以行宽回退锚点。全部在固定坐标计算后经 M 映射。
           const yFixed = pl.textRect.y + index * pl.lineHeight + ascent * pl.fontSize;
-          const xFixed = pl.align === "right" ? pl.textRect.right - widths[index] : pl.textRect.x;
-          const p = apply(M, xFixed, yFixed);
-          target.drawText(line, {x: p[0], y: p[1], size: pl.fontSize, font, color: ink, rotate: degrees(angle)});
-        });
+          // 逐级分段绘制：每段用自己的字体（落笔时才嵌入该级子集），前进量按该段实测宽度累计后再经 M 映射（旋转页偏移方向随之正确）。
+          let xFixed = pl.align === "right" ? pl.textRect.right - widths[index] : pl.textRect.x;
+          for (const run of splitRuns(line, pl.fontSize)) {
+            const p = apply(M, xFixed, yFixed);
+            await setup.drawRun(target, run, p[0], p[1], pl.fontSize, ink, degrees(angle));
+            xFixed += run.width;
+          }
+        }
       }
     }
 
@@ -377,32 +531,42 @@ importScripts("layout-planner.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-
       // 附录坐标：cursor 为距页顶的固定坐标游标；附录页无 /Rotate，y_user = H − 基线距顶。
       // 跨页时每页重画标题，附录页自说明；换页分组只画一次组标题，绝不在同组条目之间插行。
       let sheet = null, cursor = 0, lastPage = 0;
-      const newSheet = () => {
+      // 附录同样逐级分段绘制：基线 y 由主字体上升部派生，各段只沿 x 方向按自身宽度前进。
+      const drawRuns = async (text, x, y, size) => {
+        let offset = x;
+        for (const run of splitRuns(text, size)) {
+          await setup.drawRun(sheet, run, offset, y, size, INK_DARK, degrees(0));
+          offset += run.width;
+        }
+      };
+      const newSheet = async () => {
         sheet = out.addPage([W, H]); appendixPages++; appendixSheets.push(sheet);
-        sheet.drawText(title, {x: MARGIN, y: H - MARGIN - TITLE * ascent, size: TITLE, font, color: INK_DARK});
+        await drawRuns(title, MARGIN, H - MARGIN - TITLE * ascent, TITLE);
         cursor = MARGIN + TITLE + 8;
       };
-      const drawLine = (text, x, top) =>
-        sheet.drawText(text, {x, y: H - top - BODY * ascent, size: BODY, font, color: INK_DARK});
-      newSheet();
-      drawLine(note, MARGIN, cursor);
+      const drawLine = (text, x, top) => drawRuns(text, x, H - top - BODY * ascent, BODY);
+      await newSheet();
+      await drawLine(note, MARGIN, cursor);
       cursor += BODY * 1.6;
       for (const item of bodyLines) {
         if (!item.lines.length) continue;
         if (item.page !== lastPage) {
           lastPage = item.page;
           if (item.group) {
-            if (cursor + GROUP_GAP + item.lines.length * LH + ITEM_GAP > H - MARGIN) newSheet();
-            drawLine(item.group, MARGIN, cursor);
+            if (cursor + GROUP_GAP + LH > H - MARGIN) await newSheet();
+            await drawLine(item.group, MARGIN, cursor);
             cursor += GROUP_GAP;
           }
         }
-        if (cursor + item.lines.length * LH + ITEM_GAP > H - MARGIN) newSheet();
-        drawLine("[" + item.number + "]", MARGIN, cursor);
-        item.lines.forEach((line, index) => {
-          sheet.drawText(line, {x: MARGIN + 24, y: H - cursor - index * LH - BODY * ascent, size: BODY, font, color: INK_DARK});
-        });
-        cursor += item.lines.length * LH + ITEM_GAP;
+        if (cursor + LH > H - MARGIN) await newSheet();
+        await drawLine("[" + item.number + "]", MARGIN, cursor);
+        for (const line of item.lines) {
+          // 单段本身也可能长于一页：逐行分页，续页沿用原编号，不裁切、不丢尾文。
+          if(cursor+LH>H-MARGIN){await newSheet();await drawLine("["+item.number+"]",MARGIN,cursor);}
+          await drawRuns(line, MARGIN + 24, H - cursor - BODY * ascent, BODY);
+          cursor += LH;
+        }
+        cursor += ITEM_GAP;
       }
     }
 
@@ -420,7 +584,7 @@ importScripts("layout-planner.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-
       overlay: sum(sheet => sheet.placed.length), fallback: sum(sheet => counts(sheet).fallback),
       pending: sum(sheet => counts(sheet).pending), selected: sheets.length,
       appendixItems: items.length, appendixPages, appendixLanguage, pages: out.getPageCount(), bookmarks,
-      font: job.fontCode || "builtin", customFont: setup.custom,
+      font: job.fontCode || "builtin", fontCodes: setup.usedCodes(), fontFull: setup.fullCodes(), customFont: setup.custom,
       per: sheets.map(sheet => Object.assign({page: sheet.page, overlay: sheet.placed.length,
         original: !sheet.snapshot, pair: !!sheet.paired}, counts(sheet)))}};
   }

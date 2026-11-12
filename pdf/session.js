@@ -2,7 +2,7 @@
   "use strict";
   const E = global.BT_PDF_ERRORS, PIXEL_LIMIT = 8000000;
   /** 页面只保留当前可见画布和一个在途画布；任何迟到结果先核对来源与视图代次。 */
-  function create({onState, onCanvas, onClear, onPassword, onDocument = () => {}, onPage = () => {}, onViewReady = () => {}}) {
+  function create({onState, onCanvas, onClear, onPassword, onDocument = () => {}, onPage = () => {}, onViewReady = () => {},getFitScale=()=>null}) {
     let sourceGeneration = 0, viewGeneration = 0, reader = null, sourceController = null, viewController = null;
     let handle = null, viewTail = Promise.resolve(), visibleCanvas = null, disposed = false;
     // P5-B：来源描述符（{file} 或 {authorization}）。原始字节在 open 时已转移给 PDF.js Worker 并被释放，
@@ -49,7 +49,7 @@
         if (generation !== sourceGeneration || disposed) return;
         state.source = "ready"; state.numPages = info.numPages; state.message = "PDF 已读取，正在渲染第一页…";
         sourceController = null; publish();
-        onDocument({id:crypto.randomUUID(),numPages:info.numPages,extractPage:currentReader.extractPage,
+        onDocument({id:crypto.randomUUID(),contentId:result.contentId,numPages:info.numPages,extractPage:currentReader.extractPage,
           probePageContent:currentReader.probePageContent,renderPage:currentReader.renderPage});
         onPage(state.page); render();
       } catch (error) {
@@ -76,6 +76,13 @@
         if (generation !== viewGeneration || disposed) return;
         let canvas = document.createElement("canvas"), currentHandle;
         try {
+          // 在第一张位图发布前确定动态适配比例，不先显示 100% 再缩小。
+          if(currentReader.pageSize){
+            const size=await currentReader.pageSize(request,{signal:controller.signal});
+            if(disposed||documentGeneration!==sourceGeneration||generation!==viewGeneration)return;
+            const fitted=getFitScale(size);
+            if(Number.isFinite(fitted)&&fitted>0){request.scale=state.scale=Math.min(4,Math.max(.25,fitted));publish();}
+          }
           const occupied = visibleCanvas ? visibleCanvas.width * visibleCanvas.height : 0;
           // 旧页已耗尽预算时先释放；优先保证新页至少一半像素预算。
           if (occupied > PIXEL_LIMIT / 2) clearCanvas();

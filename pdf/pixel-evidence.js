@@ -26,13 +26,27 @@
     return {x0: Math.max(0, Math.floor(Math.min(...xs))), y0: Math.max(0, Math.floor(Math.min(...ys))),
       x1: Math.min(canvas.width, Math.ceil(Math.max(...xs))), y1: Math.min(canvas.height, Math.ceil(Math.max(...ys)))};
   }
+  // 新增排版空间只读不涂抹；必须全部为同一底色，任何线条、文字、色块或读取不足均拒绝。
+  function blankExpansion(canvas,rect,m,pxPerCss,color,budget) {
+    if(!rect)return null;
+    const corners=[[rect.x,rect.y],[rect.right,rect.y],[rect.right,rect.bottom],[rect.x,rect.bottom]]
+      .map(([x,y])=>apply(m,x,y).map(value=>value*pxPerCss));
+    if(corners.some(([x,y])=>!Number.isFinite(x+y)||x<0||y<0||x>canvas.width||y>canvas.height))return null;
+    const box=toCanvasBox(canvas,rect,m,pxPerCss),width=box.x1-box.x0,height=box.y1-box.y0;
+    if(!(width>0&&height>0)||width*height>budget)return null;
+    try{
+      const data=canvas.getContext("2d").getImageData(box.x0,box.y0,width,height).data;
+      for(let i=0;i<data.length;i+=4)if(data[i]!==color[0]||data[i+1]!==color[1]||data[i+2]!==color[2]||data[i+3]!==255)return null;
+      return {rect:{...rect},color:[...color],blank:true};
+    }catch(_){return null;}
+  }
   /**
    * 对单块做全分辨率采样出证据。
    * 文字笔画防误判：横向游程只统计行区之外的部分；跨越≥2 个行区的纵向游程视为表格竖线。
    * @param {Object} input {canvas, block, matrix, pxPerCss}；matrix 为固定坐标→画布 CSS 像素的显示矩阵。
    * @returns {{densitySufficient:boolean, background:{uniform:boolean,color:number[]}|null, hasStrokes:boolean, inkConfined:boolean, solidInk:boolean}}
    */
-  function sample({canvas, block, matrix: m, pxPerCss}) {
+  function sample({canvas, block, matrix: m, pxPerCss,geometry,rows,result}) {
     if (!canvas || !canvas.width || !(pxPerCss > 0) || !Array.isArray(m)) return fail();
     const scale = Math.hypot(m[0], m[1]) || 1;
     const pxPerPt = scale * pxPerCss;
@@ -47,9 +61,9 @@
     const lines = (block.lines || []).map(line => planner.inflate({...line.rect, bottom: inkBottomOf(line, line.rect)}, K.LINE_PAD))
       .filter(rect => Number.isFinite(rect.x) && Number.isFinite(rect.y) && Number.isFinite(rect.right) && Number.isFinite(rect.bottom));
     const baseMask = planner.inflate(block.rect, K.MASK_PAD);
-    const maskRect = {...baseMask, bottom: inkBottomOf(block, block.rect) + K.MASK_PAD};
-    // 采样外环仍按 1em 结构盒：外环随遮罩扩展会扫入下一行字形顶墨迹，误判背景不均。
-    const region = planner.inflate(baseMask, K.RING);
+    const maskRect = geometry?planner.maskFor(block,geometry,rows):{...baseMask, bottom: inkBottomOf(block, block.rect) + K.MASK_PAD};
+    // 外环与遮罩共享邻块边界，不能把下一段的字形当成本段的非均匀背景或图形。
+    const region = geometry?planner.maskFor(block,geometry,rows,K.MASK_PAD+K.RING):planner.inflate(baseMask,K.RING);
     const box = toCanvasBox(canvas, region, m, pxPerCss);
     const width = box.x1 - box.x0, height = box.y1 - box.y0;
     if (width <= 0 || height <= 0) return fail();
@@ -70,13 +84,20 @@
       return {sx: Math.min(a[0], b[0]), ex: Math.max(a[0], b[0]), sy: Math.min(a[1], b[1]), ey: Math.max(a[1], b[1])};
     };
     const lineBands = lines.map(bandOf);
+    // 跨行证据取每行中心线。仅触到两条重叠的膨胀行带不代表跨越了两行。
+    const lineCenters=(block.lines||[]).filter(line=>line.rect).map(line=>{
+      const rect=line.rect,y=(rect.y+rect.bottom)/2,a=f2c(rect.x,y),b=f2c(rect.right,y);
+      return {sx:Math.min(a[0],b[0]),ex:Math.max(a[0],b[0]),sy:Math.min(a[1],b[1]),ey:Math.max(a[1],b[1])};
+    });
     const maskBand = bandOf(maskRect);
     const columns = Math.floor(width / step), rowsN = Math.floor(height / step);
     const at = (col, row) => {
       const offset = (row * step * width + col * step) * 4;
       return [data[offset], data[offset + 1], data[offset + 2]];
     };
-    const inside = (band, col, row) => col >= band.sx && col <= band.ex && row >= band.sy && row <= band.ey;
+    // 像素代表面积，不能以左上角点把边缘抗锯齿误判为行外墨迹。
+    const inside = (band, col, row) => col+1>band.sx&&col<band.ex&&row+1>band.sy&&row<band.ey;
+    const crossesCenter = (band,col,row) => col<=band.ex&&col+1>band.sx&&row<=band.ey&&row+1>band.sy;
     // 第一遍：环（region 减去 mask）背景众数色，5bit 量化直方图。
     const histogram = new Map();
     let ringTotal = 0;
@@ -100,7 +121,7 @@
     const lineInk = lineBands.map(() => ({ink: 0, total: 0}));
     const runThreshold = Math.max(4, Math.ceil(STROKE_MIN_PT * pxPerPt / step));
     for (let row = 0; row < rowsN; row++) {
-      let run = 0, runOutside = false;
+      let run = 0, runOutside = false, touched = new Set();
       for (let col = 0; col <= columns; col++) {
         const valid = col < columns;
         const isBg = valid && near(at(col, row), color);
@@ -111,14 +132,15 @@
           }
         }
         if (!valid || isBg) {
-          if (run >= runThreshold && runOutside) hasStrokes = true;
-          run = 0; runOutside = false;
+          if (run >= runThreshold && (runOutside||touched.size>=2)) hasStrokes = true;
+          run = 0; runOutside = false;touched=new Set();
           continue;
         }
         run++;
         let inLine = false;
         for (let index = 0; index < lineBands.length; index++)
           if (inside(lineBands[index], col, row)) inLine = true;
+        for(let index=0;index<lineCenters.length;index++)if(crossesCenter(lineCenters[index],col,row))touched.add(index);
         if (inLine) continue;
         inkViolations++;
         runOutside = true;
@@ -141,7 +163,8 @@
         if (!inside(maskBand, col, row)) { outside = true; continue; }
         let inLine = false;
         for (let index = 0; index < lineBands.length; index++)
-          if (inside(lineBands[index], col, row)) { touched.add(index); inLine = true; }
+          if (inside(lineBands[index], col, row)) inLine = true;
+        for(let index=0;index<lineCenters.length;index++)if(crossesCenter(lineCenters[index],col,row))touched.add(index);
         if (!inLine) outside = true;
       }
     }
@@ -150,7 +173,13 @@
     const violationLimit = Math.max(12, Math.floor(0.01 * columns * rowsN));
     const inkConfined = inkViolations <= violationLimit;
     for (const stat of lineInk) if (stat.total > 16 && stat.ink / stat.total > INK_RATIO_LIMIT) { solidInk = true; break; }
-    return {densitySufficient: true, background: {uniform, color}, hasStrokes, inkConfined, solidInk};
+    const found={densitySufficient: true, background: {uniform, color}, hasStrokes, inkConfined, solidInk};
+    if(uniform&&!hasStrokes&&inkConfined&&!solidInk&&geometry&&rows&&result){
+      const rect=planner.expansionRect({block,result,geometry,rows});
+      const proof=blankExpansion(canvas,rect,m,pxPerCss,color,MAX_READ_PIXELS-width*height);
+      if(proof)found.expansion=proof;
+    }
+    return found;
   }
   global.BT_PDF_PIXEL_EVIDENCE = {sample, fail, constants: {MAX_READ_PIXELS, BG_TOLERANCE, BG_UNIFORM_RATIO, INK_RATIO_LIMIT, STROKE_MIN_PT}};
 })(typeof window !== "undefined" ? window : self);

@@ -3,10 +3,10 @@
   /**
    * P3-C 布局规划器：纯计算，全部在固定坐标系（scale=1、固有旋转、PDF 点）内规划。
    * default-deny：结构先验、几何冲突、像素佐证三层证据任一缺失或存疑即回退，绝不写回 P2 提取字段。
-   * 首版禁用区域扩展（expansion 恒为 null）；放不下按换行→有限缩字→回退处理，不裁切文字。
+   * 仅在结构边界与空白像素证据同时确认时向下排版；遮罩不随译文扩展，不裁切文字。
    */
   const MASK_PAD = 1.5, CLEARANCE = 2, RING = 2, LINE_PAD = 1;
-  const FS_STEP = 0.94, FS_REL_FLOOR = 0.75, FS_BODY_FLOOR = 0.6, FS_LEAD_MAX = 2.2;
+  const FS_STEP = 0.94, FS_REL_FLOOR = 0.75, FS_BODY_FLOOR = 0.6;
   const MEASURE_MARGIN = 0.97, LINE_HEIGHT = 1.25;
   const MAX_DOM_TIERS = 8;                // DOM 实测验证失败的最大字号降级次数，超限即回退
   const FONT_STACK = 'system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
@@ -40,6 +40,47 @@
     return {x: Math.max(0, rect.x), y: Math.max(0, rect.y),
       right: Math.min(geometry.width, rect.right), bottom: Math.min(geometry.height, rect.bottom)};
   }
+  function inkRect(block) {
+    const limit=Number.isFinite(block.inkLimit)?block.inkLimit-MASK_PAD:Infinity;
+    const ink=Math.min(Number.isFinite(block.inkBottom)?block.inkBottom:block.rect.bottom,limit);
+    return {...block.rect,bottom:Math.max(block.rect.bottom,ink)};
+  }
+  // 原文字墨迹之外的边距按邻块间隙分配，不用固定外扩把紧排行误判为重叠。
+  // 只收缩额外边距；真实源文字区域相交时不会裁掉源字形来强行放行。
+  function maskFor(block, geometry, rows=[], pad=MASK_PAD) {
+    const core=inkRect(block),outer=inflate(core,pad),rect={...outer};
+    for(const row of rows){
+      if(row.block===block||!row.block.rect)continue;
+      const other=inkRect(row.block);
+      if(other.x<outer.right&&other.right>outer.x){
+        if(other.bottom<=core.y)rect.y=Math.max(rect.y,(other.bottom+core.y)/2);
+        if(other.y>=core.bottom)rect.bottom=Math.min(rect.bottom,(core.bottom+other.y)/2);
+      }
+      if(other.y<outer.bottom&&other.bottom>outer.y){
+        if(other.right<=core.x)rect.x=Math.max(rect.x,(other.right+core.x)/2);
+        if(other.x>=core.right)rect.right=Math.min(rect.right,(core.right+other.x)/2);
+      }
+    }
+    return clampToPage(rect,geometry);
+  }
+  /** 只提出向下的候选空白，不代表可用；必须由 pixel-evidence 逐像素确认。
+   * 图中标签暂不扩展，避免穿过未能恢复的节点与连线。表格严格限制在已确认单元格内部。
+   */
+  function expansionRect({block,result,geometry,rows=[],measure:measureFn,lineHeight}) {
+    if(!block?.rect||!block.eligible||!block.reliable||block.role!=="text"||!geometry||!result?.text||["figure","code"].includes(block.flow?.type))return null;
+    if(!(Number.isFinite(block.height)&&block.height>0))return null;
+    const mask=maskFor(block,geometry,rows),lead=Number.isFinite(lineHeight)&&lineHeight>0?lineHeight:LINE_HEIGHT;
+    const lines=wrapText(result.text,block.height,(mask.right-mask.x)*MEASURE_MARGIN,measureFn);
+    let bottom=Math.min(geometry.height-CLEARANCE,block.rect.y+lines.length*block.height*lead);
+    if(block.cell?.rect)bottom=Math.min(bottom,block.cell.rect.bottom-CLEARANCE);
+    else if(block.table)return null;
+    const obstacles=[...rows.filter(row=>row.block!==block).map(row=>inkRect(row.block)),...(geometry.visuals||[]).map(visual=>visual.rect)];
+    for(const rect of obstacles){
+      if(!rect||rect.x>=mask.right+CLEARANCE||rect.right<=mask.x-CLEARANCE||rect.bottom<=block.rect.y)continue;
+      bottom=Math.min(bottom,rect.y-CLEARANCE);
+    }
+    return bottom>mask.bottom?{x:mask.x,y:mask.bottom,right:mask.right,bottom}:null;
+  }
   /**
    * 贪心换行：CJK 逐字可断，拉丁词为原子（词前有空格才可断），超长词字符级硬断；
    * \n 强制断行。只依赖测量函数与 MEASURE_MARGIN 安全余量，不裁切任何字符。
@@ -68,14 +109,14 @@
       for (const atom of atoms) {
         const joiner = atom.gap && line ? " " : "";
         const candidate = line + joiner + atom.t;
-        if (!line) { line = atom.t; continue; }
+        if (!line && widthOf(atom.t, fontSize) <= maxWidth) { line = atom.t; continue; }
         if (widthOf(candidate, fontSize) <= maxWidth) { line = candidate; continue; }
-        if (atom.brk) { lines.push(line); line = atom.t; continue; }
+        if (atom.brk && widthOf(atom.t, fontSize) <= maxWidth) { if(line)lines.push(line); line = atom.t; continue; }
         // 词内字符级硬断：找不到断点也不裁切
         let fit = line + joiner;
         for (const ch of atom.t) {
           if (widthOf(fit + ch, fontSize) <= maxWidth) fit += ch;
-          else { lines.push(fit.replace(/ $/, "")); fit = ch; }
+          else { if(fit)lines.push(fit.replace(/ $/, "")); fit = ch; }
         }
         line = fit;
       }
@@ -86,7 +127,7 @@
   /**
    * 字号适配：先 fs0 换行，溢出按 FS_STEP 逐级缩小到文档相对下限；domTier 为 DOM 验证失败降级次数。
    * 下限 = min(fs0, max(0.75×fs0, 0.6×页面正文中位高度))，不使用通用绝对值。
-   * 行节奏：译文行数不超过原文行数时按可用高度均分行距贴合原文行距，上限 FS_LEAD_MAX 防拉散。
+   * 行节奏由实际字号和字体度量决定，不按剩余文本框高度拉大行距。
    * @param {(text:string,fontSize:number)=>number} [measureFn] 宽度测量；缺省用 DOM canvas 实测。
    * @param {number} [lineHeightRatio] 行高倍数；缺省 LINE_HEIGHT（阅读层行为不变），
    *   导出侧按嵌入字体实测注入（汉字级字体 1.448），避免固定值装不下字体自身墨迹。
@@ -99,14 +140,13 @@
     const floor = Math.min(fs0, Math.max(FS_REL_FLOOR * fs0, FS_BODY_FLOOR * (bodyMedian || fs0)));
     const availWidth = (box.right - box.x) * MEASURE_MARGIN;
     const availHeight = box.bottom - box.y;
+    // 保留当前块字号；脚注、表格小字不先被抬升到正文字号再挤回原框。
     let fontSize = fs0;
     for (let tier = 0; tier < (domTier || 0); tier++) fontSize *= FS_STEP;
     while (fontSize >= floor - 1e-6) {
       const lines = wrapText(text, fontSize, availWidth, measureFn);
-      let lineHeight = fontSize * lead;
-      if (originalLines > 1 && lines.length > 1 && lines.length <= originalLines)
-        lineHeight = Math.min(availHeight / lines.length, fontSize * FS_LEAD_MAX);
-      if (lines.length && lines.length * lineHeight <= availHeight) return {lines, fontSize, lineHeight};
+      const lineHeight = fontSize * lead;
+      if (lines.length && lines.every(line => (measureFn || measure)(line,fontSize) <= availWidth) && lines.length * lineHeight <= availHeight) return {lines, fontSize, lineHeight};
       if (fontSize <= floor + 1e-6) break;
       fontSize = Math.max(floor, fontSize * FS_STEP);
     }
@@ -137,7 +177,8 @@
       if (!block.eligible || !block.reliable || block.role !== "text") {
         fallbacks.push({blockId: block.id, reason: "prior"}); continue;
       }
-      if (!(block.height >= bodyMedian * 0.5 && block.height <= bodyMedian * 3)) {
+      const heading=block.kind==="heading"&&block.structure?.confidence==="reliable";
+      if (!(Number.isFinite(block.height)&&block.height>=bodyMedian*0.5&&(block.height<=bodyMedian*3||heading))) {
         fallbacks.push({blockId: block.id, reason: "atypical-size"}); continue;
       }
       candidates.push({block, result});
@@ -150,19 +191,15 @@
       // 遮罩底边覆盖到字体墨迹底 inkBottom（CJK 字体盒高于 1em，块末行基线以下残墨否则露出）；
       // 再以同列后续块结构顶 inkLimit 为硬上限（含遮罩外扩），扩展绝不越入邻段；
       // 译文盒仍按 1em 结构盒范围，保持既有行距排版不变。
-      const inkLimit = Number.isFinite(block.inkLimit) ? block.inkLimit - MASK_PAD : Infinity;
-      const inkBottom = Math.min(Number.isFinite(block.inkBottom) ? block.inkBottom : block.rect.bottom, inkLimit);
-      const baseRect = inflate(block.rect, MASK_PAD);
-      const maskRect = clampToPage({...baseRect, bottom: Math.max(baseRect.bottom, inkBottom + MASK_PAD)}, geometry);
-      // 几何冲突仍按 1em 结构盒判定：扩展底边落在下一行墨迹顶之上的空白区，参与冲突判定会误伤紧排块。
-      const clearanceRect = inflate(baseRect, CLEARANCE);
+      const maskRect = maskFor(block,geometry,rows);
+      // 检查实际遮罩与邻块源文字；像素采样也使用同一个邻域边界。
       let conflict = false;
       for (const other of rows) {
         if (other.block === block || !other.block.rect) continue;
-        if (intersects(clearanceRect, other.block.rect)) { conflict = true; break; }
+        if (intersects(maskRect, inkRect(other.block))) { conflict = true; break; }
       }
       if (conflict) { fallbacks.push({blockId: block.id, reason: "overlap"}); continue; }
-      if (placedRects.some(rect => intersects(rect, baseRect))) {
+      if (placedRects.some(rect => intersects(rect, maskRect))) {
         fallbacks.push({blockId: block.id, reason: "placed-conflict"}); continue;
       }
       // 第三层：像素佐证。缺失=待采样；密度不足或任一判定失败=回退（default-deny）。
@@ -174,17 +211,25 @@
       if (!found.inkConfined || found.solidInk) { fallbacks.push({blockId: block.id, reason: "graphics"}); continue; }
       const domTier = domFailures ? domFailures.get(block.id) || 0 : 0;
       // 译文盒顶对齐原文首行（遮罩仍外扩 MASK_PAD 保证覆盖），消除 1.5pt 首行偏移。
-      const textRect = {x: maskRect.x, y: block.rect.y, right: maskRect.right, bottom: baseRect.bottom};
+      let textRect = {x: maskRect.x, y: block.rect.y, right: maskRect.right, bottom: maskRect.bottom},expansion=null;
+      const proof=found.expansion,candidate=proof?.blank===true?expansionRect({block,result,geometry,rows,measure:measureFn,lineHeight:lineHeightRatio}):null;
+      if(candidate&&proof?.blank===true&&proof.rect&&proof.rect.x===candidate.x&&proof.rect.right===candidate.right&&proof.rect.y===candidate.y&&
+        Number.isFinite(proof.rect.bottom)&&proof.rect.bottom>candidate.y&&Array.isArray(proof.color)&&Array.isArray(found.background.color)&&
+        proof.color.length===3&&proof.color.every((value,index)=>value===found.background.color[index])){
+        const bottom=Math.min(candidate.bottom,proof.rect.bottom);
+        const extended={...textRect,bottom};
+        if(!placedRects.some(rect=>intersects(rect,extended))){textRect=extended;expansion={...candidate,bottom};}
+      }
       const fit = fitBlock(result.text, block.height, bodyMedian, textRect, domTier, (block.lines || []).length, measureFn, lineHeightRatio);
       if (!fit) { fallbacks.push({blockId: block.id, reason: domTier ? "dom-overflow" : "fit"}); continue; }
       placements.set(block.id, {blockId: block.id, rect: block.rect, maskRect, textRect,
         maskColor: found.background.color, fontSize: fit.fontSize, lineHeight: fit.lineHeight,
         lines: fit.lines, direction: block.direction === "rtl" ? "rtl" : "ltr",
-        align: block.direction === "rtl" ? "right" : "left", expansion: null});
-      placedRects.push(baseRect);
+        align: block.direction === "rtl" ? "right" : "left", expansion});
+      placedRects.push({...maskRect,bottom:Math.max(maskRect.bottom,textRect.bottom)});
     }
     return {placements, fallbacks, pending, stats: {overlay: placements.size, fallback: fallbacks.length, pending: pending.length}};
   }
-  global.BT_PDF_LAYOUT_PLANNER = {plan, wrapText, measure, inflate, intersects,
+  global.BT_PDF_LAYOUT_PLANNER = {plan, wrapText, measure, inflate, intersects,maskFor,expansionRect,
     constants: {MASK_PAD, CLEARANCE, RING, LINE_PAD, LINE_HEIGHT, FONT_STACK, MAX_DOM_TIERS}};
 })(typeof window !== "undefined" ? window : self);

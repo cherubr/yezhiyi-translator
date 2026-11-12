@@ -2,6 +2,29 @@
   "use strict";
   const E=global.BT_PDF_ERRORS;
   const interrupted=()=>E.create("CONNECTION_INTERRUPTED","翻译后台连接中断，请刷新翻译设置后继续或重新翻译","translate");
+  // 复用共享 decode 的完整标记校验，额外记录 PDF 行内片段在译文中的真实位置。
+  // 不改请求协议或后台缓存，也不按原文位置/字符比例猜测译文位置。
+  function decodedRuns(value,protection,segments,text) {
+    const protectedParts=segments.filter(part=>part.protected);
+    if(!protectedParts.some(part=>part.runs?.length))return [];
+    let prefix="\uE000PDF_INLINE:";
+    while(value.includes(prefix)||text.includes(prefix))prefix+="_";
+    const sentinels=protection.values.map((_,index)=>prefix+index+"\uE001");
+    const marked=global.BT_TRANSLATION_UNITS.decode(value,{...protection,values:sentinels});
+    const positions=sentinels.map((sentinel,index)=>({sentinel,index,start:marked.indexOf(sentinel)})).sort((a,b)=>a.start-b.start);
+    const inline=[];let from=0,restored="";
+    for(const position of positions){
+      if(position.start<from)return [];
+      restored+=marked.slice(from,position.start);
+      const part=protectedParts[position.index],start=restored.length;
+      restored+=protection.values[position.index];
+      if(part.runs?.length&&part.runs.map(run=>run.text).join("")===part.text)
+        inline.push({start,end:restored.length,runs:part.runs,attachPrevious:!!part.attachPrevious});
+      from=position.start+position.sentinel.length;
+    }
+    restored+=marked.slice(from);
+    return restored===text?inline:[];
+  }
   /** Port 只承载无凭据配置和阶段通知；正文仍通过原有 TRANSLATE 消息。 */
   function create({onInvalidated,onDisconnected,onRequestState}) {
     let port=null,sequence=0,stateVersion=0,viewportEpoch=0,disposed=false;
@@ -49,7 +72,7 @@
       try{port?.postMessage({type:"END_BATCH",runToken:token});}catch(_){}
       try{chrome.runtime.sendMessage({action:"CANCEL_TRANSLATION_REQUESTS",runToken:token},()=>{void chrome.runtime.lastError;});}catch(_){}
     }
-    function translate(block,config,{token,signal,manual,refreshCache}) {
+    function translate(block,config,{token,signal,manual,refreshCache,onDecoded}) {
       const protection=global.BT_TRANSLATION_UNITS.encode(block.segments);
       return new Promise((resolve,reject)=>{
         let settled=false;
@@ -72,7 +95,9 @@
               {code:response.code,retryable:response.retryable,permanent:response.permanent,exhausted:response.exhausted}));return;}
             try{
               if(typeof response.data!=="string"||!response.data.trim())throw new Error("翻译服务返回空内容");
-              finish(null,global.BT_TRANSLATION_UNITS.decode(response.data,protection));
+              const text=global.BT_TRANSLATION_UNITS.decode(response.data,protection);
+              if(onDecoded)onDecoded(decodedRuns(response.data,protection,block.segments,text));
+              finish(null,text);
             }catch(error){finish(error);}
           });
         }catch(_){finish(interrupted());}

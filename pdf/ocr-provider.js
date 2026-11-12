@@ -31,8 +31,8 @@
   function normalize(data, languages) {
     // GetJSONText 结构树：blocks → paragraphs → lines → words；坐标为输入位图像素、左上原点。
     const lines = [];
-    for (const block of data?.blocks || []) {
-      for (const paragraph of block.paragraphs || []) {
+    for (const [blockIndex,block] of (data?.blocks || []).entries()) {
+      for (const [paragraphIndex,paragraph] of (block.paragraphs || []).entries()) {
         for (const line of paragraph.lines || []) {
           const text = typeof line.text === "string" ? line.text.replace(/\s+$/, "") : "";
           if (!text.trim()) continue;
@@ -40,6 +40,7 @@
           lines.push({
             text,
             confidence: Number(line.confidence) || 0,
+            layoutGroup:blockIndex+":"+paragraphIndex,
             bbox: {x0: box.x0 || 0, y0: box.y0 || 0, x1: box.x1 || 0, y1: box.y1 || 0}
           });
         }

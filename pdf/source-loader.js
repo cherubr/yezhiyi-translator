@@ -92,7 +92,11 @@
       }
     }
     E.check(signal); validate(bytes);
-    return {bytes, sourceName, dispose() { bytes = null; }};
+    // 转移给 PDF.js 前计算实际文件内容身份；同名文件和不同地址不会错误复用修订。
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    E.check(signal);
+    const contentId = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+    return {bytes, sourceName, contentId, dispose() { bytes = null; }};
   }
   global.BT_PDF_SOURCE = {authorize, peek, load, MAX_BYTES};
 })(window);

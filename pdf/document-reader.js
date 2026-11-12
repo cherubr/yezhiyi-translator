@@ -99,21 +99,46 @@
         const page = await Promise.race([documentProxy.getPage(pageNumber), workerFailurePromise]);
         E.check(signal);
         if(retired)throw E.cancelled();
-        streamReader=page.streamTextContent({includeMarkedContent:false}).getReader();
-        const content={items:[],styles:Object.create(null)};let characters=0;
+        streamReader=page.streamTextContent({includeMarkedContent:true}).getReader();
+        const content={items:[],styles:Object.create(null)},marked=[];let characters=0,markers=0;
         try{
           while(true){
             const {value,done}=await Promise.race([streamReader.read(),workerFailurePromise]);
             E.check(signal);if(retired||closed)throw E.cancelled();if(done)break;
             for(const item of value.items){
+              // 标记事件不占 textItem 索引，既有人工修订的来源锚点保持稳定。
+              if(item.type){
+                if(++markers>24000||marked.length>128)throw E.create("TEXT_BUDGET","本页结构标记过多","extract",false);
+                if(item.type==="beginMarkedContentProps"||item.type==="beginMarkedContent")marked.push(item.id||null);
+                else if(item.type==="endMarkedContent")marked.pop();
+                continue;
+              }
               characters+=typeof item.str==="string"?item.str.length:0;
               if(content.items.length>=12000||characters>200000)throw E.create("TEXT_BUDGET","本页文字量过大，暂不自动翻译","extract",false);
-              content.items.push(item);
+              content.items.push({...item,markedIds:marked.filter(Boolean)});
             }
             Object.assign(content.styles,value.styles);
           }
+          // 标签是可选证据，不替代原生字框；损坏或缺失的标签退回几何结构路径。
+          let structure=null;
+          if(typeof page.getStructTree==="function"){
+            try{
+              const tree=await Promise.race([page.getStructTree(),workerFailurePromise]);
+              E.check(signal);if(retired||closed)throw E.cancelled();
+              const tags=[];let visited=0,complete=true;
+              const walk=(node,owner=null,path="0",depth=0)=>{
+                if(!node)return;
+                if(++visited>24000||depth>64){complete=false;return;}
+                const role=typeof node.role==="string"?node.role:"";
+                const semantic=/^(?:H[1-6]?|P|L|LI|Table|TR|TH|TD|Figure|Formula|Code|Note|Caption)$/u.test(role)?{role,group:path}:owner;
+                if(node.type==="content"&&typeof node.id==="string"&&semantic)tags.push({id:node.id,...semantic});
+                for(let i=0;i<(node.children?.length||0)&&visited<=24000;i++)walk(node.children[i],semantic,path+"."+i,depth+1);
+              };
+              walk(tree);structure={version:1,tags:complete?tags:[],complete};
+            }catch(failure){E.check(signal);if(retired||closed)throw E.cancelled();structure={version:1,tags:[],complete:false};}
+          }
           const viewport=page.getViewport({scale:1,rotation:page.rotate});
-          return {pageNumber,width:viewport.width,height:viewport.height,transform:[...viewport.transform],items:content.items,styles:content.styles};
+          return {pageNumber,width:viewport.width,height:viewport.height,transform:[...viewport.transform],items:content.items,styles:content.styles,structure};
         }finally{
           void streamReader.cancel().catch(()=>{});
           try{streamReader.releaseLock();}catch(_){}
@@ -155,8 +180,30 @@
         };
         const unitCorners=[[0,0],[1,0],[0,1],[1,1]];
         let imageCount=0,showText=0;
-        const images=[],vectorRects=[];
+        const images=[],vectorRects=[],rules=[];
         let ctm=[1,0,0,1,0,0];const stack=[];
+        let pathBudget=120000;
+        // 本地 PDF.js 的 constructPath 使用 DrawOPS 压缩路径；一个路径也可能包含整张表格。
+        // 仅解析受支持的命令并收集直线，曲线不作为网格；格式未知时保留包围盒回退。
+        const straightRules=(matrix,data)=>{
+          if(!(Array.isArray(data)||ArrayBuffer.isView(data))||data.length>pathBudget)return;
+          pathBudget-=data.length;
+          const arity={0:2,1:2,2:6,3:4,4:0},segments=[];let point=null,start=null;
+          for(let i=0;i<data.length;){
+            const command=data[i++],count=arity[command];
+            if(count===undefined||i+count>data.length)return;
+            const coords=Array.from(data.slice(i,i+count));i+=count;if(!coords.every(Number.isFinite))return;
+            if(command===0){point=coords;start=coords;}
+            else if(command===1){if(point)segments.push([point,coords]);point=coords;}
+            else if(command===4){if(point&&start)segments.push([point,start]);point=start;}
+            else point=coords.slice(-2);
+          }
+          for(const [a,b] of segments){
+            if(rules.length>=2000)break;
+            const p=apply(matrix,...a),q=apply(matrix,...b);if(![...p,...q].every(Number.isFinite))continue;
+            rules.push({x:Math.min(p[0],q[0]),y:Math.min(p[1],q[1]),right:Math.max(p[0],q[0]),bottom:Math.max(p[1],q[1])});
+          }
+        };
         for(let i=0;i<list.fnArray.length;i++){
           const fn=list.fnArray[i],args=list.argsArray[i];
           if(imageOps.has(fn))imageCount++;
@@ -190,14 +237,30 @@
             const minMax=args?.[2];
             if(minMax&&minMax.length===4&&Number.isFinite(minMax[0])&&Number.isFinite(minMax[1])&&
               Number.isFinite(minMax[2])&&Number.isFinite(minMax[3])){
-              const rect=bbox(compose(vt,ctm),[[minMax[0],minMax[1]],[minMax[2],minMax[3]]]);
+              const matrix=compose(vt,ctm),rect=bbox(matrix,[[minMax[0],minMax[1]],[minMax[2],minMax[3]]]);
               if(rect)vectorRects.push(rect);
+              if([OPS.stroke,OPS.closeStroke,OPS.fillStroke,OPS.eoFillStroke,OPS.closeFillStroke,OPS.closeEOFillStroke].includes(args?.[0]))straightRules(matrix,args?.[1]?.[0]);
+              // 直线包围盒允许零宽/零高；原矢量区域接口仍只收有面积的矩形。
+              // 仅收已经描边或填充的路径，不把裁剪区域当作表格边界。
+              if(rules.length<2000&&[OPS.stroke,OPS.closeStroke,OPS.fill,OPS.eoFill,OPS.fillStroke,OPS.eoFillStroke,OPS.closeFillStroke,OPS.closeEOFillStroke].includes(args?.[0])){
+                const points=[[minMax[0],minMax[1]],[minMax[0],minMax[3]],[minMax[2],minMax[1]],[minMax[2],minMax[3]]].map(([x,y])=>apply(matrix,x,y));
+                if(points.every(point=>point.every(Number.isFinite)))rules.push({x:Math.min(...points.map(p=>p[0])),y:Math.min(...points.map(p=>p[1])),right:Math.max(...points.map(p=>p[0])),bottom:Math.max(...points.map(p=>p[1]))});
+              }
             }
           }
         }
-        return {pageNumber,imageOps:imageCount,showTextOps:showText,totalOps:list.fnArray.length,images,vectorRects};
+        return {pageNumber,imageOps:imageCount,showTextOps:showText,totalOps:list.fnArray.length,images,vectorRects,rules};
       };
       return E.wait(work(),{signal,stage:"extract",onCancel:()=>{retired=true;}});
+    }
+    async function pageSize({pageNumber,viewRotation=0},{signal}) {
+      return E.wait((async()=>{
+        if(closed||!documentProxy)throw E.cancelled();
+        const page=await Promise.race([documentProxy.getPage(pageNumber),workerFailurePromise]);
+        E.check(signal);if(closed)throw E.cancelled();
+        const viewport=page.getViewport({scale:1,rotation:(page.rotate+viewRotation)%360});
+        return {width:viewport.width,height:viewport.height};
+      })(),{signal,stage:"render"});
     }
     function close() {
       if (closing) return closing;
@@ -217,7 +280,7 @@
       closing = destroy();
       return closing;
     }
-    return {open, renderPage, extractPage, probePageContent, close};
+    return {open, renderPage, pageSize, extractPage, probePageContent, close};
   }
   global.BT_PDF_READER = {create: createReader};
 })(window);

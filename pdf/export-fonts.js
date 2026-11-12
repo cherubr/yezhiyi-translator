@@ -133,8 +133,11 @@
    * 任一字符属于必须阻止的类别 → blocked 非空，调用方必须整单拒绝导出（不生成缺字文件）；
    * 谚文优先于汉字：SC 完全没有谚文字形，KR 覆盖 8138 个常用汉字，
    * 混排是否真能绘制仍由 Worker 逐字判定，宁可拒绝也不输出方框。
+   * extra 为混排回退级：中英韩混排任何一级都缺字（KR 缺「译」、SC 缺谚文），
+   * 主级只决定垂直度量与优先绘制，主级没有的字形由回退级补绘。顺序固定为汉字级→谚文级→内置级，
+   * 内置放最后是因为 Š š Ÿ Ž ž ˆ ˜ 只有它有字形；这里只声明「还需要嵌入谁」，不声称该级一定画得出。
    * @param {Iterable<string>} texts 需要绘制的文本（含附录），内部先剔除不可见字符。
-   * @returns {{font:"builtin"|"sc"|"kr", blocked:{name:string, reason:string, samples:string}[]}}
+   * @returns {{font:"builtin"|"sc"|"kr", extra:("builtin"|"sc"|"kr")[], blocked:{name:string, reason:string, samples:string}[]}}
    */
   function select(texts) {
     const blocked = new Map(), tiers = new Set();
@@ -149,7 +152,10 @@
         blocked.set(key, item);
       }
     }
-    return {font: tiers.has("kr") ? "kr" : tiers.has("sc") ? "sc" : "builtin", blocked: [...blocked.values()]};
+    const font = tiers.has("kr") ? "kr" : tiers.has("sc") ? "sc" : "builtin";
+    const extra = ["sc", "kr"].filter(code => tiers.has(code) && code !== font);
+    if (font !== "builtin" && tiers.has("builtin")) extra.push("builtin");
+    return {font, extra, blocked: [...blocked.values()]};
   }
 
   /** 把 blocked 结果整理成一句可显示中文说明；类别、原因与样例字符都给全，不含用户译文全文。 */

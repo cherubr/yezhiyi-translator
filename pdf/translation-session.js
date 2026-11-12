@@ -51,7 +51,18 @@
     const OCR_IDLE_MS=180000;
     const cancelOcrIdle=()=>{if(ocrIdleTimer){clearTimeout(ocrIdleTimer);ocrIdleTimer=null;}};
     const scheduleOcrIdle=()=>{cancelOcrIdle();ocrIdleTimer=setTimeout(()=>{ocrIdleTimer=null;if(ocr){void ocr.terminate();ocr=null;}},OCR_IDLE_MS);};
-    const cache=new Map();
+    const cache=new Map(), edits=global.BT_PDF_EDITS.create();
+    let editsReady=Promise.resolve(), editError="", editVersion=0;
+    const editScope=()=>selection?JSON.stringify([1,selection.from,global.BT_CONST.resolveTargetLanguage(selection.to)]):"";
+    function effectiveResult(entry,block) {
+      const machine=entry.results.get(block.id), saved=edits.get(editScope(),entry.geometry.pageNumber,block);
+      // 程序代码始终使用源字符；旧修订仍留在存储中并保留明确撤销入口。
+      if(block.role==="code")return {status:"skipped",reason:block.reason||"代码保持原样",...(saved?{userEdited:true,machine:machine||saved.machine||null}:{})};
+      // 已校验来源身份的显式修订不能因新规则改判保护类型而悄悄消失。
+      // 原位规划器仍按 block 的可靠性/角色拒绝覆盖；用户可查看并明确撤销旧修订。
+      return saved?{status:"translated",text:saved.text,userEdited:true,machine:machine||saved.machine||null}:machine;
+    }
+    const effectiveRows=entry=>entry.blocks.map(block=>({block,result:effectiveResult(entry,block)}));
     // P5b 多页准备存储：与三页 LRU 缓存共享条目对象但独立持有引用（LRU 淘汰不影响已准备的页），
     // 总权重上限防止无限攒页；换文档、配置变化与 dispose 一并作废，语义与 cache 同口径。
     const multiStore=new Map();
@@ -71,11 +82,16 @@
     const keyFor=pageNumber=>documentRef?documentRef.id+":"+pageNumber+":"+stamp()+":"+ocrStamp():"";
     const entryKey=()=>keyFor(page);
     // 第三参数为分类与 OCR 元信息（区域坐标与统计，不含文字内容），仅供调试展示。
-    const show=(entry,reveal=true)=>{if(!disposed)onRows(entry?entry.blocks.map(block=>({block,result:reveal?entry.results.get(block.id):null})):[],entry&&entry.geometry?entry.geometry:null,entry?{classification:entry.classification||null,ocr:entry.ocr||null}:null);};
-    const blocksWeight=entry=>entry.blocks.reduce((n,b)=>n+b.text.length*2+800,0);
-    const weight=entry=>blocksWeight(entry)+[...entry.results.values()].reduce((n,r)=>n+(r.text?.length||0)*2+200,0);
+    const show=(entry,reveal=true)=>{if(!disposed){
+      const unmatched=entry?edits.unmatched?.(editScope(),entry.geometry.pageNumber,entry.blocks)||0:0;
+      onRows(entry?effectiveRows(entry).map(row=>({...row,result:reveal||row.result?.userEdited?row.result:null})):[],entry&&entry.geometry?entry.geometry:null,
+        entry?{classification:entry.classification||null,ocr:entry.ocr||null,editingError:editError||(unmatched?"本页有 "+unmatched+" 条旧人工修订因段落结构变化未自动套用，记录仍保留。":"")}:null);
+    }};
+    const runsWeight=runs=>(runs||[]).reduce((n,run)=>n+(run.text?.length||0)*2+160,0);
+    const blocksWeight=entry=>entry.blocks.reduce((n,b)=>n+b.text.length*2+800+runsWeight(b.runs)+(b.segments||[]).reduce((s,part)=>s+runsWeight(part.runs),0),0);
+    const weight=entry=>blocksWeight(entry)+[...entry.results.values()].reduce((n,r)=>n+(r.text?.length||0)*2+200+(r.inline||[]).reduce((s,part)=>s+80+runsWeight(part.runs),0),0);
     const multiWeight=()=>[...multiStore.values()].reduce((n,entry)=>n+weight(entry),0);
-    const usableResults=entry=>[...entry.results.values()].filter(r=>r.status==="translated"||r.status==="unchanged").length;
+    const usableResults=entry=>effectiveRows(entry).filter(row=>["translated","unchanged"].includes(row.result?.status)).length;
     function trimCache() {
       let total=[...cache.values()].reduce((n,entry)=>n+weight(entry),0);
       for(const [key,entry] of cache){
@@ -141,7 +157,11 @@
     }
     function setDocument(value) {
       halt();cancelPrepare();multiStore.clear();
-      documentRef=value;page=1;pageReady=false;cache.clear();ocrCache.clear();currentEntry=null;started=false;paused=false;
+      documentRef=value;editError="";
+      editsReady=edits.setDocument(value?.contentId).catch(error=>{if(documentRef===value)editError=error.message;});
+      const loadedDocument=value;
+      void editsReady.then(()=>{if(!disposed&&documentRef===loadedDocument){editVersion++;show(currentEntry,!paused);publish();}});
+      page=1;pageReady=false;cache.clear();ocrCache.clear();currentEntry=null;started=false;paused=false;
       // 换文件/关文件即释放 OCR Worker 并复位熔断与闲置计时；同一文档内跨页复用，翻页不重建。
       ocrFailures=0;ocrSuspended=false;cancelOcrIdle();
       if(ocr){void ocr.terminate();ocr=null;}
@@ -165,9 +185,9 @@
       show(currentEntry,false);publish();scheduleOcrIdle();
     }
     function finish(entry) {
-      const results=[...entry.results.values()],failed=results.filter(r=>r.status==="failed").length;
+      const results=effectiveRows(entry).map(row=>row.result).filter(Boolean),failed=results.filter(r=>r.status==="failed").length;
       const translated=results.filter(r=>r.status==="translated").length,skipped=results.filter(r=>r.status==="skipped").length;
-      const missing=entry.blocks.filter(b=>b.eligible&&!entry.results.has(b.id)).length;
+      const missing=entry.blocks.filter(b=>b.eligible&&!effectiveResult(entry,b)).length;
       const unchanged=results.filter(r=>r.status==="unchanged").length;
       Object.assign(state,{phase:failed||skipped||missing?"partial":"completed",busy:false,hasRun:true,canContinue:false,
         message:"本页"+(failed||skipped||missing?"部分完成":"翻译完成")+"：已译 "+translated+" 段，未变化 "+unchanged+" 段，保留 "+skipped+" 段，失败 "+failed+" 段，待处理 "+missing+" 段。"+(entry.ocr?.stats?"图片/异常区域识别 "+entry.ocr.regions.length+" 处，替换乱码 "+entry.ocr.stats.replaced+" 段，去重 "+entry.ocr.stats.deduped+" 段。":"")+(entry.ocr?.warnings?.length?"注意："+entry.ocr.warnings.join("；")+"。":"")+"翻页后继续处理当前页。"});
@@ -306,10 +326,10 @@
       if(cached){cache.delete(key);cache.set(key,cached);return {entry:cached,cached:true};}
       const extracted=await currentDocument.extractPage(pageNumber,{signal});
       if(!valid())throw E.cancelled();
-      const model=global.BT_PDF_BLOCKS.process(extracted);
-      if(model.blocks.length>2000)throw E.create("TEXT_BUDGET","本页文本块过多，暂不自动翻译","extract",false);
       const probe=await currentDocument.probePageContent(pageNumber,{signal});
       if(!valid())throw E.cancelled();
+      const model=global.BT_PDF_BLOCKS.process(extracted,probe);
+      if(model.blocks.length>2000)throw E.create("TEXT_BUDGET","本页文本块过多，暂不自动翻译","extract",false);
       const classification=global.BT_PDF_BLOCKS.classifyPage(model,probe);
       let blocks=model.blocks,ocrInfo=null;
       if(classification.type==="scanned"){
@@ -319,8 +339,9 @@
         ocrInfo={engine:recognized.model.engine,engineVersion:recognized.model.engineVersion,modelVersion:recognized.model.modelVersion,
           regions:recognized.regions.map(({type,reason,rect})=>({type,reason,rect})),stats:null,orientation:recognized.orientation,
           warnings:recognized.warnings};
-      }else if(classification.type==="mixed"){
-        // P4-C 混合页：仅当规划出候选区域时执行区域 OCR；无候选（隐藏文字层齐全等）保持原生路径。
+      }else if(classification.type==="mixed"||classification.type==="text"){
+        // 可靠正文页也可能含转曲图中文字；复用同一候选规划，不以“存在位图”作为 OCR 的必要条件。
+        // 无候选时保持原生路径，置信度门禁、候选数量和资源预算均不放宽。
         const plan=global.BT_PDF_BLOCKS.planOCR(model,probe);
         if(plan.regions.length){
           const recognized=await recognizePage(currentDocument,pageNumber,extracted,signal,valid,plan,stage);
@@ -333,14 +354,16 @@
       }
       // geometry 为固定坐标基准（scale=1、固有旋转），供显示层与导出换算矩阵；不参与缓存权重与 key。
       const entry={blocks,results:new Map(),empty:!blocks.length,classification,ocr:ocrInfo,
-        geometry:{pageNumber:extracted.pageNumber,width:extracted.width,height:extracted.height,transform:extracted.transform}};
+        geometry:{pageNumber:extracted.pageNumber,width:extracted.width,height:extracted.height,transform:extracted.transform,
+          structure:model.structure||null,retainSourceGraphics:!!model.retainSourceGraphics,visuals:model.visuals||[]}};
       cache.set(key,entry);
       return {entry,cached:false};
     }
     /** 结果初始化：不可译块保留原因、同语言整段记为未变化、纯保护或无字母段不送翻（对已有译文幂等）。 */
     function initResults(entry) {
       for(const block of entry.blocks){
-        if(!block.eligible)entry.results.set(block.id,{status:"skipped",reason:block.reason});
+        if(block.reliable&&["number","symbol"].includes(block.role))entry.results.set(block.id,{status:"unchanged",text:block.text});
+        else if(!block.eligible)entry.results.set(block.id,{status:"skipped",reason:block.reason});
         else if(selection.from!=="auto"&&selection.from===global.BT_CONST.resolveTargetLanguage(selection.to))entry.results.set(block.id,{status:"unchanged",text:block.text});
         else if(block.segments.every(part=>part.protected||!/[\p{L}]/u.test(part.text)))entry.results.set(block.id,{status:"skipped",reason:"保留代码或标识符"});
       }
@@ -350,7 +373,7 @@
      * 返回 {done:false} 表示本轮已过期（调用方静默返回）；内容级失败记入结果后继续，服务级失败抛出。
      */
     async function translateBlocks(entry,{token,config,mode,signal,valid,onBlock,onProgress}) {
-      const todo=entry.blocks.filter(b=>b.eligible&&(!entry.results.has(b.id)||(mode!=="auto"&&entry.results.get(b.id).status==="failed")));
+      const todo=entry.blocks.filter(b=>b.eligible&&!edits.get(editScope(),entry.geometry.pageNumber,b)&&(!entry.results.has(b.id)||(mode!=="auto"&&entry.results.get(b.id).status==="failed")));
       if(!todo.length)return {done:true,empty:true};
       await adapter.bind(token,context.revision);
       if(!valid())return {done:false};
@@ -359,10 +382,12 @@
         if(!valid())return {done:false};
         onProgress();
         try{
-          const text=await adapter.translate(block,config,{token,signal,manual:mode!=="auto"&&mode!=="start",refreshCache:mode==="retranslate"});
+          let inline=[];
+          const text=await adapter.translate(block,config,{token,signal,manual:mode!=="auto"&&mode!=="start",refreshCache:mode==="retranslate",onDecoded:runs=>{inline=runs;}});
           if(!valid())return {done:false};
-          if(text.length>200000||weight(entry)+text.length*2>4*1024*1024)throw E.create("RESULT_BUDGET","译文超过本页结果预算","translate",false);
-          entry.results.set(block.id,{status:text.trim()===block.text.trim()?"unchanged":"translated",text});
+          const resultWeight=text.length*2+inline.reduce((n,part)=>n+80+runsWeight(part.runs),0);
+          if(text.length>200000||weight(entry)+resultWeight>4*1024*1024)throw E.create("RESULT_BUDGET","译文超过本页结果预算","translate",false);
+          entry.results.set(block.id,{status:text.trim()===block.text.trim()?"unchanged":"translated",text,...(inline.length?{inline}:{})});
         }catch(error){
           if(!valid())return {done:false};
           if(error.code==="CONNECTION_INTERRUPTED"||error.name==="AbortError"||error.code==="CANCELLED")throw error;
@@ -393,6 +418,7 @@
       Object.assign(state,{busy:true,hasRun:true,canContinue:false,phase:"extracting",message:"正在提取并重组本页文字…"});publish();
       let entry=null;
       try{
+        await editsReady;if(!valid())return;
         const built=await buildEntry(currentPage,currentDocument,{signal:controller.signal,valid,key});
         entry=built.entry;
         if(!valid())return;
@@ -413,7 +439,7 @@
         const config={...selection,to:global.BT_CONST.resolveTargetLanguage(selection.to)};
         const result=await translateBlocks(entry,{token,config,mode,signal:controller.signal,valid,
           onBlock(){show(entry);trimCache();},
-          onProgress(){Object.assign(state,{phase:"translating",message:"正在翻译：已处理 "+entry.results.size+" / "+entry.blocks.length+" 段；等待服务响应…"});publish();}});
+          onProgress(){Object.assign(state,{phase:"translating",message:"正在翻译：已处理 "+effectiveRows(entry).filter(row=>row.result).length+" / "+entry.blocks.length+" 段；等待服务响应…"});publish();}});
         if(!result.done)return;
         finish(entry);
       }catch(error){
@@ -432,7 +458,7 @@
       return structuredClone({
         identity:{documentId:documentRef.id,numPages:documentRef.numPages,page:pageNumber,
           to:global.BT_CONST.resolveTargetLanguage(selection.to)},
-        blocks:entry.blocks,results:[...entry.results],geometry:entry.geometry,
+        blocks:entry.blocks,results:effectiveRows(entry).filter(row=>row.result).map(row=>[row.block.id,row.result]),geometry:entry.geometry,
         classification:entry.classification||null,ocr:entry.ocr||null});
     }
     /**
@@ -458,7 +484,7 @@
      */
     function exportStamp() {
       if(!documentRef||!selection||!stamp())return null;
-      return documentRef.id+":"+documentRef.numPages+":"+stamp()+":"+ocrStamp();
+      return documentRef.id+":"+documentRef.numPages+":"+stamp()+":"+ocrStamp()+":"+editVersion;
     }
     /**
      * 页面可用度：pending = 可靠段中仍无结果或仍失败的段落，partial 表示已有可用译文但未全量完成。
@@ -471,7 +497,7 @@
       if(entry.empty||!eligible.length)return {page:pageNumber,state:"no-text",usable:0,eligible:0,failed:0,pending:0,classification};
       let failed=0,pending=0;
       for(const block of eligible){
-        const result=entry.results.get(block.id);
+        const result=effectiveResult(entry,block);
         if(!result)pending++;
         else if(result.status==="failed"){failed++;pending++;}
       }
@@ -498,6 +524,9 @@
       if(!context||!state.configured)await loadConfig();
       if(disposed||!context||!state.configured)throw E.create("PDF_CONTEXT_ERROR","无法读取翻译配置，请确认翻译设置后重试","prepare",false);
       const currentDocument=documentRef,configStamp=stamp(),ocrVersion=ocrStamp(),revisionAt=revision;
+      await editsReady;
+      if(disposed||documentRef!==currentDocument||revision!==revisionAt)throw E.cancelled();
+      if(active||prepareActive)throw E.create("PDF_BUSY","已有任务在进行，请等待完成或取消","prepare",false);
       // 批次令牌必须落在后台 BIND_BATCH 的 /^pdf:/ 白名单内，否则整轮准备被拒。
       const controller=new AbortController(),token="pdf:"+crypto.randomUUID();
       const aborted=()=>controller.signal.aborted||!!signal?.aborted;
@@ -529,7 +558,7 @@
             if(eligible&&!entry.empty){
               const result=await translateBlocks(entry,{token,config,mode:"start",signal:controller.signal,valid,
                 onBlock(){},
-                onProgress(){onProgress?.({page:pageNumber,stage:"translating",done:entry.results.size,total:entry.blocks.length});}});
+                onProgress(){onProgress?.({page:pageNumber,stage:"translating",done:effectiveRows(entry).filter(row=>row.result).length,total:entry.blocks.length});}});
               if(!result.done)throw E.cancelled();
             }
             multiStore.set(pageNumber,entry);
@@ -567,13 +596,26 @@
         trimCache();scheduleOcrIdle();
       }
     }
+    async function saveEdit(blockId,text,restore=false) {
+      const entry=currentEntry, doc=documentRef, scope=editScope();
+      const block=entry?.blocks.find(item=>item.id===blockId);
+      // 新识别规则可能把旧版可编辑文字归入作者/公式保护区；仍允许用户明确撤销已有修订。
+      const saved=block&&edits.get(scope,page,block);
+      if(!doc?.contentId||!block||(!restore||!saved)&&(!block.eligible||block.role!=="text"))throw new Error("本段没有可靠的可编辑译文");
+      const machine=entry.results.get(blockId)||edits.get(scope,page,block)?.machine;
+      if(!restore&&!machine&&!effectiveResult(entry,block))throw new Error("请先翻译本段再编辑");
+      if(editError)throw new Error(editError);
+      if(restore){const prior=await edits.remove(scope,page,block);if(!entry.results.has(blockId)&&prior)entry.results.set(blockId,prior);}
+      else await edits.save(scope,page,block,text,machine);
+      if(!disposed&&documentRef===doc&&editScope()===scope){editVersion++;show(currentEntry,!paused);publish();}
+    }
     function dispose(){
       disposed=true;halt();cancelPrepare();multiStore.clear();
       cancelOcrIdle();cache.clear();ocrCache.clear();currentEntry=null;documentRef=null;adapter.dispose();if(ocr){void ocr.terminate();ocr=null;}
     }
     publish();void loadConfig();
     return {setDocument,setPage,viewReady,select,start:()=>run(state.canContinue?"continue":state.hasRun?"retranslate":"start"),cancel,loadConfig,
-      exportSnapshot,exportSnapshots,exportStamp,pageStatus,preparePages,cancelPrepare,
+      exportSnapshot,exportSnapshots,exportStamp,pageStatus,preparePages,cancelPrepare,saveEdit,
       limits:{maxPages:MAX_PREPARE_PAGES,pageBudget:PAGES_BUDGET},dispose};
   }
   global.BT_PDF_TRANSLATION_SESSION={create};

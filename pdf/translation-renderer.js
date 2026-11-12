@@ -29,6 +29,7 @@
     let view = null, model = null, frame = 0;
     let generation = 0, modelToken = 0, visible = true;
     let evidence = new Map(), queue = [], plan = null, planDirty = true, domFailures = new Map(), groups = new Map();
+    let sampledText = new Map();
     // P3-D 回退编号只增不复用；仅换文档/翻页重置，缩放、取消、继续保持编号一致。
     let markerNumbers = new Map(), nextMarkerNumber = 1, markerPage = null, markerSig = "", flashTimer = 0;
 
@@ -45,7 +46,7 @@
     }
     function resetPlanState() {
       generation++;
-      evidence = new Map(); queue = []; plan = null; planDirty = true; domFailures = new Map();
+      evidence = new Map();sampledText=new Map(); queue = []; plan = null; planDirty = true; domFailures = new Map();
       if (layer) layer.replaceChildren();
       if (markerLayer) markerLayer.replaceChildren();
       if (flashTimer) { clearTimeout(flashTimer); flashTimer = 0; }
@@ -110,14 +111,14 @@
       schedule();
     }
     function applyVisibility() {
-      if (overlay) overlay.hidden = !visible;
+      if (overlay) { overlay.hidden = !visible; overlay.setAttribute("aria-hidden", String(!visible)); }
     }
     function clear() {
       if (frame) { cancelAnimationFrame(frame); frame = 0; }
       if (flashTimer) { clearTimeout(flashTimer); flashTimer = 0; }
       overlay = null; layer = null; debugLayer = null; markerLayer = null; flashLayer = null; canvas = null;
       view = null; model = null; plan = null; markerSig = "";
-      evidence = new Map(); queue = []; domFailures = new Map(); groups = new Map();
+      evidence = new Map();sampledText=new Map(); queue = []; domFailures = new Map(); groups = new Map();
       markerNumbers = new Map(); nextMarkerNumber = 1; markerPage = null;
     }
     function refresh() { schedule(); }
@@ -127,9 +128,9 @@
 
     // ---------- C1：像素证据采样（同步，绑定当前渲染代次；判定口径与 P5 导出共用 pdf/pixel-evidence.js） ----------
 
-    function sampleBlock(block, m) {
+    function sampleBlock(block, result, m) {
       if (!canvas || !canvas.width || !view || !view.width) return EV.fail();
-      return EV.sample({canvas, block, matrix: m, pxPerCss: canvas.width / view.width});
+      return EV.sample({canvas, block, result,geometry:model.geometry,rows:model.rows,matrix: m, pxPerCss: canvas.width / view.width});
     }
 
     // ---------- C3：Plan 消费与绘制 ----------
@@ -315,7 +316,7 @@
         el.title = "回退 " + number + "：" + item.reason;
         el.tabIndex = 0;
         el.setAttribute("role", "button");
-        el.setAttribute("aria-label", el.title + "，查看对应文字对照");
+        el.setAttribute("aria-label", el.title + "，查看对应译文");
         el.dataset.blockId = item.blockId;
         el.style.left = chip.x + "px"; el.style.top = chip.y + "px";
         el.addEventListener("click", () => { if (onMarkerClick) onMarkerClick(item.blockId); });
@@ -355,7 +356,7 @@
       const queued = new Set(queue);
       for (const {block, result} of model.rows) {
         if (result && result.status === "translated" && result.text && result.text.trim() &&
-            !evidence.has(block.id) && !queued.has(block.id)) {
+            (!evidence.has(block.id)||sampledText.get(block.id)!==result.text) && !queued.has(block.id)) {
           queue.push(block.id); queued.add(block.id);
         }
       }
@@ -364,7 +365,7 @@
       while (queue.length && sampled < SAMPLE_BLOCKS_PER_FRAME) {
         const row = rowsById.get(queue.shift());
         if (!row) continue;
-        evidence.set(row.block.id, sampleBlock(row.block, m));
+        evidence.set(row.block.id, sampleBlock(row.block,row.result, m));sampledText.set(row.block.id,row.result?.text);
         sampled++;
       }
       if (sampled) planDirty = true;

@@ -57,6 +57,55 @@
     if (count > 0) return "；页码书签 " + count + " 条";
     return (Number(stats && stats.pages) || 0) > 1 ? "；页码书签未生成（不影响译文）" : "";
   }
+  /** 字体字节转为可转移 ArrayBuffer：偏移为 0 时直接复用底层缓冲，否则切片复制。 */
+  function toTransferable(bytes) {
+    if (!bytes) return null;
+    return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  }
+  /** 任务中所有需要转移的字体缓冲（主字体 + 混排回退级）；转移后页侧不再保留副本。 */
+  function fontBuffers(job) {
+    const list = job.fontBytes ? [job.fontBytes] : [];
+    for (const extra of job.fallbackFonts || []) if (extra.bytes) list.push(extra.bytes);
+    return list;
+  }
+  /**
+   * 已取回的字体分级 → 任务字体字段：主级写顶层 font* 字段（决定行高与上升部度量），
+   * 其余作为混排回退级交给 Worker 逐级判定字形；内置级只带声明度量、不带字节。
+   */
+  function jobFonts(obtained) {
+    const [main, ...extras] = obtained;
+    const fields = {fontCode: main.code, fontLabel: F.label(main.code), fontMetrics: F.metrics(main.code)};
+    if (main.bytes) fields.fontBytes = main.bytes;
+    if (extras.length) fields.fallbackFonts = extras.map(extra => ({code: extra.code,
+      label: F.label(extra.code), bytes: extra.bytes, metrics: F.metrics(extra.code)}));
+    return fields;
+  }
+  /**
+   * Worker 报字体不可用（文件头/嵌入/度量任一环节）后使本地记录失效：
+   * 坏字节继续命中会让每次重试重演同一失败，删除后下次导出自动重新下载，用户无需先进面板删除。
+   * 删除失败只说明存储不可写，不掩盖原始错误。
+   */
+  function invalidateFonts(job) {
+    for (const code of [job.fontCode, ...(job.fallbackFonts || []).map(extra => extra.code)])
+      if (code && code !== "builtin") void FS.remove(code).catch(() => {});
+  }
+  /** 参与绘制的各级字体名（混排时逐级列出），供状态行如实显示本次导出用了哪几只字体。 */
+  function fontNote(stats) {
+    const codes = Array.isArray(stats && stats.fontCodes) && stats.fontCodes.length
+      ? stats.fontCodes : [stats && stats.font || "builtin"];
+    // CFF 轮廓字体只能整表嵌入（子集产物真实阅读器画不出轮廓），如实标出，避免用户误以为文件异常
+    const full = Array.isArray(stats && stats.fontFull) ? stats.fontFull : [];
+    return codes.map(code => (code === "builtin" ? "内置标准字体" : F.label(code)) +
+      (full.indexOf(code) >= 0 ? "（完整嵌入）" : "")).join(" + ");
+  }
+  function structuredSummary(stats) {
+    return "重排译文 PDF 已导出：已翻译 "+stats.translated+" 段（人工修改 "+stats.edited+" 段），原样保留 "+
+      stats.unchanged+" 段，结构保护 "+(stats.protected||0)+" 段，未完成 "+stats.retained+" 处；表格 "+stats.tables+" 个，图形 "+stats.figures+
+      " 个；译文 "+(stats.translationPages??stats.pages-stats.sourcePages)+" 页"+
+      (stats.supplementalPages?"（含补充译文 "+stats.supplementalPages+" 页）":"")+
+      (stats.sourcePages?"，另附原文保留页 "+stats.sourcePages+" 页":"");
+  }
   /**
    * 页码范围解析：接受「1-3,5,8-9」，容忍全角数字/逗号/顿号/分号、空格与多种连字符
    * （1 - 2、1~2、１－３、U+2010–U+2015、数学减号 U+2212、全角连字符 U+FF0D）；
@@ -92,11 +141,14 @@
   }
 
   function create({session, getDocument, getSnapshot, getSnapshots, getPageStatus, getStamp, preparePages,
-    getPage = () => 1, getMarkers, getName, onState}) {
+    getPage = () => 1, getLayout = () => "preserved", getMarkers, getName, onState}) {
     let active = null, preparing = null, disposed = false, revokeTimer = 0;
+    const reflowCache=new Map();let reflowCacheBytes=0,reflowSource=null,reflowActive=null;
+    const clearReflowCache=()=>{reflowCache.clear();reflowCacheBytes=0;reflowSource=null;};
     // pages/missing/partial/need 为最近一次范围体检结果，供阅读页展示清单与决定按钮可用性；task 区分导出/补译两种取消。
+    // fontFault：最近一次导出因字体不可用失败（已自动作废本机记录），面板据此把状态读成「字体异常」而不是泛泛的失败。
     const state = {phase: "idle", message: "导出前请先读取 PDF", busy: false, task: null, stats: null,
-      pages: null, need: null, missing: null, partial: null, checkedText: null, checkedStamp: null};
+      pages: null, need: null, missing: null, partial: null, checkedText: null, checkedStamp: null, fontFault: false};
     const publish = () => { if (!disposed) onState({...state}); };
     function download(bytes, name) {
       const blob = new Blob([bytes], {type: "application/pdf"});
@@ -140,13 +192,14 @@
      * 分块采样：只取证结构先验后仍待定的块（规划器 evidence=null 时的 pending 集合），
      * 先验已淘汰的块不浪费整页渲染与像素读取。
      */
-    async function collectEvidence(bitmap, targets, byId, signal, pageNumber) {
+    async function collectEvidence(bitmap, targets, byId, signal, pageNumber,geometry,rows) {
       const evidence = new Map();
       const label = "正在独立复核第 " + pageNumber + " 页可遮盖区域";
       Object.assign(state, {phase: "sampling", message: label + "：0 / " + targets.length}); publish();
       for (let index = 0; index < targets.length; index++) {
         E.check(signal);
-        evidence.set(targets[index], EV.sample({canvas: bitmap.canvas, block: byId.get(targets[index]),
+        const row=byId.get(targets[index]);
+        evidence.set(targets[index], EV.sample({canvas: bitmap.canvas, block: row.block,result:row.result,geometry,rows,
           matrix: bitmap.matrix, pxPerCss: bitmap.pxPerCss}));
         if (index % SAMPLE_PER_CHUNK === SAMPLE_PER_CHUNK - 1) {
           state.message = label + "：" + (index + 1) + " / " + targets.length; publish();
@@ -163,15 +216,72 @@
       const results = new Map(snapshot.results);
       const rows = snapshot.blocks.map(block => ({block, result: results.get(block.id) || null}));
       const pre = P.plan({geometry: snapshot.geometry, rows, evidence: null, domFailures: null});
-      const byId = new Map(snapshot.blocks.map(block => [block.id, block]));
+      const byId = new Map(rows.map(row => [row.block.id, row]));
       const targets = pre.pending.filter(id => byId.has(id));
       if (!targets.length) return [];
       const bitmap = await evidenceCanvas(currentDocument, snapshot, signal);
       try {
-        return [...await collectEvidence(bitmap, targets, byId, signal, snapshot.identity.page)];
+        return [...await collectEvidence(bitmap, targets, byId, signal, snapshot.identity.page,snapshot.geometry,rows)];
       } finally {
         bitmap.canvas.width = bitmap.canvas.height = 0;
       }
+    }
+    /**
+     * 逐级取回本次导出要嵌入的字体：主级在前、混排回退级在后，内置级不碰存储。
+     * obtain 对已安装条目直接读回（同一字体不会重复下载），未安装才在该级第一次出现时下载；
+     * 授权由调用方在点击手势内同步发起，逐级共用同一份 authorization。
+     * @returns {Promise<{code:string, bytes:?ArrayBuffer}[]>} bytes 已转为可转移 ArrayBuffer。
+     */
+    async function acquireFonts(codes, authorization, signal) {
+      const obtained = [];
+      for (const code of codes) {
+        if (code === "builtin") { obtained.push({code, bytes: null}); continue; }
+        Object.assign(state, {phase: "preparing", message: "正在准备导出字体（" + F.label(code) + "）…"}); publish();
+        const bytes = await FS.obtain(code, {authorization, signal, onProgress: ({loaded, total}) => {
+          state.message = "正在下载导出字体：" + (loaded / 1048576).toFixed(1) + " MiB" +
+            (total ? " / " + (total / 1048576).toFixed(1) + " MiB" : "") + "…";
+          publish();
+        }});
+        E.check(signal);
+        obtained.push({code, bytes: toTransferable(bytes)});
+      }
+      return obtained;
+    }
+    /**
+     * 待写入 PDF 的真实文本 = 各快照里状态为 translated 且有内容的译文（与选级、缺字门禁同一口径）。
+     * 选级只认这些字符，绝不按目标语言猜：同一目标语言可能混进另一种文字（如中译里夹谚文），
+     * 换个口径会让面板显示的字体与导出实际嵌入的字体脱钩。
+     */
+    function snapshotTexts(snapshots) {
+      const texts = [];
+      for (const snapshot of snapshots) {
+        if (!snapshot?.results) continue;
+        for (const [, result] of snapshot.results)
+          if (result && result.status === "translated" && result.text && result.text.trim())
+            texts.push(F.normalize(result.text));
+      }
+      return texts;
+    }
+    /**
+     * 面板字体状态预览（「自动匹配」的可视口径）：按真正要写出的文本选级，再对照本机已安装记录。
+     * 只读，不下载、不申请授权、不触发任何导出；pages 省略时取当前页。
+     * @returns {Promise<{state:"none"|"ready"|"need"|"blocked", codes:string[], missing:string[], bytes:number, labels:string, blocked:*[]}>}
+     */
+    async function previewFonts(pages) {
+      if (!getDocument()) return {state: "none", codes: [], missing: [], bytes: 0, labels: "", blocked: []};
+      const snapshots = Array.isArray(pages) && pages.length ? getSnapshots(pages) : [getSnapshot()];
+      const texts = snapshotTexts(snapshots);
+      if (!texts.length) return {state: "none", codes: [], missing: [], bytes: 0, labels: "", blocked: []};
+      const selection = F.select(texts);
+      if (selection.blocked.length)
+        return {state: "blocked", codes: [], missing: [], bytes: 0, labels: "", blocked: selection.blocked};
+      const codes = [selection.font, ...selection.extra];
+      let installed = new Set();
+      try { installed = await FS.installed(); } catch (_) { /* 存储不可读时按未安装处理：宁可提示下载也不谎报就绪 */ }
+      const missing = codes.filter(code => code !== "builtin" && !installed.has(code));
+      return {state: missing.length ? "need" : "ready", codes, missing,
+        bytes: missing.reduce((total, code) => total + (F.entry(code)?.bytes || 0), 0),
+        labels: codes.map(code => code === "builtin" ? "内置标准字体" : F.label(code)).join(" + "), blocked: []};
     }
     /** 每次导出新建 Worker、结束即终止；不复用实例，避免上一次异常状态污染下一次导出。 */
     function composeInWorker(job, signal, onProgress, timeoutMs = COMPOSE_MS) {
@@ -205,6 +315,7 @@
           if (message.type === "error") {
             const passthrough = PASSTHROUGH_CODES.has(message.code);
             // 字体嵌入失败重试可能恢复（重新下载/重读存储），其余透传码重试无意义。
+            if (message.code === "EXPORT_FONT_FAILED") { invalidateFonts(job); state.fontFault = true; }
             finish(E.create(passthrough ? message.code : "EXPORT_FAILED", message.message || "导出失败", "export",
               passthrough ? message.code === "EXPORT_FONT_FAILED" : true));
           }
@@ -212,10 +323,53 @@
         signal?.addEventListener("abort", abort, {once: true});
         if (signal?.aborted) { abort(); return; }
         // 字节以转移方式投递，页侧不再保留副本；Worker 完成后同样转移回页侧。
-        const transfer = [job.bytes];
-        if (job.fontBytes) transfer.push(job.fontBytes);
+        const transfer = [job.bytes, ...fontBuffers(job)];
         worker.postMessage(job, {transfer});
       });
+    }
+    /** 右侧预览与重排导出共用同一生成器。预览只读已安装字体，不暗中下载资源。 */
+    async function reflowPDF({signal,authorization,onProgress=()=>{}}={}) {
+      E.check(signal);const currentDocument=getDocument(),snapshot=getSnapshot(),stamp=getStamp();
+      if(!currentDocument||!snapshot)throw E.create("EXPORT_FAILED","请先翻译当前页，再生成重排译文","export");
+      const fingerprint=JSON.stringify([global.BT_PDF_REFLOW_MODEL.VERSION,snapshot]),digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(fingerprint));
+      const key=Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,"0")).join("");
+      E.check(signal);
+      if(disposed||getDocument()!==currentDocument||getStamp()!==stamp)throw E.cancelled();
+      const cached=reflowCache.get(key);
+      if(cached){reflowCache.delete(key);reflowCache.set(key,cached);return {bytes:cached.bytes.slice(0),stats:cached.stats};}
+      const controller=new AbortController(),abort=()=>controller.abort(E.cancelled());
+      signal?.addEventListener("abort",abort,{once:true});reflowActive?.abort(E.cancelled());reflowActive=controller;
+      try{
+        const selected=F.select(snapshotTexts([snapshot]));
+        if(selected.blocked.length)throw E.create("EXPORT_GLYPH_MISSING","这些译文暂缺可用字体："+F.describeBlocked(selected.blocked),"export",false);
+        const obtained=[];
+        for(const code of [selected.font,...selected.extra]){
+          E.check(controller.signal);let bytes=null;
+          if(code!=="builtin"){
+            bytes=await FS.get(code);
+            if(!bytes&&!authorization)throw E.create("REFLOW_FONT_NEEDED","重排译文需要字体，请点击「准备字体并重排」","export");
+            if(!bytes)bytes=await FS.obtain(code,{authorization,signal:controller.signal,onProgress:()=>onProgress({message:"正在准备重排字体…"})});
+          }
+          obtained.push({code,bytes:toTransferable(bytes)});
+        }
+        if(reflowSource?.document!==currentDocument){
+          reflowSource=null;onProgress({message:"正在读取源文件以重建版面…"});
+          const source=await E.wait(session.reloadBytes({signal:controller.signal}),{signal:controller.signal,ms:RELOAD_MS,stage:"export"});
+          E.check(controller.signal);if(getDocument()!==currentDocument)throw E.cancelled();
+          reflowSource={document:currentDocument,bytes:toTransferable(source.bytes)};
+        }
+        const job={job:"export",requestId:crypto.randomUUID(),mode:"structured",bytes:reflowSource.bytes.slice(0),
+          pages:[{snapshot,evidence:[],markerNumbers:[]}],...jobFonts(obtained)};
+        onProgress({message:"正在生成独立译文 PDF…"});
+        const done=await composeInWorker(job,controller.signal,onProgress);
+        E.check(controller.signal);
+        if(disposed||getDocument()!==currentDocument||getStamp()!==stamp||getSnapshot()?.identity.page!==snapshot.identity.page)throw E.cancelled();
+        if(done.bytes.byteLength<=32*1048576){
+          reflowCache.set(key,{bytes:done.bytes,stats:done.stats});reflowCacheBytes+=done.bytes.byteLength;
+          while(reflowCache.size>3||reflowCacheBytes>32*1048576){const first=reflowCache.keys().next().value;reflowCacheBytes-=reflowCache.get(first).bytes.byteLength;reflowCache.delete(first);}
+        }
+        return {bytes:done.bytes.slice(0),stats:done.stats};
+      }finally{signal?.removeEventListener("abort",abort);if(reflowActive===controller)reflowActive=null;}
     }
     /** 前置条件不满足时只置失败态并返回（不抛出），阅读页无需额外捕获即可展示原因。 */
     function refuse(message) {
@@ -267,6 +421,7 @@
     }
     /** 当前页导出。`pair` 为真时走 P5-D 双语口径：原文页照录 + 对照页成对，文件名与状态文案随之分叉。 */
     async function run(mode, pair) {
+      const structured=getLayout()==="structured",frozenStamp=getStamp();
       if (disposed) return;
       if (active) { refuse("已有导出任务在进行，请先取消或等待完成"); return; }
       if (preparing) { refuse("正在补译缺失页，请先取消或等待完成"); return; }
@@ -278,33 +433,28 @@
       // 选级与下载授权必须同步完成（点击手势链内）：注册表只按文字类别选级，逐字缺字由 Worker 权威拒绝。
       let selection = null, authorization = null;
       if (mode === "translated") {
-        const texts = [];
-        for (const [, result] of snapshot.results)
-          if (result && result.status === "translated" && result.text && result.text.trim())
-            texts.push(F.normalize(result.text));
-        selection = F.select(texts);
+        selection = F.select(snapshotTexts([snapshot]));
         if (selection.blocked.length) {
           refuse("本页译文包含导出字体无法绘制的文字：" + F.describeBlocked(selection.blocked) +
             "。请改用原文导出，或把目标语言改为该字体覆盖的语言");
           return;
         }
-        if (selection.font !== "builtin") authorization = FS.authorize();
+        if (selection.font !== "builtin" || selection.extra.length) authorization = FS.authorize();
       }
       active = {controller};
-      Object.assign(state, {busy: true, task: "export", stats: null, phase: "preparing", message: "正在准备导出…"}); publish();
-      let source = null, fontBytes = null;
+      Object.assign(state, {busy: true, task: "export", stats: null, phase: "preparing", fontFault: false,
+        message: "正在准备导出…"}); publish();
+      let source = null, fonts = null;
       try {
-        // 字体先行：权限与网络问题尽早暴露，避免白做一次整页证据渲染。
-        const fontCode = selection ? selection.font : "builtin";
-        if (fontCode !== "builtin") {
-          Object.assign(state, {phase: "preparing",
-            message: "正在准备导出字体（" + F.label(fontCode) + "）…"}); publish();
-          fontBytes = await FS.obtain(fontCode, {authorization, signal, onProgress: ({loaded, total}) => {
-            state.message = "正在下载导出字体：" + (loaded / 1048576).toFixed(1) + " MiB" +
-              (total ? " / " + (total / 1048576).toFixed(1) + " MiB" : "") + "…";
-            publish();
-          }});
-          E.check(signal);
+        if(structured&&mode==="translated"){
+          const done=await reflowPDF({signal,authorization,onProgress:message=>{if(message.message){state.message=message.message;publish();}}});
+          E.check(signal);if(getStamp()!==frozenStamp)throw E.create("EXPORT_SOURCE_CHANGED","译文或配置已变化，请重新导出","export",false);
+          download(done.bytes,fileName(name,"-重排译文-p"+snapshot.identity.page));
+          Object.assign(state,{phase:"done",fontFault:false,message:structuredSummary(done.stats)+"，共 "+done.stats.pages+" 页",stats:done.stats});publish();return;
+        }
+        // 字体先行：权限与网络问题尽早暴露，避免白做一次整页证据渲染。混排时主级与回退级都要备齐。
+        if (selection) {
+          fonts = await acquireFonts([selection.font, ...selection.extra], authorization, signal);
         }
         source = await reloadBytes(signal, "preparing");
         E.check(signal);
@@ -318,40 +468,34 @@
         }
         // 身份冻结校验：快照取自调用瞬间，异步过程中翻页/换文档/改目标语言都使本次导出失效。
         const live = getSnapshot();
-        if (!live || live.identity.documentId !== snapshot.identity.documentId || live.identity.page !== snapshot.identity.page ||
+        if (getStamp()!==frozenStamp || !live || live.identity.documentId !== snapshot.identity.documentId || live.identity.page !== snapshot.identity.page ||
             live.identity.to !== snapshot.identity.to)
           throw E.create("EXPORT_SOURCE_CHANGED", "导出过程中页面或翻译设置已变化，请重新导出", "export", false);
         // 取证与多页导出走同一入口：无待定块则整页位图渲染直接跳过，取证完即释放画布。
-        const evidence = new Map(await pageEvidence(currentDocument, snapshot, signal));
+        const evidence = structured ? new Map() : new Map(await pageEvidence(currentDocument, snapshot, signal));
         E.check(signal);
         Object.assign(state, {phase: "composing", message: "正在生成导出 PDF…"}); publish();
         const transferable = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
           ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
         bytes = null;
-        let fontBuffer = null;
-        if (fontBytes) {
-          fontBuffer = fontBytes.byteOffset === 0 && fontBytes.byteLength === fontBytes.buffer.byteLength
-            ? fontBytes.buffer : fontBytes.buffer.slice(fontBytes.byteOffset, fontBytes.byteOffset + fontBytes.byteLength);
-          fontBytes = null;
-        }
         const job = {job: "export", requestId: crypto.randomUUID(), bytes: transferable,
-          mode: pair ? "bilingual" : "translated",
+          mode: structured ? "structured" : pair ? "bilingual" : "translated",
           pages: [{snapshot, evidence: [...evidence], markerNumbers: [...(getMarkers()?.numbers || [])]}],
-          fontCode, fontLabel: F.label(fontCode), fontMetrics: F.metrics(fontCode)};
-        if (fontBuffer) job.fontBytes = fontBuffer;
+          ...jobFonts(fonts)};
         const done = await composeInWorker(job, signal,
           message => { if (message.message) { state.message = message.message; publish(); } });
         E.check(signal);
+        if(getStamp()!==frozenStamp)throw E.create("EXPORT_SOURCE_CHANGED","导出过程中译文或配置已变化，请重新导出","export",false);
         // 双语口径的成对页只在真有原位译文时追加，故「对照页」数可小于页数——原文页始终保留，绝不伪装成对。
-        const head = !pair ? "译文 PDF 已导出：原位 " + done.stats.overlay + " 段"
+        const head = structured ? structuredSummary(done.stats) : !pair ? "译文 PDF 已导出：原位 " + done.stats.overlay + " 段"
           : done.stats.pairs ? "双语 PDF 已导出：原文 " + done.stats.selected + " 页 + 对照 " + done.stats.pairs +
             " 页，原位 " + done.stats.overlay + " 段"
           : "双语 PDF 已导出：原文 " + done.stats.selected + " 页（本页译文未能原位显示，未追加对照页）";
-        download(done.bytes, fileName(name, (pair ? "-双语-" : "-译文-") + "p" + snapshot.identity.page));
-        Object.assign(state, {phase: "done", message: head + "，附录 " + done.stats.appendixItems + " 段（" +
-          done.stats.appendixPages + " 页），共 " + done.stats.pages + " 页；字体 " +
-          (done.stats.customFont ? F.label(done.stats.font) : "内置标准字体") + bookmarkNote(done.stats),
-          stats: {...done.stats, mode: pair ? "bilingual" : "translated"}}); publish();
+        download(done.bytes, fileName(name, (structured ? "-重排译文-" : pair ? "-双语-" : "-译文-") + "p" + snapshot.identity.page));
+        Object.assign(state, {phase: "done", fontFault: false, message: head + (structured?"":"，附录 " + done.stats.appendixItems + " 段（" +
+          done.stats.appendixPages + " 页）")+"，共 " + done.stats.pages + " 页；字体 " +
+          fontNote(done.stats) + bookmarkNote(done.stats),
+          stats: {...done.stats, mode: structured ? "structured" : pair ? "bilingual" : "translated"}}); publish();
       } catch (error) {
         if (disposed) return;
         failWith(error, "export");
@@ -368,6 +512,7 @@
      * 逐页取证任一时刻只有一张证据位图存活；任一页失败即整单失败，只在全部生成后下载一个文件。
      */
     async function runRange(text, keepMissing, pair) {
+      const structured=getLayout()==="structured";
       if (disposed) return;
       if (active) { refuse("已有导出任务在进行，请先取消或等待完成"); return; }
       if (preparing) { refuse("正在补译缺失页，请先取消或等待完成"); return; }
@@ -395,19 +540,18 @@
       // 冻结：快照一次性克隆，之后的 await 不再新增克隆；翻页只影响屏幕，不改变本次所选页内容。
       // 屏上回退标记只属于当前可见页，故只有该页复用其编号，其余页由导出侧另编号（记录为已知限制）。
       const markerPage = getPage(), markers = [...(getMarkers()?.numbers || [])], shown = getSnapshot();
-      const snapshots = getSnapshots(pages), frozen = [], texts = [];
+      const snapshots = getSnapshots(pages), frozen = [];
       pages.forEach((page, index) => {
         const snapshot = snapshots[index];
         // 只把「真有译文」的快照交给 Worker：无正文页/全失败页即便有条目也按原文照录，
         // 既省一次整页证据渲染，也让状态里的「按原文保留」如实数到这些页。
-        const entries = snapshot ? [...snapshot.results] : [];
-        const translated = entries.filter(([, result]) =>
-          result && result.status === "translated" && result.text && result.text.trim());
-        if (!translated.length) { frozen.push({page, snapshot: null, evidence: null, markerNumbers: []}); return; }
+        const hasTranslation = snapshotTexts([snapshot]).length > 0;
+        if (!hasTranslation) { frozen.push({page, snapshot: null, evidence: null, markerNumbers: []}); return; }
         const reuse = page === markerPage && !!shown && shown.identity.documentId === snapshot.identity.documentId;
         frozen.push({page, snapshot, evidence: null, markerNumbers: reuse ? markers : []});
-        for (const [, result] of translated) texts.push(F.normalize(result.text));
       });
+      // 选级用与 Worker 完全相同的文本口径（已剔除无译文页），避免面板与导出结论分叉。
+      const texts = snapshotTexts(frozen.map(entry => entry.snapshot));
       if (!texts.length) {
         refuse("所选页都没有可用译文，请点「翻译缺失页」补译，或改用原文导出（整份文件）");
         return;
@@ -418,29 +562,20 @@
           "。请改用原文导出，或把目标语言改为该字体覆盖的语言");
         return;
       }
-      const authorization = selection.font === "builtin" ? null : FS.authorize();
+      const authorization = selection.font === "builtin" && !selection.extra.length ? null : FS.authorize();
       const controller = new AbortController(), signal = controller.signal;
       active = {controller};
-      Object.assign(state, {busy: true, task: "export", stats: null, phase: "preparing",
+      Object.assign(state, {busy: true, task: "export", stats: null, phase: "preparing", fontFault: false,
         message: "正在准备导出（共 " + pages.length + " 页）…"}); publish();
-      let source = null, fontBytes = null;
+      let source = null, fonts = null;
       try {
-        // 字体先行：权限与网络问题尽早暴露，避免白做多页证据渲染。整单只用一只字体，子集字形跨页累加。
-        const fontCode = selection.font;
-        if (fontCode !== "builtin") {
-          Object.assign(state, {phase: "preparing",
-            message: "正在准备导出字体（" + F.label(fontCode) + "）…"}); publish();
-          fontBytes = await FS.obtain(fontCode, {authorization, signal, onProgress: ({loaded, total}) => {
-            state.message = "正在下载导出字体：" + (loaded / 1048576).toFixed(1) + " MiB" +
-              (total ? " / " + (total / 1048576).toFixed(1) + " MiB" : "") + "…";
-            publish();
-          }});
-        }
+        // 字体先行：权限与网络问题尽早暴露，避免白做多页证据渲染。整单共用同一组分级，子集字形跨页累加。
+        fonts = await acquireFonts([selection.font, ...selection.extra], authorization, signal);
         E.check(signal); checkStamp();
         source = await reloadBytes(signal, "preparing");
         E.check(signal); checkStamp();
         for (const entry of frozen) {
-          if (!entry.snapshot) continue;
+          if (!entry.snapshot || structured) continue;
           entry.evidence = await pageEvidence(currentDocument, entry.snapshot, signal);
           E.check(signal); checkStamp();
         }
@@ -449,39 +584,32 @@
         const transferable = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
           ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
         bytes = null;
-        let fontBuffer = null;
-        if (fontBytes) {
-          fontBuffer = fontBytes.byteOffset === 0 && fontBytes.byteLength === fontBytes.buffer.byteLength
-            ? fontBytes.buffer : fontBytes.buffer.slice(fontBytes.byteOffset, fontBytes.byteOffset + fontBytes.byteLength);
-          fontBytes = null;
-        }
         const job = {job: "export", requestId: crypto.randomUUID(), bytes: transferable,
-          mode: pair ? "bilingual" : "translated",
+          mode: structured ? "structured" : pair ? "bilingual" : "translated",
           pages: frozen.map(entry => entry.snapshot
             ? {snapshot: entry.snapshot, evidence: entry.evidence, markerNumbers: entry.markerNumbers}
             : {page: entry.page}),
-          fontCode, fontLabel: F.label(fontCode), fontMetrics: F.metrics(fontCode)};
-        if (fontBuffer) job.fontBytes = fontBuffer;
+          ...jobFonts(fonts)};
         const done = await composeInWorker(job, signal,
           message => { if (message.message) { state.message = message.message; publish(); } },
           COMPOSE_MS + (COMPOSE_PER_PAGE_MS + (pair ? COMPOSE_PAIR_MS : 0)) * (pages.length - 1));
-        E.check(signal);
+        E.check(signal);checkStamp();
         // 保留页数只能按 per 数：Worker 的 selected 含按原文照录页，用 pages.length - selected 恒为 0。
         const kept = (done.stats.per || []).filter(item => item.original).length;
         // 有译文但一段都没入位的页不出对照页（否则等于把原文页重贴一遍），如实报成「未追加对照页」。
         const unpaired = pair ? (done.stats.per || []).filter(item => !item.original && !item.pair).length : 0;
-        download(done.bytes, fileName(name, (pair ? "-双语-" : "-译文-") +
+        download(done.bytes, fileName(name, (structured ? "-重排译文-" : pair ? "-双语-" : "-译文-") +
           (pages.length === 1 ? "p" + pages[0] : compact(pages))));
-        const head = pair
+        const head = structured ? structuredSummary(done.stats) : pair
           ? "双语 PDF 已导出：所选 " + pages.length + " 页中原文 " + done.stats.selected + " 页 + 对照 " +
             done.stats.pairs + " 页" + (unpaired ? "（" + unpaired + " 页译文未能原位显示，未追加对照页）" : "") +
             "，原位 " + done.stats.overlay + " 段"
           : "译文 PDF 已导出：所选 " + pages.length + " 页中原位 " + done.stats.overlay + " 段";
-        Object.assign(state, {phase: "done", message: head + "，附录 " + done.stats.appendixItems + " 段（" +
-          done.stats.appendixPages + " 页），输出共 " + done.stats.pages + " 页" +
+        Object.assign(state, {phase: "done", message: head + (structured?"":"，附录 " + done.stats.appendixItems + " 段（" +
+          done.stats.appendixPages + " 页）")+"，输出共 " + done.stats.pages + " 页" +
           (kept ? "，另有 " + kept + " 页按原文保留" : "") + "；字体 " +
-          (done.stats.customFont ? F.label(done.stats.font) : "内置标准字体") + bookmarkNote(done.stats),
-          stats: {...done.stats, mode: pair ? "bilingual" : "translated", range: pages.slice(), kept}}); publish();
+          fontNote(done.stats) + bookmarkNote(done.stats),
+          stats: {...done.stats, mode: structured ? "structured" : pair ? "bilingual" : "translated", range: pages.slice(), kept}}); publish();
       } catch (error) {
         if (disposed) return;
         failWith(error, "export");
@@ -555,13 +683,14 @@
     }
     function dispose() {
       disposed = true; cancel();
+      reflowActive?.abort(E.cancelled());clearReflowCache();
       if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = 0; }
       active = null; preparing = null;
     }
     publish();
     return {exportOriginal: () => run("original"), exportTranslated: pair => run("translated", !!pair),
       exportRange: (text, keepMissing, pair) => runRange(text, !!keepMissing, !!pair),
-      prepareMissing, cancel, dispose};
+      previewFonts, reflowPDF, clearReflow(){reflowActive?.abort(E.cancelled());clearReflowCache();}, prepareMissing, cancel, dispose};
   }
   global.BT_PDF_EXPORTER = {create, fileName, parseRange, compact};
 })(window);

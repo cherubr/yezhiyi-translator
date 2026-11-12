@@ -83,7 +83,35 @@
     return new Set((await ready()).keys());
   }
 
-  /** 读取字体字节；meta 或字节缺失（被浏览器逐出）时清理记录并按未安装返回 null，不静默失败。 */
+  /**
+   * 本机存储占用：按实际存入记录里的字节数统计（不是注册表声明值），
+   * 字体面板的「存储占用」只认真正躺在 IndexedDB 里的东西。
+   */
+  async function usage() {
+    let bytes = 0;
+    const codes = [];
+    for (const [code, record] of await ready()) {
+      bytes += Number(record?.bytes) || 0;
+      codes.push(code);
+    }
+    return {codes, bytes, count: codes.length};
+  }
+
+  /**
+   * 读取时的最低可用性判定：只认 OpenType/TrueType/TrueType 集合四种容器头，
+   * 与导出 Worker 的 sniffFont 同一口径（两侧不同 realm，故各自保留一份最小判定）。
+   * 只比字节长度时，「等长但损坏」的 blob 会永久命中并让每次重试重演同一失败；
+   * 坏头在这里即按未安装处理，下一次 obtain 直接走重新下载。内部表损坏仍由 Worker 权威拒绝，
+   * 页侧收到 EXPORT_FONT_FAILED 后删除本记录（exporter.js invalidateFonts），实现自愈。
+   */
+  const usableHeader = bytes => {
+    if (!bytes || bytes.length < 12) return false;
+    const tag = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+    return tag === "OTTO" || tag === "true" || tag === "ttcf" ||
+      (bytes[0] === 0 && bytes[1] === 1 && bytes[2] === 0 && bytes[3] === 0);
+  };
+
+  /** 读取字体字节；meta 或字节缺失/损坏（被逐出、长度不符、文件头无效）时清理记录并按未安装返回 null，不静默失败。 */
   async function get(code) {
     const current = await ready();
     const meta = current.get(code);
@@ -91,7 +119,7 @@
     const db = await openDb();
     const record = await wrap(db.transaction([BLOBS], "readonly").objectStore(BLOBS).get(code));
     const bytes = record?.bytes;
-    if (!(bytes instanceof Uint8Array) || bytes.length !== meta.bytes) {
+    if (!(bytes instanceof Uint8Array) || bytes.length !== meta.bytes || !usableHeader(bytes)) {
       current.delete(code);
       await removeCodes(db, [code]).catch(() => {});
       return null;
@@ -208,6 +236,6 @@
     current.delete(code);
   }
 
-  global.BT_PDF_FONT_STORE = {ready, installed, get, obtain, authorize, download, remove,
+  global.BT_PDF_FONT_STORE = {ready, installed, usage, get, obtain, authorize, download, remove,
     DB_NAME, DOWNLOAD_ORIGIN};
 })(window);
