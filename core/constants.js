@@ -7,11 +7,12 @@
     "autoTranslate", "hoverPanel",
     "hoverTranslate", "hoverRequireShift",
     "shortcutTranslate",
-    "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion"
+    "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion", "glossary"
   ];
 
   // 配置缺失时的默认值；concurrency 仅作旧版兼容，实际限额取 requestPolicies。
   const DEFAULTS = {
+    glossary: {version:1,enabled:true,builtins:true,entries:[]},
     engine: "google",
     aiProvider: "openai",
     aiKeys: {},
@@ -81,8 +82,12 @@
     TOGGLE_PANEL: "TOGGLE_PANEL",
     OPEN_PANEL: "OPEN_PANEL",
     OPEN_SETTINGS: "OPEN_SETTINGS",
+    OPEN_PDF_READER: "OPEN_PDF_READER",
     TRANSLATE_SELECTION: "TRANSLATE_SELECTION",
     GET_STATUS: "GET_STATUS",
+    PANEL_SETTING_CHANGE: "PANEL_SETTING_CHANGE",
+    PANEL_MODE_CHANGE: "PANEL_MODE_CHANGE",
+    PANEL_TOGGLE_PREF: "PANEL_TOGGLE_PREF",
     RELOAD_CONFIG: "RELOAD_CONFIG",
     SET_PAGE_STATE: "SET_PAGE_STATE",
     TRANSLATION_REQUEST_STATE: "TRANSLATION_REQUEST_STATE",
@@ -211,7 +216,7 @@
   const BT_CONST = { LOG_CONFIG, STORAGE_KEYS, DEFAULTS, MSG, LANGUAGES, fillLanguageSelect, resolveTargetLanguage, getBaiduCredentialFingerprint, hasVerifiedBaiduCredentials };
 
   // 服务配置包含密钥，只保存在本机；语言和显示模式等普通偏好仍使用同步存储。
-  const LOCAL_KEYS = ["aiKeys", "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion"];
+  const LOCAL_KEYS = ["aiKeys", "baiduAppId", "baiduKey", "baiduVerification", "requestPolicies", "requestPolicyVersion", "glossary"];
   // 旧版单 AI 服务字段，迁移成功后从同步区移除。
   const LEGACY_KEYS = ["openaiKey", "openaiBase", "openaiModel"];
   // 当前上下文共用的迁移 Promise，失败时清空以允许重试。
@@ -238,6 +243,7 @@
       if (synced.aiKeys || synced.openaiKey) moved.aiKeys = providers;
       if (synced.requestPolicies) moved.requestPolicies = { ...synced.requestPolicies, ...(local.requestPolicies || {}) };
       if (synced.requestPolicyVersion && !local.requestPolicyVersion) moved.requestPolicyVersion = synced.requestPolicyVersion;
+      if (Object.hasOwn(synced,"glossary")&&!Object.hasOwn(local,"glossary"))moved.glossary=synced.glossary;
       for (const key of ["baiduAppId", "baiduKey"]) {
         if (Object.prototype.hasOwnProperty.call(synced, key) && !Object.prototype.hasOwnProperty.call(local, key)) moved[key] = synced[key];
       }

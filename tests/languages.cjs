@@ -19,6 +19,7 @@ vm.runInContext(s.slice(s.indexOf('async function translateMyMemory('),s.indexOf
 (async()=>{
  assert.equal(context.BT_CONST.LANGUAGES.to.length,49);
  assert.equal(context.BT_CONST.LANGUAGES.from.length,49);
+ for(const language of ['zh-CN','en','fr','ru','es','ar'])for(const direction of ['from','to'])assert.ok(context.BT_CONST.LANGUAGES[direction].some(item=>item.value===language),'源语言和目标语言均保留六种语言：'+language);
  assert.equal(context.BT_CONST.DEFAULTS.to,'browser');
  for(const [locale,expected] of Object.entries({'en-US':'en','zh-HK':'zh-TW','zh-Hans':'zh-CN','pt-BR':'pt','nb-NO':'no','xx-XX':'en'})){
    context.chrome.i18n.getUILanguage=()=>locale;

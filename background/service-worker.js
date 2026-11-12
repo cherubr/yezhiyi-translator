@@ -8,7 +8,9 @@ importScripts(
   "../core/providers.js",
   "../core/md5.js",
   "../core/languages.js",
-  "../core/translation-runtime.js"
+  "../core/translation-runtime.js",
+  "../core/glossary.js",
+  "../core/frame-sessions.js"
 );
 
 // 消息动作常量，供后台与内容脚本使用同一套指令名。
@@ -33,15 +35,30 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-/**
- * 工具栏图标入口：通知当前网页切换面板显隐，由内容脚本判断面板真实状态。
- * @param {Object} tab 用户点击图标时所在标签页。
- */
-chrome.action.onClicked.addListener((tab) => {
-  if (!tab || !tab.id) return;
+// 工具栏图标由 manifest 的 action.default_popup 打开 Popup 控制面板，
+// 设置 default_popup 后 Chrome 不再触发 action.onClicked，后台无需点击入口。
+// 阅读器页本身就是翻译工具，不需要控制面板：该标签页按标签覆盖 Popup 为空串，
+// 点击图标无任何动作；离开阅读器页恢复默认 Popup。
+const PDF_READER_URL = chrome.runtime.getURL("pdf/reader.html");
+// setPopup 不接受 null，恢复默认必须显式传入 manifest 中同一相对路径。
+const DEFAULT_ACTION_POPUP = "popup/popup.html";
 
-  safeSendToTab(tab.id, { action: MSG.OPEN_PANEL, toggle: true });
+/**
+ * 按标签页同步工具栏 Popup：阅读器页禁用，其余标签恢复 manifest 默认值。
+ * @param {number} tabId 标签页编号。
+ * @param {string|undefined} url 标签页当前地址。
+ */
+function syncActionPopup(tabId, url) {
+  if (typeof tabId !== "number" || tabId < 0) return;
+  const isReader = typeof url === "string" && url.startsWith(PDF_READER_URL);
+  chrome.action.setPopup({ tabId, popup: isReader ? "" : DEFAULT_ACTION_POPUP });
+}
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.url || changeInfo.status === "loading") syncActionPopup(tabId, tab.url || changeInfo.url);
 });
+chrome.tabs.onCreated.addListener((tab) => syncActionPopup(tab.id, tab.url));
+// 后台重启后补一次存量标签，避免漏掉已经在阅读器页的标签。
+chrome.tabs.query({}, (tabs) => { for (const tab of tabs || []) syncActionPopup(tab.id, tab.url); });
 
 /**
  * 右键菜单入口：把开始整页翻译或选中文字翻译的指令发送给当前页面。
@@ -55,7 +72,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     safeSendToTab(tab.id, {
       action: MSG.TRANSLATE_SELECTION,
       text: info.selectionText
-    });
+    },info.frameId);
   }
 });
 
@@ -81,13 +98,14 @@ chrome.commands.onCommand.addListener(async (command) => {
  * 向指定标签页发送控制指令；页面不存在或尚未注入内容脚本时忽略发送失败。
  * @param {number} tabId 接收指令的标签页编号。
  * @param {Object} message 包含 action 及该指令需要的数据。
- * @returns {Promise<void>} 消息发送结束；失败不会继续向调用方抛出。
+ * @returns {Promise<boolean>} 是否成功投递；失败不会继续向调用方抛出。
  */
-async function safeSendToTab(tabId, message) {
+async function safeSendToTab(tabId, message,frameId=0) {
   try {
-    await chrome.tabs.sendMessage(tabId, message);
+    await chrome.tabs.sendMessage(tabId, message,{frameId});
+    return true;
   } catch (e) {
-
+    return false;
   }
 }
 
@@ -98,18 +116,50 @@ async function safeSendToTab(tabId, message) {
  */
 function openExtensionPage(relativePath) {
   const url = chrome.runtime.getURL(relativePath);
-  chrome.tabs.query({ url }, (tabs) => {
-    if (tabs && tabs.length > 0) {
-      chrome.tabs.update(tabs[0].id, { active: true });
-      chrome.windows.update(tabs[0].windowId, { focused: true });
+  chrome.tabs.query({ url:url.split("#")[0] }, (tabs) => {
+    const existing=tabs?.find(tab=>tab.url===url);
+    if (existing) {
+      chrome.tabs.update(existing.id, { active: true });
+      chrome.windows.update(existing.windowId, { focused: true });
     } else {
       chrome.tabs.create({ url });
     }
   });
 }
 
+/**
+ * 打开独立 PDF 阅读器；携带来源时以 #url= 编码地址传递，阅读页按授权状态预填或自动加载。
+ * 已有阅读页标签时导航到目标来源并激活，避免连续点击叠出多个阅读页；并发调用只保留最后一次。
+ * @param {string} pdfUrl 需要携带的 PDF 原始地址；空串打开空白阅读页。
+ */
+let pdfReaderOpenSeq = 0;
+async function openPdfReader(pdfUrl) {
+  const seq = ++pdfReaderOpenSeq;
+  let hash = "";
+  if (pdfUrl) {
+    try {
+      const parsed = new URL(pdfUrl);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return;
+      hash = "#url=" + encodeURIComponent(parsed.href);
+    } catch (_) { return; }
+  }
+  const base = chrome.runtime.getURL("pdf/reader.html");
+  const tabs = await chrome.tabs.query({ url: base });
+  if (seq !== pdfReaderOpenSeq) return;
+  const existing = tabs && tabs[0];
+  if (existing) {
+    chrome.tabs.update(existing.id, { url: base + hash, active: true });
+    chrome.windows.update(existing.windowId, { focused: true });
+  } else {
+    chrome.tabs.create({ url: base + hash });
+  }
+}
+
 // 批次表：key 对应 owner、cancelled 和消费者控制器集合；属于本轮后台内存。
 const requestGroups = new Map();
+// PDF 阅读页专用通道；只保存可信 sender、批次与无凭据的配置版本。
+const pdfPorts = new Map();
+let pdfConfigRevision = 0;
 
 // 凭据指纹与最新测试身份的映射，阻止旧测试回写结果。
 const latestBaiduTests = new Map();
@@ -120,7 +170,7 @@ let baiduVerificationWrite = Promise.resolve();
 const currentDocuments = new Map(), retiredOwners = new Set();
 
 // 请求策略更新计数，用于阻止较早的异步存储读取覆盖新策略。
-let requestPolicyRevision = 0;
+let requestPolicyRevision = 0, glossaryRevision=0;
 
 /**
  * 生成文档身份，用于隔离不同页面及刷新前后的请求。
@@ -145,27 +195,69 @@ function cancelOwner(owner) {
   translationRuntime.removeOwner(owner);
 }
 
-/**
- * 登记当前文档；同一标签页和框架出现新 documentId 时，取消并标记旧文档。
- * @param {Object} sender 浏览器提供的发送方身份；不能用请求正文伪造。
- * @returns {string} 当前文档的 owner 标识。
- * @throws {Error} 已退役文档抛出 AbortError，阻止迟到请求重新入队。
- */
-function registerOwner(sender) {
+/** 只有浏览器确认的激活/恢复可以移除退役标记，普通旧请求不能自行恢复身份。 */
+function activateDocument(sender,verified=true){
+  const owner=ownerKey(sender),frame=JSON.stringify([sender.tab.id,sender.frameId||0]),previous=currentDocuments.get(frame);
+  if(previous&&previous.owner!==owner){
+    cancelOwner(previous.owner);retiredOwners.add(previous.owner);
+    while(retiredOwners.size>256)retiredOwners.delete(retiredOwners.values().next().value);
+  }
+  retiredOwners.delete(owner);
+  currentDocuments.set(frame,{owner,tabId:sender.tab.id,documentId:sender.documentId,verified});
+  return owner;
+}
+/** 登记请求身份；缓存/预渲染文档和与浏览器已确认的活动文档不符的迟到消息均拒绝。 */
+function registerOwner(sender){
   const owner=ownerKey(sender);
+  if(sender.documentLifecycle&&sender.documentLifecycle!=="active")throw cancelledError();
   if(retiredOwners.has(owner))throw cancelledError();
   if(sender.tab?.id!=null&&sender.documentId){
-    // 标签页与框架的组合键，用于查找刷新前的文档。
-    const frame=JSON.stringify([sender.tab.id,sender.frameId || 0]);
-    // 同一框架上次登记的文档；身份变化时取消其请求。
-    const previous=currentDocuments.get(frame);
-    if(previous&&previous.owner!==owner){
-      cancelOwner(previous.owner);retiredOwners.add(previous.owner);
-      while(retiredOwners.size>256)retiredOwners.delete(retiredOwners.values().next().value);
-    }
-    currentDocuments.set(frame,{owner,tabId:sender.tab.id});
+    const frame=JSON.stringify([sender.tab.id,sender.frameId||0]),previous=currentDocuments.get(frame);
+    if(previous?.verified&&previous.owner!==owner)throw cancelledError();
+    if(!previous||previous.owner!==owner)activateDocument(sender,false);
   }
   return owner;
+}
+/** 缓存恢复时重新查询活动框架；不信任消息正文自报的 tab/frame/document。 */
+async function resumeDocument(sender){
+  if(sender.tab?.id==null||!sender.documentId)throw cancelledError();
+  if(sender.documentLifecycle&&sender.documentLifecycle!=="active")throw cancelledError();
+  const frame=JSON.stringify([sender.tab.id,sender.frameId||0]),previous=currentDocuments.get(frame);
+  const active=await chrome.webNavigation.getFrame({tabId:sender.tab.id,frameId:sender.frameId||0});
+  if(!active||active.documentId!==sender.documentId||active.documentLifecycle!=="active")throw cancelledError();
+  const latest=currentDocuments.get(frame);
+  if(latest!==previous&&latest?.documentId!==sender.documentId)throw cancelledError();
+  activateDocument(sender);return frameSessions.ready(sender);
+}
+
+const shiftRelayQueues=new Map();
+/** 仅在主动 Shift 时查询活动文档，按鼠标事件的绝对时间选择最内层命中；不持续上报鼠标移动。 */
+function routeFrameShift(sender,request){
+  const tabId=sender.tab.id,previous=shiftRelayQueues.get(tabId)||Promise.resolve();
+  const operation=previous.catch(()=>{}).then(async()=>{
+    registerOwner(sender);
+    if(request.phase==="down"){
+      const frames=await chrome.webNavigation.getAllFrames({tabId}),points=[];
+      await Promise.all((frames||[]).filter(frame=>frame.documentLifecycle==="active").map(async frame=>{
+        let timer;
+        try{
+          const point=await Promise.race([
+            chrome.tabs.sendMessage(tabId,{action:"FRAME_QUERY_POINTER"},{documentId:frame.documentId}),
+            new Promise(resolve=>{timer=setTimeout(()=>resolve(null),1200);})
+          ]);
+          if(point?.inside&&Number.isFinite(point.at)&&point.at>0)points.push({frame,at:point.at});
+        }catch(_){}finally{clearTimeout(timer);}
+      }));
+      registerOwner(sender);
+      frameSessions.clearPointer(tabId);
+      const latest=points.sort((a,b)=>b.at-a.at)[0];
+      if(latest)frameSessions.notePointer({tab:{id:tabId},frameId:latest.frame.frameId,documentId:latest.frame.documentId},{inside:true,at:latest.at});
+    }
+    return frameSessions.relayShift(sender,request);
+  });
+  shiftRelayQueues.set(tabId,operation);
+  void operation.finally(()=>{if(shiftRelayQueues.get(tabId)===operation)shiftRelayQueues.delete(tabId);}).catch(()=>{});
+  return operation;
 }
 
 /**
@@ -176,6 +268,12 @@ function registerOwner(sender) {
  * @returns {void} 无标签页或发送失败时忽略通知。
  */
 function emitRequestState(sender,request,data) {
+  const pdf = pdfPorts.get(ownerKey(sender));
+  if (pdf && pdf.tokens.has(request.runToken)) {
+    try { pdf.port.postMessage({type:"REQUEST_STATE",runToken:request.runToken,
+      attempt:data.attempt,maxAttempts:data.maxAttempts,until:data.until,code:data.code}); } catch (_) {}
+    return;
+  }
   if(sender.tab?.id==null||!chrome.tabs?.sendMessage)return;
   // 优先精确发送到 documentId；缺少文档编号时回退到 frameId。
   const target=sender.documentId?{documentId:sender.documentId}:{frameId:sender.frameId || 0};
@@ -268,6 +366,26 @@ function cancelRequestGroup(request,sender) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   const { action } = request;
 
+  if(action==="RESUME_DOCUMENT"){
+    resumeDocument(sender).then(data=>sendResponse({ok:true,data})).catch(()=>sendResponse({ok:false,cancelled:true}));return true;
+  }
+  if(action==="FRAME_SHIFT"){
+    try{registerOwner(sender);}catch(_){sendResponse({ok:false,cancelled:true});return false;}
+    routeFrameShift(sender,request).then(()=>sendResponse({ok:true})).catch(()=>sendResponse({ok:false}));return true;
+  }
+  if(action==="FRAME_READY"||action==="FRAME_SESSION"){
+    try{registerOwner(sender);}catch(_){sendResponse({ok:false,cancelled:true});return false;}
+    const operation=action==="FRAME_READY"?frameSessions.ready(sender):frameSessions.publish(sender,request);
+    operation.then(data=>sendResponse({ok:true,data})).catch(error=>sendResponse({ok:false,error:error.message}));return true;
+  }
+  if(action==="GET_TRANSLATION_STYLES"){
+    Promise.all(["core/translation-style.css","content/content.css"].map(file=>
+      fetch(chrome.runtime.getURL(file)).then(response=>response.text())))
+      .then(parts=>sendResponse({ok:true,data:parts.join("\n")}))
+      .catch(()=>sendResponse({ok:false}));
+    return true;
+  }
+
   if(action===MSG.SET_PAGE_STATE) {
     try {
       const owner=registerOwner(sender);
@@ -296,14 +414,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (action === MSG.TRANSLATE) {
+    let guard;
+    try { guard = pdfBatchGuard(request,sender); }
+    catch (_) { sendResponse({ok:false,cancelled:true}); return false; }
     trackedTranslate({ ...request, verifyBaidu: false },sender)
-      .then((data) => sendResponse({ ok: true, data }))
+      .then((data) => { if(guard)guard(); sendResponse({ ok: true, data }); })
       .catch((err) => sendResponse({ ok: false, error: err.message, code:err.code, retryable:err.retryable, permanent:err.permanent, exhausted:err.exhausted, cancelled:err.name==="AbortError" }));
     return true;
   }
 
   if (action === MSG.OPEN_SETTINGS) {
     openExtensionPage("settings/settings.html");
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (action === MSG.OPEN_PDF_READER) {
+    openPdfReader(typeof request.url === "string" ? request.url : "");
     sendResponse({ ok: true });
     return false;
   }
@@ -315,6 +442,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
+const frameSessions=self.BT_FRAME_SESSIONS.create(
+  (tabId,message,frame)=>chrome.tabs.sendMessage(tabId,message,!frame?undefined:frame.documentId?{documentId:frame.documentId}:{frameId:frame.frameId}),
+  tabId=>chrome.tabs.sendMessage(tabId,{action:"FRAME_REQUEST_SESSION"},{frameId:0}).catch(()=>{})
+);
 // 本后台生命周期共用的调度器，负责限速、缓存、去重和有限重试。
 const translationRuntime=self.BT_CREATE_TRANSLATION_RUNTIME(dispatchTranslation);
 /**
@@ -323,6 +454,7 @@ const translationRuntime=self.BT_CREATE_TRANSLATION_RUNTIME(dispatchTranslation)
  * @param {string} area 存储区域，只处理 local 中的 requestPolicies。
  */
 chrome.storage.onChanged?.addListener((changes,area)=>{
+  if(area==="local"&&changes.glossary)glossaryRevision++;
   if(area==="local"&&changes.requestPolicies){
 
     requestPolicyRevision++;
@@ -330,11 +462,84 @@ chrome.storage.onChanged?.addListener((changes,area)=>{
   }
 });
 
+/** 阅读页配置摘要不含密钥；业务翻译仍通过原有 TRANSLATE 消息入口。 */
+function isPdfReader(sender = {}) {
+  return sender.id === chrome.runtime.id && (sender.frameId == null || sender.frameId === 0) &&
+    typeof sender.url === "string" && sender.url.split(/[?#]/)[0] === chrome.runtime.getURL("pdf/reader.html");
+}
+function pdfBatchGuard(request,sender) {
+  if(!isPdfReader(sender))return null;
+  const owner=ownerKey(sender),record=pdfPorts.get(owner);
+  const guard=()=>{
+    if(!record||pdfPorts.get(owner)!==record||record.tokens.get(request.runToken)!==pdfConfigRevision)throw cancelledError();
+  };
+  guard();return guard;
+}
+function retirePdfBatches(record) {
+  for(const token of record.tokens.keys())cancelRequestGroup({runToken:token},record.sender);
+  record.tokens.clear();
+}
+chrome.runtime.onConnect?.addListener(port=>{
+  if(port.name!=="BT_PDF_TRANSLATION")return;
+  if(!isPdfReader(port.sender)){port.disconnect();return;}
+  const sender=port.sender,owner=ownerKey(sender);
+  try{registerOwner(sender);}catch(_){port.disconnect();return;}
+  const previous=pdfPorts.get(owner);
+  if(previous){retirePdfBatches(previous);previous.port.disconnect();}
+  const record={port,sender,tokens:new Map()};pdfPorts.set(owner,record);
+  const reply=(id,data)=>{try{port.postMessage({type:"REPLY",id,...data});}catch(_){}};
+  port.onMessage.addListener(async message=>{
+    if(!message||pdfPorts.get(owner)!==record)return;
+    try{
+      registerOwner(sender);
+      if(message.type==="CONTEXT"){
+        const revision=pdfConfigRevision;
+        const stored=await self.BT_STORAGE.get(["engine","aiProvider","from","to","aiKeys","baiduAppId","baiduKey","baiduVerification"]);
+        if(revision!==pdfConfigRevision)throw Object.assign(new Error("配置已变化，请重新读取翻译设置"),{code:"CONFIG_CHANGED"});
+        const config={...self.BT_CONST.DEFAULTS,...stored};
+        reply(message.id,{ok:true,data:{revision,engine:config.engine,aiProvider:config.aiProvider,from:config.from,to:config.to,
+          services:self.BT_SERVICES.options(config)}});
+      }else if(message.type==="BIND_BATCH"){
+        if(message.revision!==pdfConfigRevision)throw Object.assign(new Error("配置已变化，请重新选择翻译设置"),{code:"CONFIG_CHANGED"});
+        if(typeof message.runToken!=="string"||!/^pdf:[a-zA-Z0-9-]{1,100}$/.test(message.runToken)||record.tokens.size>=4)throw cancelledError();
+        record.tokens.set(message.runToken,pdfConfigRevision);reply(message.id,{ok:true});
+      }else if(message.type==="END_BATCH"){
+        if(record.tokens.has(message.runToken)){
+          cancelRequestGroup({runToken:message.runToken},sender);record.tokens.delete(message.runToken);
+        }
+      }else if(message.type==="STATE"){
+        translationRuntime.setOwnerState(owner,{visible:message.visible!==false,
+          viewportEpoch:Number(message.viewportEpoch)||0,version:Number(message.stateVersion)||0});
+      }
+    }catch(error){reply(message.id,{ok:false,code:error.code||"PDF_CONTEXT_ERROR",error:"无法使用当前翻译配置，请重试或前往设置页",cancelled:error.name==="AbortError"});}
+  });
+  port.onDisconnect.addListener(()=>{
+    retirePdfBatches(record);
+    if(pdfPorts.get(owner)===record){pdfPorts.delete(owner);translationRuntime.removeOwner(owner);}
+  });
+});
+chrome.storage.onChanged.addListener(changes=>{
+  const keys=["engine","aiProvider","aiKeys","from","to","baiduAppId","baiduKey","baiduVerification","glossary","requestPolicies","requestPolicyVersion"];
+  if(!keys.some(key=>Object.hasOwn(changes,key)))return;
+  pdfConfigRevision++;
+  for(const record of pdfPorts.values()){
+    retirePdfBatches(record);
+    try{record.port.postMessage({type:"CONFIG_INVALIDATED",revision:pdfConfigRevision});}catch(_){}
+  }
+});
+
+// 导航提交与往返缓存恢复都使用浏览器 documentId；不记录 URL 或浏览历史。
+chrome.webNavigation?.onCommitted.addListener(details=>{
+  if(details.documentLifecycle!=="active"||!details.documentId)return;
+  activateDocument({tab:{id:details.tabId},frameId:details.frameId,documentId:details.documentId});
+});
+
 /**
  * 标签页关闭后取消其已登记文档，并限制退役身份集合大小；其他页面的共享请求仍由运行时管理。
  * @param {number} tabId 被关闭标签页的编号。
  */
 chrome.tabs?.onRemoved?.addListener(tabId=>{
+  frameSessions.remove(tabId);shiftRelayQueues.delete(tabId);
   for(const [frame,record] of currentDocuments)if(record.tabId===tabId){
     cancelOwner(record.owner);retiredOwners.add(record.owner);currentDocuments.delete(frame);
   }
@@ -367,13 +572,14 @@ async function handleTranslate(request, signal, sender = {}) {
   translationRuntime.setOwnerState(owner,{visible:request.pageVisible!==false,viewportEpoch:request.viewportEpoch,version:request.stateVersion});
 
   // 开始读取存储时的策略版本快照。
-  const revision=requestPolicyRevision;
+  const revision=requestPolicyRevision,termRevision=glossaryRevision;
   // 共享存储读取的凭据、验证结果和请求策略。
-  const stored=await self.BT_STORAGE.get(["aiProvider","aiKeys","baiduAppId","baiduKey","baiduVerification","requestPolicies"]);
+  const stored=await self.BT_STORAGE.get(["aiProvider","aiKeys","baiduAppId","baiduKey","baiduVerification","requestPolicies","glossary"]);
   if(revision===requestPolicyRevision)translationRuntime.updatePolicies(stored.requestPolicies || {});
 
   // 提交运行时的请求快照，附带可见性、优先级、重试及诊断回调。
-  const normalized={engine,text,from,to,retryManual:request.retryManual===true,retryToken:request.retryToken,signal,
+  const normalized={engine,text,from,to,retryManual:request.retryManual===true,retryToken:request.retryToken,
+    refreshCache:request.refreshCache===true,signal,
     ownerKey:owner,pageVisible:request.pageVisible!==false,viewportEpoch:request.viewportEpoch,
     priority:request.priority===0?0:1,onRetry:data=>emitRequestState(sender,request,data),
     onDiagnostic:self.BT_LOG.isEnabled("debug")?data=>emitTranslationDiagnostic(sender,request,data):undefined};
@@ -404,7 +610,11 @@ async function handleTranslate(request, signal, sender = {}) {
 
   if(signal?.aborted)throw cancelledError();
   if (request.verifyBaidu) return testBaiduConnection(normalized);
-  return translationRuntime.runText(normalized);
+  if(termRevision!==glossaryRevision)throw cancelledError();
+  const prepared=self.BT_GLOSSARY.prepare(text,stored.glossary||{},to);
+  const translated=await translationRuntime.runText({...normalized,text:prepared.text});
+  if(signal?.aborted||termRevision!==glossaryRevision)throw cancelledError();
+  return self.BT_GLOSSARY.restore(translated,prepared);
 }
 
 /**

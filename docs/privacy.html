@@ -1,1 +1,146 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>页知译 · 隐私说明</title><style>body{max-width:780px;margin:48px auto;padding:0 24px;font:16px/1.8 system-ui,sans-serif;color:#243247}h1{font-size:28px}h2{margin-top:32px;font-size:21px}p{overflow-wrap:anywhere}</style><main><h1>隐私与数据说明</h1><p>更新日期：2026-10-20</p><p>页知译 · 网页双语翻译在浏览器中识别网页文字，并使用您选择的翻译服务获取译文。</p><h2>发送哪些数据</h2><p>- 手动翻译、划词翻译或启用悬停翻译时，对应文字、源语言、目标语言及必要的服务配置会发送给所选服务。</p><p>- 新安装默认关闭自动翻译。开启后，页面中符合采集规则的可见文字会自动发送；滚动、弹框显示或动态更新可能触发后续请求。</p><p>- 已有用户保存的自动翻译开关不会被强制覆盖。</p><p>- 整页采集排除密码、输入框值、textarea、select、可编辑区域、代码区和明确标记不翻译的区域。主动 Shift 可覆盖网页 translate=&quot;no&quot; 等禁译标记，仍跳过输入值、编辑区和代码。普通网页正文仍可能包含私人信息；在私人页面上应关闭自动翻译，按需选择文字。</p><p>- 扩展不主动把当前网页地址、浏览历史或整页 HTML 加入翻译请求。网络连接本身会向接收服务暴露 IP 地址等通常的连接信息。</p><h2>数据接收方</h2><p>Google、MyMemory、百度、所选 AI 厂商或您填写的自定义接口是直接接收方。使用 Ollama 时，文字发送至配置的本机地址（远程部署需使用 HTTPS）。服务方的数据保留、模型训练、收费和其他处理规则由该服务方决定。</p><p>自定义域名由 Chrome 在您主动点击测试或启用时按地址申请权限。远程接口仅支持 HTTPS；HTTP 仅允许 localhost 和 127.0.0.1 本机回环地址。重定向可能需要额外域名权限。</p><h2>本机保存与同步</h2><p>- API 密钥、接口地址、模型和百度 AppID 保存在本机 chrome.storage.local，不由本扩展写入 Chrome 同步区；本机存储不等同于加密保险箱。</p><p>- 各服务请求频率与同时请求上限保存在本机 chrome.storage.local，不同步到其他设备。</p><p>- 旧版同步密钥首次读取时迁移到本机，写入成功后清理旧同步字段。本机已有配置优先保留。</p><p>- 语言、显示模式、悬停开关、悬浮球位置等普通偏好保存在 chrome.storage.sync，可能通过您的 Chrome 账号同步。</p><p>- 为合并请求和减少重复调用，原文、译文及配置索引暂存于后台线程内存；成功缓存最多 256 条、有效期十分钟，失败信息冷却三十秒。缓存不会写入磁盘，线程退出后清空。</p><p>- 扩展不包含自建数据采集服务器、广告或使用行为统计代码。</p><h2>控制与清理</h2><p>关闭自动翻译只关闭新页面的自动启动；当前页面已经手动或自动开始翻译后，会持续处理可见区域，直到点击取消。关闭悬停翻译可停止悬停触发。离开标签页或最小化窗口暂停该页新发送，在途请求可完成并保留，返回继续。点击取消暂停当前页面后续补翻并恢复原文；取消后 Shift 主动单段仍可使用，不恢复整页会话。取消会移除本页排队任务，尝试中止只属于本页的网络请求。其他页面仍需要的共享请求会保留；服务端已经接收的内容仍可能继续处理或计费。</p><p>您可以在设置页清空密钥、在 Chrome 扩展管理页调整网站访问权限，或卸载扩展清理扩展存储。旧同步数据的服务端历史副本不由本扩展直接控制。</p><h2>联系</h2><p>项目反馈入口：https://github.com/cherubr/yezhiyi-translator/issues</p></main></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="页知译的网页文字翻译、权限用途及本机存储说明。">
+  <title>页知译 · 隐私说明</title>
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-padding-top: 24px; }
+    body { margin: 0; background: #f5f7fb; color: #243247; font: 16px/1.85 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 900px; margin: 40px auto; padding: 40px 48px; background: #fff; border: 1px solid #dfe5ee; border-radius: 16px; }
+    h1, h2, h3 { color: #17263d; line-height: 1.45; }
+    h1 { margin: 0 0 8px; font-size: 30px; }
+    h2 { margin: 36px 0 12px; font-size: 22px; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    p { margin: 12px 0; }
+    ul { padding-left: 24px; }
+    li { margin: 8px 0; }
+    p, li, dd, a { overflow-wrap: anywhere; }
+    a { color: #0965b5; text-underline-offset: 3px; }
+    a:hover { color: #064a85; }
+    a:focus-visible { outline: 2px solid #0965b5; outline-offset: 4px; }
+    code { font-size: .9em; }
+    .updated { color: #586a80; font-size: 14px; }
+    .summary { margin: 24px 0; padding: 16px 20px; background: #f0f6ff; border-left: 3px solid #0965b5; border-radius: 4px; }
+    nav { padding: 16px 20px; border: 1px solid #dfe5ee; border-radius: 8px; }
+    nav ul { display: flex; flex-wrap: wrap; gap: 8px 24px; list-style: none; margin: 0; padding: 0; }
+    nav li { margin: 0; }
+    dt { margin-top: 16px; font-weight: 600; }
+    dd { margin: 4px 0 0; }
+    footer { margin-top: 36px; padding-top: 20px; border-top: 1px solid #dfe5ee; color: #586a80; font-size: 14px; }
+    @media (max-width: 600px) {
+      main { margin: 0; padding: 28px 20px; border: 0; border-radius: 0; }
+      h1 { font-size: 26px; }
+      h2 { font-size: 20px; }
+      .summary, nav { padding: 14px 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>页知译 · 隐私与数据说明</h1>
+      <p class="updated">更新日期：<time datetime="2026-11-12">2026 年 11 月 12 日</time></p>
+      <p>本说明适用于“页知译 · 网页双语翻译”Chrome 扩展，说明网页与 PDF 翻译如何处理数据。可用功能以您安装的版本为准。</p>
+    </header>
+
+    <div class="summary">
+      需要翻译的网页或 PDF 文字直接发送给您选择的服务，扩展没有自建翻译中转服务器。PDF 文件、页面图像、OCR 与导出排版在本地处理。API 凭据、术语表和 PDF 人工修订仅保存于本机，部分普通偏好可通过 Chrome 同步。
+    </div>
+
+    <nav aria-label="隐私说明目录">
+      <ul>
+        <li><a href="#translation">网页与 PDF 文字处理</a></li>
+        <li><a href="#recipients">数据接收方</a></li>
+        <li><a href="#storage">本机保存与同步</a></li>
+        <li><a href="#permissions">权限用途</a></li>
+        <li><a href="#controls">控制与清理</a></li>
+        <li><a href="#contact">联系与更新</a></li>
+      </ul>
+    </nav>
+
+    <section id="translation">
+      <h2>一、网页与 PDF 文字如何处理</h2>
+      <h3>网页文字</h3>
+      <ul>
+        <li>手动整页、划词、Shift 单段或普通悬停翻译时，需要翻译的文字、源语言、目标语言和服务所需参数会发送给所选翻译接口。使用 AI 服务时，还包括模型名称和翻译指令；凭据按所选接口的认证方式使用。</li>
+        <li>新安装默认关闭自动翻译，旧用户保存的偏好不被强制覆盖。开启自动翻译或主动开始当前页翻译后，符合采集规则的可见内容会发送；滚动、弹框或动态更新可能触发补翻。</li>
+        <li>默认单段翻译要求主动按 Shift；若改为无需按键的普通悬停模式，鼠标停留也可能触发文字发送。</li>
+        <li>自动和整页采集跳过输入值、密码、textarea、select、可编辑区、代码区、不可见及明确禁译区域。主动 Shift 可覆盖网页的 <code>translate="no"</code> 等禁译标记，仍跳过输入值、编辑区和代码。</li>
+        <li>开放式 Shadow DOM 与允许访问的 iframe 使用相同采集规则；主页面开始或取消会同步控制子框架。扩展不读取封闭式 Shadow DOM 内部内容。</li>
+        <li>扩展不主动把当前网页地址、浏览历史或整页 HTML 加入翻译请求，但正文自身可能包含网址、姓名或其他私人信息。请按需选择文字，避免发送不希望交给服务方的内容。</li>
+      </ul>
+
+      <h3>PDF 阅读、OCR 与导出</h3>
+      <ul>
+        <li>本地 PDF 在扩展内读取；在线 PDF 从您输入或打开的来源直接获取，按来源申请访问权限。来源服务器会接收文件请求与通常的网络连接信息。</li>
+        <li>主动开始 PDF 翻译后，扩展提取可用文字，并对需要识别的扫描或混排区域在本机运行 OCR。完整 PDF、页面图像与 OCR 位图不上传给翻译服务；需要翻译的提取文字、源语言和目标语言等发送给所选接口。</li>
+        <li>PDF 原位显示、重排预览与导出在本地生成。模式切换、缩放和旋转不会主动重新发送翻译请求；显式补译或重新翻译可能发送文字。</li>
+        <li>英语与简体中文 OCR 模型随扩展提供；其他已支持模型和导出字体按需从固定版本的 GitHub 原始资源地址下载，经过 SHA-256 校验后保存在本机。下载服务会接收通常的网络连接信息，下载请求不附带 PDF 正文或页面图像；远程资源是模型或字体数据，不是可执行代码。</li>
+      </ul>
+
+      <h3>连接测试与术语保护</h3>
+      <p>主动点击“测试连接”会向对应接口发送固定测试文字及必要认证信息，以验证连接。自定义术语表在本机应用，不主动发送整张表；匹配的固定译法在本地还原，受保护内容用内部标记参与请求。</p>
+    </section>
+
+    <section id="recipients">
+      <h2>二、哪些服务会接收数据</h2>
+      <ul>
+        <li><strong>翻译服务：</strong>Google、MyMemory、百度、您选择的 AI 厂商或填写的自定义接口直接接收翻译请求；扩展没有自建翻译中转服务器。服务方的数据保留、模型训练、收费和其他处理规则由其决定，请查阅所用服务的政策。网络连接也会向接收方暴露 IP 地址等通常的连接信息。</li>
+        <li><strong>本机模型：</strong>Ollama 的文字发送至您配置的地址；使用本机回环地址时请求留在本机，远程部署则发送到对应服务器。远程接口只允许 HTTPS，HTTP 仅允许 <code>localhost</code> 和 <code>127.0.0.1</code>。</li>
+        <li><strong>Chrome 同步：</strong>普通偏好可能经您的 Chrome 账号同步，详见下节。扩展不将 API 凭据或术语表写入同步区。</li>
+      </ul>
+      <p>扩展不包含广告、使用行为统计或自建数据采集服务器。本隐私网页由 GitHub Pages 托管，访问网页本身会连接 GitHub 的托管服务；页面不加载统计脚本、远程字体或外部运行代码。</p>
+    </section>
+
+    <section id="storage">
+      <h2>三、本机保存与 Chrome 同步</h2>
+      <dl>
+        <dt>仅保存在本机的配置</dt>
+        <dd>API 密钥、AI 接口地址和模型、百度 AppID 与密钥及验证记录、请求频率与并发策略、自定义术语表保存在 <code>chrome.storage.local</code>。术语表可主动导出为 JSON。本机存储不等同于加密保险箱。</dd>
+        <dt>可能通过 Chrome 同步的偏好</dt>
+        <dd>所选服务、语言、显示模式、译文样式、自动翻译与悬停开关、快捷键偏好和悬浮球位置等保存在 <code>chrome.storage.sync</code>，可能同步到您使用同一 Chrome 账号的设备。</dd>
+        <dt>旧版凭据迁移</dt>
+        <dd>旧版同步凭据首次读取时迁移到本机，成功写入后清理旧同步字段；本机已有配置优先。扩展不能直接控制同步服务保留的历史副本。</dd>
+        <dt>临时文字与结果</dt>
+        <dd>为合并请求、限流和减少重复调用，原文、译文及配置索引暂存于后台内存。后台共享缓存最多 256 条，成功结果有效期十分钟，失败信息冷却三十秒，后台线程退出后清空。网页显示的原文快照和译文保留于当前页面内存；PDF 文件、OCR 结果及阅读和导出缓存保留于当前阅读页内存，关闭页面后释放。显式人工修订另按下项保存。</dd>
+        <dt>PDF 人工修订及本机资源</dt>
+        <dd>主动保存的 PDF 人工修订、对应原文、机器译文和文档识别信息保存在扩展的 IndexedDB，按文档和翻译配置隔离，不通过 Chrome 同步。OCR 下载模型和导出字体也保存在本机数据库。扩展不会因为保存修订而把完整 PDF 或页面位图写入该修订库。</dd>
+      </dl>
+    </section>
+
+    <section id="permissions">
+      <h2>四、浏览器权限用途</h2>
+      <ul>
+        <li><strong>网页与接口访问：</strong>在 Chrome 允许的网站注入采集与译文界面，并调用所选翻译接口。自定义接口在主动测试或启用时按地址申请权限。</li>
+        <li><strong>可选来源访问：</strong>读取在线 PDF 时按来源申请访问；下载额外 OCR 模型及导出字体时申请对应资源来源权限。</li>
+        <li><strong>storage：</strong>保存本机配置与可同步偏好。</li>
+        <li><strong>contextMenus：</strong>提供整页翻译和选中文字翻译等右键入口。</li>
+        <li><strong>tabs：</strong>定位当前标签页、发送翻译控制消息，以及打开或复用扩展页面。</li>
+        <li><strong>webNavigation：</strong>核验活动文档、浏览器前进/后退恢复及 iframe 中的 Shift 命中。文档身份仅维护于后台内存，不保存或上传浏览历史，也不持续向后台上报鼠标移动。</li>
+      </ul>
+    </section>
+
+    <section id="controls">
+      <h2>五、如何控制与清理</h2>
+      <ul>
+        <li>关闭“自动翻译”停止新页面自动启动；当前页一旦开始仍会补翻，需点击取消停止。关闭悬停翻译可停止悬停触发。</li>
+        <li>离开标签页或最小化窗口会暂停网页新发送；在途请求可能完成，返回后按页面状态继续。取消后主动 Shift 单段仍可用，不恢复整页会话。</li>
+        <li>取消会清理本页排队任务，并尝试中止仅由本页使用的请求。其他页面仍依赖的共享请求会保留；已经被服务方接收的数据无法通过取消撤回，仍可能被处理或计费。</li>
+        <li>可在设置页清空凭据、编辑或删除术语规则，在 Chrome 扩展管理页调整网站访问权限，或卸载扩展清理其存储。主动导出的术语 JSON 及第三方服务保存的数据需另行管理。</li>
+        <li>PDF 阅读器可恢复对应段落的机器译文以移除该段人工修订，也可管理并删除下载的 OCR 模型和导出字体。关闭阅读器释放临时文件与缓存；已经导出的 PDF 是独立文件，需要您自行管理或删除。</li>
+      </ul>
+    </section>
+
+    <section id="contact">
+      <h2>六、联系与说明更新</h2>
+      <p>如对本说明或扩展的数据处理有疑问，可通过 <a href="https://github.com/cherubr/yezhiyi-translator/issues">GitHub Issues</a> 联系项目维护者。公开反馈时请勿附上密钥、私人文档或未脱敏的请求信息。</p>
+      <p>功能或数据处理方式变化时，会同步更新本页及顶部日期。此网页是项目唯一维护的隐私正文。</p>
+    </section>
+
+    <footer>页知译 · 网页双语翻译 · <a href="https://github.com/cherubr/yezhiyi-translator">项目仓库</a></footer>
+  </main>
+</body>
+</html>

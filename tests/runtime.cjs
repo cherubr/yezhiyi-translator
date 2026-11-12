@@ -16,6 +16,13 @@ const request=(text,extra={})=>({engine:'google',text,from:'en',to:'zh-CN',...ex
  const first=r.run(request('same')),second=r.run(request('same'));release();
  assert.deepEqual(await Promise.all([first,second]),['译文','译文']);assert.equal(calls,1);
  assert.equal(await r.run(request('same')),'译文');assert.equal(calls,1);
+ // 主动重译跳过旧成功缓存，新结果仍可被普通请求复用。
+ let refreshCalls=0;
+ const refresh=create(async()=>String(++refreshCalls),{interval:0});
+ assert.equal(await refresh.run(request('refresh')),'1');
+ assert.equal(await refresh.run(request('refresh')),'1');
+ assert.equal(await refresh.run(request('refresh',{refreshCache:true,retryManual:true,retryToken:'refresh-click'})),'2');
+ assert.equal(await refresh.run(request('refresh')),'2');assert.equal(refreshCalls,2);
  let time=100,count=0;
  const cache=create(async()=>String(++count),{interval:0,now:()=>time,ttl:10,cacheLimit:2});
  await cache.run(request('a'));await cache.run(request('b'));await cache.run(request('c'));await cache.run(request('a'));assert.equal(count,4);

@@ -17,3 +17,20 @@ jobs:
       - run: npm test
       - run: npx playwright install chromium
       - run: npm run test:browser
+
+  # 小型隔离夹具验证三个系统的真实 ZIP 创建/读取；不上传商店或生成正式项目包。
+  package-portability:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:package

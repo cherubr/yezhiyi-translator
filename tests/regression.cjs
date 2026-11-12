@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const root = require('node:path').resolve(__dirname, '..');
-const context = { window: { addEventListener() {}, getComputedStyle:()=>({display:'block'}) }, self: {}, console, TextEncoder, setTimeout, clearTimeout,
+const context = { document: {contentType:'text/html'}, window: { addEventListener() {}, getComputedStyle:()=>({display:'block'}) }, self: {}, console, TextEncoder, setTimeout, clearTimeout,
   chrome: { runtime: { onMessage: { addListener() {} } }, storage: { onChanged: { addListener() {} } } } };
 context.self = context.window;
 vm.createContext(context);
@@ -39,9 +39,15 @@ t.STATE.from='zh-CN';t.STATE.to='zh-TW';
 assert.equal(t.isMostlyChinese('简体中文转换'),false,'显式简繁转换不跳过');
 t.STATE.from='auto';t.STATE.to='zh-CN';
 class Element {
- constructor(tag='span') { this.nodeType=1; this.tagName=tag.toUpperCase(); this.children=[]; this.style={setProperty(name,value){this[name]=value;}}; this.attrs={}; this.isConnected=true; this.className=''; this.classList={contains: name=>this.className.split(' ').includes(name),toggle:(name,on)=>{const names=new Set(this.className.split(' ').filter(Boolean));on?names.add(name):names.delete(name);this.className=[...names].join(' ');},add:name=>{this.className+=' '+name;}}; }
+ constructor(tag='span') { this.nodeType=1; this.tagName=tag.toUpperCase(); this.children=[]; this.style={priorities:{},setProperty(name,value,priority=''){this[name]=value;this.priorities[name]=priority;},getPropertyValue(name){return this[name]||'';},getPropertyPriority(name){return this.priorities[name]||'';},removeProperty(name){delete this[name];delete this.priorities[name];}}; this.attrs={}; this.isConnected=true; this.className=''; this.classList={contains: name=>this.className.split(' ').includes(name),toggle:(name,on)=>{const names=new Set(this.className.split(' ').filter(Boolean));on?names.add(name):names.delete(name);this.className=[...names].join(' ');},add:name=>{this.className+=' '+name;}}; }
  get parentElement(){return this.parentNode||null;}
+ get localName(){return this.tagName.toLowerCase();}
+ getRootNode(){return this.parentNode?.getRootNode?.()||context.document;}
  get childNodes(){return this.children;}
+ get nextSibling(){const nodes=this.parentNode?.childNodes||[];return nodes[nodes.indexOf(this)+1]||null;}
+ get textContent(){return this.nodeType===3?(this._text||''):this.children.map(node=>node.textContent||'').join('');}
+ set textContent(value){if(this.nodeType===3){this._text=value;return;}for(const node of this.children)node.parentNode=null;this.children=[];if(value){const text=new Element();text.nodeType=3;text.textContent=value;this.appendChild(text);}}
+ contains(node){return this===node||this.children.some(child=>child.contains?.(node));}
  getBoundingClientRect(){return {width:200,height:20,top:0,bottom:20,left:0,right:200};}
  closest(){return null;}
  querySelector(){return null;}
@@ -51,23 +57,24 @@ class Element {
  getAttribute(k){return this.attrs[k] ?? null;}
  get firstChild(){return this.children[0]||null;}
  appendChild(n){n.remove();this.children.push(n);n.parentNode=this;return n;}
- insertBefore(n,ref){n.remove();this.children.splice(this.children.indexOf(ref),0,n);n.parentNode=this;}
+ insertBefore(n,ref){if(ref==null)return this.appendChild(n);n.remove();this.children.splice(this.children.indexOf(ref),0,n);n.parentNode=this;return n;}
  remove(){if(this.parentNode){const a=this.parentNode.children;a.splice(a.indexOf(this),1);this.parentNode=null;}}
  setAttribute(k,v){this.attrs[k]=v;}
  removeAttribute(k){delete this.attrs[k];}
 }
-context.document={createElement:tag=>new Element(tag),querySelectorAll:()=>[]};
+context.document={nodeType:9,isConnected:true,contentType:'text/html',title:'Fixture',createElement:tag=>new Element(tag),querySelectorAll:()=>[]};
 const parents=[];
 for (const tag of ['p','li','td','h2']) {
  const parent=new Element('div'),el=new Element(tag),link=new Element('a');
  parent.appendChild(el);el.appendChild(link);parents.push({parent,el,link});
  t.insertTranslation(el,'测试译文');
  assert.equal(parent.children.length,1,'must not add a layout sibling');
- assert.equal(el.children[0].firstChild,link,'original nodes preserved');
+ assert.equal(el.children[0],link,'original nodes preserved in the original parent');
+ assert.equal(link.parentNode,el);
  assert.equal(el.children[1].className,'bt-translation-text');
  for (const mode of ['translation-only','bilingual','translation-only','bilingual']) {
   t.STATE.mode=mode;t.applyMode();
-  assert.equal(el.children[0].style.display,mode==='translation-only'?'none':'contents');
+  assert.equal(link.style.display||'',mode==='translation-only'?'none':'');
  }
 }
 t.cancelTranslation();
@@ -97,7 +104,7 @@ context.window.getComputedStyle=()=>({display:'block',visibility:'visible'});
  * 构造带可见性和控件边界的候选节点，供无浏览器采集断言使用。
  */
 function candidate(text,{compact=false,hidden=false,control=false}={}) {
- const el={textContent:text,tagName:compact?'LABEL':'DIV',children:[],childNodes:[],querySelectorAll:()=>[],closest(sel){
+ const el={nodeType:1,isConnected:true,getRootNode:()=>context.document,textContent:text,tagName:compact?'LABEL':'DIV',children:[],childNodes:[],querySelectorAll:()=>[],closest(sel){
    if(sel.includes('[hidden]'))return hidden?{}:null;
    return null;
  },hasAttribute(){return false;},querySelector(sel){return control&&sel.startsWith('input,')?{}:null;},
@@ -114,7 +121,7 @@ let scheduled=0;context.setTimeout=()=>{scheduled++;return 1;};context.clearTime
 t.STATE.pagePaused=false;t.STATE.autoTranslate=true;t.STATE.cancelRequested=false;
 let observed;
 context.MutationObserver=class{constructor(fn){observed=fn;}observe(){}};
-context.document.body={};context.document.addEventListener=()=>{};
+context.document.body={textContent:'Fixture content'};context.document.addEventListener=()=>{};
 t.observeDynamicContent();
 const target={nodeType:1,closest:()=>null,hasAttribute:()=>false};
 observed([{target,type:'childList',addedNodes:[{nodeType:1,matches:()=>true}]}]);
@@ -146,9 +153,9 @@ const dynamic=new Element('div');
 dynamic.textContent='Original update';
 t.insertTranslation(dynamic,'原始更新');
 const entry=t.translatedElements.get(dynamic);
-entry.original.textContent='New update';
+entry.nodes[0].textContent='New update';
 const beforeInvalidation=scheduled;
-observed([{target:entry.original,type:'characterData'}]);
+observed([{target:entry.nodes[0],type:'characterData'}]);
 assert.equal(t.translatedElements.has(dynamic),false,'stale translation removed');
 assert.equal(entry.wrapper.parentNode,null);
 assert.equal(scheduled,beforeInvalidation+1,'changed source schedules a fresh translation');
@@ -188,7 +195,8 @@ t.STATE.pagePaused=false;
  assert.equal(await t.handleBlock({el:labelEl,text:'Accept terms',node:textNode},{}),true);
  assert.equal(labelEl.children[0],input,'checkbox stays in its original position');
  assert.equal(input.parentNode,labelEl,'control is never wrapped');
- assert.equal(labelEl.children[1].className,'bt-text-fragment');
+ assert.equal(labelEl.children[1],textNode,'source text keeps its direct parent');
+ assert.equal(labelEl.children[2].className.includes('bt-translation-text'),true);
  assert.equal(labelEl.attrs['data-bt-processed'],undefined,'mixed parent remains available for new text');
  context.document.querySelectorAll=()=>[];
  t.cancelTranslation();

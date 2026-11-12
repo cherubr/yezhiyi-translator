@@ -34,7 +34,7 @@ const result=await page.evaluate(()=>{
  const after=document.querySelector('article').getBoundingClientRect().width;
  const widths=[...document.querySelectorAll('.bt-translation-text')].map(n=>n.getBoundingClientRect().width);
  const valid=!document.querySelector('main > .bt-translation-text, ul > .bt-translation-text, tr > .bt-translation-text');
- t.STATE.mode='translation-only';t.applyMode();const hidden=document.querySelector('.bt-original-text').style.display==='none';
+ t.STATE.mode='translation-only';t.applyMode();const hidden=link.style.display==='none'&&document.querySelector('#p').firstChild.textContent==='';
  t.STATE.mode='bilingual';t.applyMode();link.click();
  t.STATE.translated=true;t.setFabTranslated(true);const done=document.querySelector('.bt-check-badge');
  const idleOpacity=getComputedStyle(done).opacity;
@@ -66,7 +66,7 @@ const compact=await page.evaluate(()=>{
  t.insertTranslation(text,'API 密钥');t.insertTranslation(agent,'代理开发资源');t.insertTranslation(tab,'代理开发资源');
  const sizes=[text,agent,tab].map(el=>({height:el.getBoundingClientRect().height,translationHeight:el.querySelector('.bt-translation-text').getBoundingClientRect().height,tight:el.querySelector('.bt-translation-text').classList.contains('bt-translation-tight'),nowrap:getComputedStyle(el.querySelector('.bt-translation-text')).whiteSpace}));
  const iconAfter=icon.getBoundingClientRect().y,menuHeight=link.getBoundingClientRect().height;
- t.STATE.mode='translation-only';t.applyMode();const onlyHidden=text.querySelector('.bt-original-text').style.display==='none';
+ t.STATE.mode='translation-only';t.applyMode();const onlyHidden=text.firstChild.textContent==='';
  t.STATE.mode='bilingual';t.applyMode();link.click();t.clearTranslations();
  return {sizes,iconBefore,iconAfter,menuHeight,onlyHidden,clicks,styleRestored:link.getAttribute('style')===styleBefore,original:text.textContent,restoredHeight:text.getBoundingClientRect().height};
 });
@@ -75,6 +75,43 @@ for(const item of compact.sizes){assert.equal(item.tight,true);assert.equal(item
 assert.ok(compact.sizes[0].height<=22);assert.ok(compact.sizes[1].height<=22);
 assert.equal(compact.onlyHidden,true);assert.equal(compact.clicks,1);assert.equal(compact.styleRestored,true);assert.equal(compact.original,'API Keys');assert.equal(compact.restoredHeight,20);
 console.log('PASS Chromium: div/span固定菜单、横向按钮、单行裁切保护、图标位置、显示模式与完整还原',compact);
+
+// 图标窄列与正文宽列：覆盖直接文本、带链接的混合区间、三列及 RTL，不使用站点选择器。
+await page.setContent(`<style>
+body{font:16px/24px Arial}.icon-grid{display:grid;grid-template-columns:18px minmax(0,1fr);gap:8px;width:620px;margin:15px}
+.three{grid-template-columns:18px minmax(0,1fr) 70px}.icon-flex{display:flex;align-items:center;gap:8px;width:620px;margin:15px}
+svg{width:18px;height:18px;flex:none}p{margin:0}
+</style><div class="icon-grid" id="gridBare"><svg></svg>Meet high performance and security demands across traditional and cloud instances.</div>
+<div class="icon-grid three" id="gridThree"><svg></svg><a id="gridLink" href="#guide">Read the complete guide for more details.</a><button>Open</button></div>
+<div class="icon-grid" id="gridText"><svg></svg><p>Original paragraph in its own grid cell.</p></div>
+<div class="icon-grid" id="gridRtl" dir="rtl"><svg></svg>Read the right to left account guide.</div>
+<div class="icon-flex" id="flexBare"><svg></svg>Meet performance and security demands across instances.</div>
+<div class="icon-flex" id="flexReverse" style="flex-direction:row-reverse"><svg></svg>Meet performance and security demands across instances.</div>
+<div class="icon-flex" id="flexRtl" dir="rtl"><svg></svg>Read the right to left guide for accounts.</div>`);
+await page.addStyleTag({content:fs.readFileSync(root+'/core/translation-style.css','utf8')+'\n'+fs.readFileSync(root+'/content/content.css','utf8')});
+const tracks=await page.evaluate(()=>{
+ const t=test;t.STATE.mode='bilingual';t.STATE.cancelRequested=false;
+ const containers=[...document.querySelectorAll('.icon-grid,.icon-flex')],before=new Map(containers.map(el=>[el,{nodes:[...el.childNodes],style:el.getAttribute('style'),icon:el.querySelector('svg').getBoundingClientRect().toJSON()}]));
+ const units=t.collectBlocks(containers),checks=[];
+ for(const unit of units){
+  if(unit.el.tagName==='BUTTON')continue;
+  const nodes=BT_TRANSLATION_UNITS.nodesOf(unit)||[...unit.el.childNodes];
+  const range=document.createRange();range.setStartBefore(nodes[0]);range.setEndAfter(nodes.at(-1));const source=range.getBoundingClientRect();
+  t.insertTranslation(unit.el,'这是完整的正文译文，应在文字区域下方正常横向阅读，而不是进入图标列逐字排列。',false,unit.kind,unit);
+  const result=unit.el.querySelector('.bt-translation-text'),rect=result.getBoundingClientRect();
+  const icon=unit.el.closest('.icon-grid,.icon-flex').querySelector('svg').getBoundingClientRect();
+  checks.push({iconLeft:icon.left,id:unit.el.id||unit.el.parentElement.id,width:rect.width,sourceWidth:source.width,left:rect.left,right:rect.right,sourceLeft:source.left,sourceRight:source.right,column:result.style.gridColumn});
+ }
+ const preserved=containers.every(el=>before.get(el).nodes.every(node=>node.parentNode===el));
+ const iconStable=containers.every(el=>Math.abs(el.querySelector('svg').getBoundingClientRect().x-before.get(el).icon.x)<1);
+ t.clearTranslations();
+ const restored=containers.every(el=>before.get(el).nodes.every((node,index)=>el.childNodes[index]===node)&&el.childNodes.length===before.get(el).nodes.length&&el.getAttribute('style')===before.get(el).style);
+ const restoration=containers.map(el=>({id:el.id,style:el.getAttribute('style'),before:before.get(el).style,children:el.childNodes.length,expected:before.get(el).nodes.length,order:before.get(el).nodes.every((node,index)=>el.childNodes[index]===node)}));
+ return {checks,preserved,iconStable,restored,restoration};
+});
+assert.ok(tracks.checks.length>=5);assert.equal(tracks.preserved,true);assert.equal(tracks.iconStable,true);assert.equal(tracks.restored,true,JSON.stringify(tracks.restoration));
+for(const check of tracks.checks){assert.ok(check.width>200,check.id+' 译文应使用正文宽度');if(['gridRtl','flexReverse','flexRtl'].includes(check.id))assert.ok(check.right<=check.iconLeft-2,check.id+' 不占右侧图标列');else assert.ok(check.left>=check.sourceLeft-2,check.id+' 不占图标列');if(['gridBare','gridRtl'].includes(check.id))assert.equal(check.column,'2 / 3');}
+console.log('PASS Chromium: 双列/三列/RTL 网格、直接文字与链接、横向 flex、图标位置、父子关系及取消样式还原',tracks);
 
 
 // 新闻导航常用外层 div 包裹 display:block 的链接；不能将整条链接包成原文后把译文放在外面。
@@ -95,7 +132,7 @@ const news=await page.evaluate(()=>{
  const wrapper=link.querySelector('.bt-translation-text');
  wrapper.click();
  const after={height:nav.clientHeight,scroll:nav.scrollHeight,link:link.getBoundingClientRect().height};
- const titleRect=link.querySelector('.bt-original-text').getBoundingClientRect(),translationRect=wrapper.getBoundingClientRect();
+ const translationRect=wrapper.getBoundingClientRect();
  const translatedInsideLink=wrapper.closest('a')===link;
  t.STATE.mode='translation-only';t.applyMode();const onlyClickable=wrapper.closest('a')===link&&getComputedStyle(link).display!=='none';
  t.STATE.mode='bilingual';t.applyMode();t.clearTranslations();

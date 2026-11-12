@@ -141,7 +141,7 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    // 设置页真实操作 → 同步存储 → 已有网页译文：只更新外观，不能增加任何翻译请求。
    await settings.locator('.nav-item[data-tab="display"]').click();
    const styleCallsBefore={ai:calls.length,google:await worker.evaluate(()=>googleCalls.length)};
-   const originalFont=await page.locator('#first .bt-original-text').evaluate(el=>getComputedStyle(el).fontSize);
+   const originalFont=await page.locator('#first').evaluate(el=>getComputedStyle(el).fontSize);
    await settings.locator('#translationFontFamily').selectOption('serif');
    await settings.locator('#translationFontSize').selectOption('120');
    await settings.locator('#translationFontWeight').selectOption('bold');
@@ -155,7 +155,7 @@ const version=JSON.parse(fs.readFileSync(path.join(root,'manifest.json'))).versi
    assert.ok(Math.abs(styled.size-parseFloat(originalFont)*1.2)<.1);
    assert.equal(styled.weight,'700');assert.ok(styled.font.includes('SimSun'));
    assert.ok(Math.abs(styled.line-styled.size*1.8)<.1);assert.ok(Math.abs(styled.top-styled.size*.6)<.1);
-   assert.equal(await page.locator('#first .bt-original-text').evaluate(el=>getComputedStyle(el).fontSize),originalFont,'原文字号不能被修改');
+   assert.equal(await page.locator('#first').evaluate(el=>getComputedStyle(el).fontSize),originalFont,'原文字号不能被修改');
    assert.equal(calls.length,styleCallsBefore.ai);assert.equal(await worker.evaluate(()=>googleCalls.length),styleCallsBefore.google);
    // 新打开的设置页读取保存值，证明配置不只存在于本次预览的 DOM 中。
    const secondSettings=await context.newPage();await secondSettings.goto('chrome-extension://'+id+'/settings/settings.html');

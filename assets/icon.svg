@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <title>页知译</title>
   <desc>蓝色圆角底上的白色折角书页与文字符号。</desc>
-  <rect x="16" y="16" width="96" height="96" rx="24" fill="#0284C7"/>
-  <path d="M47 29h27l17 17v45a8 8 0 0 1-8 8H47a8 8 0 0 1-8-8V37a8 8 0 0 1 8-8Z" fill="#FFF"/>
-  <path d="M74 29v11a6 6 0 0 0 6 6h11Z" fill="#BAE6FD"/>
-  <g fill="none" stroke="#0284C7" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="m62 51 4 4M51 61h27M72 61c-2 12-10 21-21 26M56 65c4 10 11 17 22 22"/>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#0284C7"/>
+  <path d="M41 18h34l22 22v62a8 8 0 0 1-8 8H39a8 8 0 0 1-8-8V28a10 10 0 0 1 10-10Z" fill="#FFF"/>
+  <path d="M75 18v15a7 7 0 0 0 7 7h15Z" fill="#BAE6FD"/>
+  <g fill="none" stroke="#0284C7" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m61 47 5 6M46 62h37M75 62c-3 16-13 28-29 35M52 68c5 12 16 23 31 29"/>
   </g>
 </svg>

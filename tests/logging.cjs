@@ -39,7 +39,10 @@ try{
   prepareRelease(root,fixture);
   assert.equal(fs.readFileSync(path.join(root,'core/constants.js'),'utf8'),source,'打包不修改开发配置');
   verifyReleaseLogging(fs.readFileSync(path.join(fixture,'core/constants.js'),'utf8'));
-  assert.equal(fs.existsSync(path.join(fixture,'tests')),false);assert.equal(fs.existsSync(path.join(fixture,'node_modules')),false);
+  for(const file of ['tests','node_modules','.local','AGENTS.md','README.md','CHANGELOG.md','PRIVACY.md','docs'])
+    assert.equal(fs.existsSync(path.join(fixture,file)),false,'发布副本不包含本机资料、仓库文档或独立隐私网页：'+file);
+  for(const file of ['manifest.json','background/service-worker.js','content/content.js','content/content.css','core/constants.js','core/providers.js','core/translation-units.js','core/request-policy.js','core/translation-runtime.js','core/glossary.js','core/frame-sessions.js','settings/settings.html','settings/settings.js','settings/settings.css','pdf/reader.html','pdf/reader.js','pdf/reader.css','pdf/errors.js','pdf/session.js','pdf/source-loader.js','pdf/document-reader.js','pdf/vendor/build/pdf.mjs','pdf/vendor/build/pdf.worker.mjs','pdf/vendor/LICENSE'])
+    assert.equal(fs.existsSync(path.join(fixture,file)),true,'发布副本必须包含运行资源：'+file);
   for(const dir of ['background','content','core','settings']){
     const walk=folder=>{for(const entry of fs.readdirSync(folder,{withFileTypes:true})){const file=path.join(folder,entry.name);if(entry.isDirectory())walk(file);else if(file.endsWith('.js')){
       const code=fs.readFileSync(file,'utf8');

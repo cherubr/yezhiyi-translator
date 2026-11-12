@@ -67,6 +67,10 @@ function setup(syncData, localData = {}, failWrite = false) {
  assert.equal(styleStorage.sync.translationStyle.fontSize,120,'样式随普通偏好同步');
  assert.equal(styleStorage.local.translationStyle,undefined,'不混入本机凭据分区');
  assert.equal((await styleStorage.storage.get()).translationStyle.color,'#cc3300');
+  const glossary=setup({glossary:{entries:[{source:'old',target:'旧'}]}});await glossary.storage.get();assert.equal(glossary.sync.glossary,undefined);assert.equal(glossary.local.glossary.entries[0].source,'old');
+  const localGlossary=setup({glossary:{enabled:true}},{glossary:{enabled:false,entries:[]}});await localGlossary.storage.get();assert.equal(localGlossary.local.glossary.enabled,false);
+  await localGlossary.storage.set({glossary:{entries:[]}});assert.equal(localGlossary.sync.glossary,undefined);
+  const failedGlossary=setup({glossary:{enabled:true}}, {}, true);await assert.rejects(failedGlossary.storage.get());assert.equal(failedGlossary.sync.glossary.enabled,true);
   console.log('PASS: 请求策略迁移、本机分流及旧并发不换算');
   console.log('PASS: credential migration, local precedence, legacy migration, split writes, failed migration preservation');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -20,8 +20,10 @@
 
       <nav class="nav">
         <button class="nav-item active" data-tab="general"><span class="nav-icon">⚙</span><span>基本设置</span></button>
-        <button class="nav-item" data-tab="display"><span class="nav-icon">🎨</span><span>显示样式</span></button>
+        <button class="nav-item" data-tab="tools"><span class="nav-icon">🛠</span><span>翻译工具</span></button>
         <button class="nav-item" data-tab="service"><span class="nav-icon">🔌</span><span>翻译服务</span></button>
+        <button class="nav-item" data-tab="glossary"><span class="nav-icon">术</span><span>技术术语表</span></button>
+        <button class="nav-item" data-tab="display"><span class="nav-icon">🎨</span><span>显示样式</span></button>
         <button class="nav-item" data-tab="behavior"><span class="nav-icon">🧠</span><span>行为偏好</span></button>
         <button class="nav-item" data-tab="about"><span class="nav-icon">ℹ</span><span>关于</span></button>
       </nav>
@@ -36,7 +38,6 @@
         <section class="tab-panel active" data-panel="general">
           <h1>基本设置</h1>
           <p class="desc">选择默认翻译服务与语言方向。连接和请求设置分别管理。</p>
-
           <div class="field">
             <label for="engine">默认翻译服务</label>
             <select id="engine"></select>
@@ -117,7 +118,7 @@
           <div class="behavior-header">
             <div class="behavior-header-text">
               <h1>行为偏好</h1>
-              <p class="desc">控制翻译的触发方式、悬浮球行为与快捷键。</p>
+              <p class="desc">按你的阅读习惯，设置自动翻译、段落翻译和快捷操作。</p>
             </div>
             <button class="btn-reset-default" id="btnResetDefault">恢复默认</button>
           </div>
@@ -129,7 +130,7 @@
             <div class="switch-row">
               <div class="switch-row-text">
                 <div class="switch-row-label">打开网页时自动翻译</div>
-                <div class="switch-row-hint">控制是否自动启动翻译；手动启动后持续补翻，离开页面暂停，返回继续；点击取消后不自动恢复。</div>
+                <div class="switch-row-hint">开启后，新打开的网页会自动开始翻译。</div>
               </div>
               <div class="switch" id="autoTranslate"></div>
             </div>
@@ -147,20 +148,13 @@
             </div>
           </div>
 
-          <div class="settings-group page-session-rules">
-            <div class="settings-group-title">页面切换时的翻译行为</div>
-            <p>离开当前标签页或最小化浏览器时，停止发送本页的新请求；已经发送的请求允许完成并保留结果。返回页面后继续未完成内容。</p>
-            <p class="hint">用户点击取消后，返回页面也不会自动恢复。Shift 单段翻译不解除整页取消状态；返回不会清空限流等待和重试记录。</p>
-          </div>
-
-
           <div class="settings-group">
             <div class="settings-group-title">悬浮球</div>
 
             <div class="switch-row">
               <div class="switch-row-text">
                 <div class="switch-row-label">悬停悬浮球显示控制面板</div>
-                <div class="switch-row-hint">关闭后悬浮球只用于点击翻译。</div>
+                <div class="switch-row-hint">鼠标移到悬浮球上可展开操作入口；关闭后仍可点击翻译。</div>
               </div>
               <div class="switch" id="hoverPanel"></div>
             </div>
@@ -173,7 +167,7 @@
             <div class="switch-row">
               <div class="switch-row-text">
                 <div class="switch-row-label">启用快捷键</div>
-                <div class="switch-row-hint">关闭后，所有快捷键不再响应。</div>
+                <div class="switch-row-hint">使用快捷键翻译或取消当前网页。</div>
               </div>
               <div class="switch" id="shortcutTranslate"></div>
             </div>
@@ -202,6 +196,12 @@
               <span class="collapsible-arrow" id="guideArrow">▶</span>
             </button>
             <div class="collapsible-body" id="guideBody" style="display:none">
+
+              <div class="guide-section">
+                <div class="guide-title">页面切换与继续翻译</div>
+                <p class="guide-description">切换到其他标签页或最小化浏览器后，暂停新的翻译请求；返回后继续。已取消的翻译不会自动恢复。</p>
+                <p class="guide-description">整页翻译开始后，会随滚动和内容更新继续补翻。关闭自动翻译只影响新页面；停止当前页翻译请点击取消，之后仍可用 Shift 翻译单个段落。</p>
+              </div>
 
               <div class="guide-section">
                 <div class="guide-title">⌨ 快捷键</div>
@@ -249,6 +249,49 @@
         </section>
 
 
+        <section class="tab-panel" data-panel="glossary">
+          <h1>技术术语表</h1><p class="desc">为网页翻译统一译法；术语只保存在本机。</p>
+          <div class="glossary-options">
+            <label><input id="glossaryEnabled" type="checkbox"> 启用术语表</label>
+            <label><input id="glossaryBuiltins" type="checkbox"> 保留内置术语原名：Linux、RHCE、OpenShift、Kubernetes、Red Hat</label>
+          </div>
+          <div id="glossaryRows"></div>
+          <div class="settings-action-row">
+            <button id="addGlossary" class="settings-action" type="button">添加术语</button>
+            <button id="saveGlossary" class="settings-action settings-action--primary" type="button">保存术语表</button>
+            <button id="exportGlossary" class="settings-action" type="button">导出 JSON</button>
+            <label class="settings-action glossary-file">导入 JSON<input id="importGlossary" type="file" accept="application/json,.json" aria-label="导入术语表 JSON 文件"></label>
+          </div>
+          <p id="glossaryStatus" role="status" aria-live="polite"></p>
+          <details class="collapsible-group glossary-help">
+            <summary class="collapsible-header">使用说明</summary>
+            <div class="collapsible-body">
+              <dl class="glossary-help-list">
+                <dt>保留原词</dt>
+                <dd>译法留空时保留原文，例如 RHCE 仍显示为 RHCE。</dd>
+                <dt>优先匹配完整术语</dt>
+                <dd>同时设置 OpenShift 和 OpenShift Container Platform 时，遇到完整名称会优先按较长的术语处理。</dd>
+                <dt>相同术语使用你的设置</dt>
+                <dd>内置规则保留 Red Hat 原名；添加“Red Hat → 红帽”后，在规则指定的目标语言下使用“红帽”。</dd>
+                <dt>目标语言决定规则何时生效</dt>
+                <dd>“所有语言”表示无论翻译成哪种语言，都使用这条规则。RHCE 保留原名适合选“所有语言”；“kernel → 内核”建议选“简体中文”，避免在翻译成其他语言时也显示“内核”。</dd>
+                <dt>导出用于备份或迁移</dt>
+                <dd>导出 JSON 会保存当前编辑的术语和开关设置，也包含尚未点击保存的修改。</dd>
+                <dt>导入后需要保存</dt>
+                <dd>导入 JSON 会替换当前编辑内容；点击“保存术语表”后才生效。需要保留现有内容时，请先导出。</dd>
+              </dl>
+            </div>
+          </details>
+        </section>
+        <section class="tab-panel" data-panel="tools">
+          <h1>翻译工具</h1>
+          <p class="desc">独立翻译工具的集中入口；工具页面自行承担读取与翻译任务。</p>
+          <div class="card">
+            <h3>📄 PDF 文档翻译</h3>
+            <p>支持本地及在线 PDF 文档翻译。</p>
+            <div class="settings-action-row"><button type="button" class="settings-action settings-action--primary" id="openPdfReaderTool">打开 PDF 阅读器</button></div>
+          </div>
+        </section>
         <section class="tab-panel" data-panel="about">
           <h1>关于</h1>
           <p class="desc">页知译 · 网页双语翻译</p>
@@ -282,6 +325,8 @@
   <script src="../core/translation-style.js"></script>
   <script src="../core/request-policy.js"></script>
   <script src="../core/providers.js"></script>
+  <script src="../core/glossary.js"></script>
   <script src="settings.js"></script>
+  <script src="glossary.js"></script>
 </body>
 </html>

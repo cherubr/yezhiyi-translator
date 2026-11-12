@@ -36,7 +36,7 @@ async function setup(browser,engine){
     },responseDelay);
   }},storage:{sync:storage,local:storage,onChanged:{addListener(){}}}};
  },engine);
- for(const file of ['core/constants.js','core/translation-style.js','core/translation-units.js','core/request-policy.js','core/providers.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
+ for(const file of ['core/constants.js','core/translation-style.js','core/translation-units.js','core/request-policy.js','core/providers.js','core/panel-ui.js'])await page.addScriptTag({content:fs.readFileSync(path.join(root,file),'utf8')});
  await page.addStyleTag({content:fs.readFileSync(path.join(root,'core/translation-style.css'),'utf8')+'\n'+fs.readFileSync(path.join(root,'content/content.css'),'utf8')});
  const source=fs.readFileSync(path.join(root,'content/content.js'),'utf8').replace('  bootstrap();',
   '  window.test={STATE,collectBlocks,translatePage,cancelTranslation,applyMode,createFab,observeDynamicContent,bindHoverTranslate,bindPageLifecycle};');

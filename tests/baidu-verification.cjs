@@ -30,9 +30,10 @@ function setup(){
  const getURL=name=>'chrome-extension://unit-test/'+name;
  const context={console,URL,URLSearchParams,AbortController,AbortSignal,TextEncoder,
    setTimeout(fn,ms){const timer=setTimeout(fn,ms);timer.unref();return timer;},clearTimeout,
-   chrome:{storage:{sync:area(sync,'sync'),local:area(local,'local')},
+   chrome:{storage:{sync:area(sync,'sync'),local:area(local,'local'),onChanged:{addListener(){}}},
      runtime:{getURL,onInstalled:{addListener(){}},onMessage:{addListener(fn){listener=fn;}}},
-     contextMenus:{onClicked:{addListener(){}}},action:{onClicked:{addListener(){}}},
+     contextMenus:{onClicked:{addListener(){}}},action:{onClicked:{addListener(){}},setPopup(){}},
+     tabs:{onUpdated:{addListener(){}},onCreated:{addListener(){}},query(_,callback){callback?.([]);return Promise.resolve([]);}},
      commands:{onCommand:{addListener(){}}},permissions:{async contains(){return true;}},
      i18n:{getUILanguage(){return 'zh-CN';}}
    }};

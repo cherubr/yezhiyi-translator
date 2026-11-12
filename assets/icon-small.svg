@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>页知译</title>
+  <desc>为 16 与 32 像素工具栏绘制的简化折角书页，放大主体并加粗文字符号。</desc>
+  <rect x=".5" y=".5" width="15" height="15" rx="3.5" fill="#0284C7"/>
+  <path d="M4 2h6l3 3v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" fill="#FFF"/>
+  <path d="M10 2v2a1 1 0 0 0 1 1h2Z" fill="#BAE6FD"/>
+  <g fill="none" stroke="#0284C7" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m7.5 5.5.6.7M5.5 7.5h5M9.5 7.5c-.4 2-1.9 3.7-4 4.5M6.5 8.5c.8 1.6 2.3 2.8 4 3.5"/>
+  </g>
+</svg>

@@ -3,6 +3,9 @@ node_modules/
 playwright-report/
 test-results/
 *.log
+/.cache/
+/.npm/
+/coverage/
 
 # 密钥及个人环境配置
 .env
@@ -18,16 +21,26 @@ test-results/
 .idea/
 .vscode/
 .DS_Store
+._*
 Thumbs.db
 *.tmp
+*.code-workspace
 
 # 本机打包文件
 *.zip
 *.crx
+/*.tgz
+/*.tar.gz
 
 # 白名单脚本生成的安装包
 dist/
 prototypes/
+docs/pdf/
 
 # 个人参考、发布填写材料、原型与生成图片，仅保留在本地
 /.local/
+CHANGELOG.md
+#AI
+/.continue/
+AGENTS.md
+/PROJECT-HANDOVER.md
