@@ -715,6 +715,11 @@ if(require.main===module)(async () => {
     await page.locator('#editorPaper').press('ControlOrMeta+End');
     const beforePlainParagraphs=await page.locator('#editorPaper p').count();
     await page.locator('#editorPaper').evaluate(node=>{
+      // selectionchange 异步派发：模拟旧选区在开头、当前光标已到末尾，但粘贴先于通知到达。
+      const selection=getSelection(),prior=document.createRange();prior.selectNodeContents(node);prior.collapse(true);
+      selection.removeAllRanges();selection.addRange(prior);document.dispatchEvent(new Event('selectionchange'));
+      const latest=document.createRange();latest.selectNodeContents(node);latest.collapse(false);
+      selection.removeAllRanges();selection.addRange(latest);
       const data=new DataTransfer();data.setData('text/plain',' plain');data.setData('text/html','<h1> plain</h1>');
       node.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));
     });
