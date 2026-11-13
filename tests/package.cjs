@@ -1,6 +1,6 @@
 /**
  * 跨平台打包回归：只在独立临时项目生成小型 ZIP，不操作项目 dist 或真实商店。
- * 覆盖文件白名单、资源类型、UTF-8/空格路径、生产日志、归档完整性、失败清理和无覆盖发布。
+ * 覆盖文件白名单、资源类型、UTF-8/空格路径、生产日志、归档完整性、旧包备份和失败恢复。
  * 三系统 CI 使用同一脚本；Mac 实际项目包另用系统 unzip/Python 独立验收。
  * 执行：npm run test:package
  */
@@ -74,8 +74,13 @@ try {
   assert.equal(fs.readFileSync(path.join(root, "core/constants.js"), "utf8"), constants);
   assert.deepEqual(fs.readdirSync(path.join(root, "dist")), [path.basename(output)]);
   const previous = fs.readFileSync(output);
-  assert.throws(() => packageRelease(root), /已存在/);
-  assert.deepEqual(fs.readFileSync(output), previous);
+  fs.writeFileSync(path.join(root, "content/content.js"), "const value = '新版本';");
+  assert.equal(packageRelease(root), output, "重复打包仍使用固定正式文件名");
+  assert.equal(new AdmZip(output).readAsText("content/content.js"), "const value = '新版本';");
+  const backups = path.join(root, "dist/backups"), backupFiles = fs.readdirSync(backups);
+  assert.equal(backupFiles.length, 1);
+  assert.deepEqual(fs.readFileSync(path.join(backups, backupFiles[0])), previous, "备份必须完整保留上次正式包");
+  assert.ok(!fs.existsSync(output + ".lock"), "成功后释放同版本打包锁");
 
   // 读回校验不能只检查日志：同样验证缺项、额外路径、字节变化和损坏归档。
   const stage = path.join(fixture, "stage"), files = prepareRelease(root, stage);
@@ -117,6 +122,34 @@ try {
   } finally {fs.writeFileSync = originalWrite;}
   cleanDist(damaged);
 
+  // 新包生成失败不能移动、删除或提前备份旧正式包。
+  const damagedUpdate = createProject("damaged-update"), oldOutput = packageRelease(damagedUpdate), oldBytes = fs.readFileSync(oldOutput);
+  try {
+    fs.writeFileSync = (target, data, options) => originalWrite(target,
+      path.basename(String(target)) === "validated.zip" ? Buffer.from("broken zip") : data, options);
+    assert.throws(() => packageRelease(damagedUpdate));
+  } finally {fs.writeFileSync = originalWrite;}
+  assert.deepEqual(fs.readFileSync(oldOutput), oldBytes);
+  assert.deepEqual(fs.readdirSync(path.join(damagedUpdate, "dist")), [path.basename(oldOutput)]);
+
+  // 最后替换失败时旧正式包仍可用，已经生成的备份也保留。
+  const failedReplace = createProject("failed-replace"), replaceOutput = packageRelease(failedReplace), replaceBytes = fs.readFileSync(replaceOutput);
+  const originalRename = fs.renameSync;
+  try {
+    fs.renameSync = (source, target) => {if (target === replaceOutput) throw Object.assign(new Error("locked output"), {code:"EACCES"}); return originalRename(source, target);};
+    assert.throws(() => packageRelease(failedReplace), {code:"EACCES"});
+  } finally {fs.renameSync = originalRename;}
+  assert.deepEqual(fs.readFileSync(replaceOutput), replaceBytes);
+  assert.ok(!fs.existsSync(replaceOutput + ".lock"));
+  const replaceBackups = path.join(failedReplace, "dist/backups");
+  assert.equal(fs.readdirSync(replaceBackups).length, 1);
+  assert.deepEqual(fs.readFileSync(path.join(replaceBackups, fs.readdirSync(replaceBackups)[0])), replaceBytes);
+
+  const locked = createProject("locked");fs.mkdirSync(path.join(locked, "dist"));
+  fs.writeFileSync(outputPath(locked) + ".lock", "other process");
+  assert.throws(() => packageRelease(locked), /打包任务正在运行/);
+  assert.equal(fs.readFileSync(outputPath(locked) + ".lock", "utf8"), "other process", "不能移除其他进程的锁");
+
   // 模拟通过预检查后另一个进程先发布，不覆盖也不删除对方文件。
   const racing = createProject("racing"), originalLink = fs.linkSync;
   try {
@@ -133,7 +166,7 @@ try {
   catch (error) {if (!["EPERM", "EACCES"].includes(error.code)) throw error; console.log("SKIP: 当前系统不允许创建符号链接夹具");}
   if (linked) {assert.throws(() => packageRelease(links), /符号链接/); cleanDist(links);}
 
-  console.log("PASS: " + process.platform + " 跨平台 ZIP、文件及资源类型过滤、中文路径、生产日志、完整性、失败清理及竞态无覆盖");
+  console.log("PASS: " + process.platform + " 跨平台 ZIP、白名单、生产日志、完整性、重复打包备份、失败保留旧包及并发保护");
 } finally {
   if (path.dirname(fixture) !== path.resolve(os.tmpdir()) || !path.basename(fixture).startsWith("yezhiyi-package-test-"))
     throw Error("打包测试目录超出预期");

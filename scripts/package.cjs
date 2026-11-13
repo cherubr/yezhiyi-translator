@@ -1,10 +1,10 @@
 /**
  * 跨平台发布 ZIP 入口：npm run package，Windows/macOS/Linux 使用同一 Node.js 实现。
- * 顺序：版本检查 → 白名单临时副本 → 临时 ZIP → 逐条读回校验 → 原子发布正式文件。
- * 不运行测试、不上传商店、不覆盖旧包；require 仅导出函数，不生成文件。
+ * 顺序：版本检查 → 白名单临时副本 → 临时 ZIP → 逐条读回校验 → 备份旧包 → 原子替换正式文件。
+ * 不运行测试、不上传商店；重复打包自动备份旧包，require 仅导出函数，不生成文件。
  * adm-zip 是固定版本的开发依赖，不进入扩展安装包。
  */
-const fs = require("node:fs"), path = require("node:path"), os = require("node:os");
+const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), {randomUUID} = require("node:crypto");
 const AdmZip = require("adm-zip");
 const {prepareRelease, verifyReleaseLogging} = require("./release-files.cjs");
 
@@ -43,7 +43,7 @@ function verifyReleaseArchive(archive, stage, files, version) {
  * 创建跨平台发布 ZIP；正式文件出现前已经完成全部检查。
  * @param {string} [root] 项目根目录，默认取脚本上级目录。
  * @returns {string} 通过校验的 dist/yezhiyi-translator-<版本>.zip 绝对路径。
- * @throws {Error} 版本不一致、资源缺失、压缩/校验失败或同名包已存在。
+ * @throws {Error} 版本不一致、资源缺失、压缩/校验失败、输出被占用或备份/替换失败。
  */
 function packageRelease(root = path.resolve(__dirname, "..")) {
   root = path.resolve(root);
@@ -59,14 +59,26 @@ function packageRelease(root = path.resolve(__dirname, "..")) {
     throw Error("Manifest、package 和锁文件版本不一致");
   const dist = path.join(root, "dist");
   const output = path.join(dist, "yezhiyi-translator-" + version + ".zip");
-  // lstat 也能发现悬空符号链接，禁止覆盖任何同名文件系统条目。
-  try {fs.lstatSync(output); throw Error("打包文件已存在，请先另存旧包或手动删除后重试：" + output);}
-  catch (error) {if (error.code !== "ENOENT") throw error;}
   fs.mkdirSync(dist, {recursive:true});
-  let stage, pending;
+  const lockPath = output + ".lock";
+  // 只允许替换普通文件，不能跟随符号链接或覆盖目录。
+  const outputState = () => {
+    try {
+      const state = fs.lstatSync(output, {bigint:true});
+      if (!state.isFile()) throw Error("同名安装包不是普通文件，请检查：" + output);
+      return state;
+    } catch (error) {if (error.code === "ENOENT") return null; throw error;}
+  };
+  let stage, pending, lockDescriptor = null;
   try {
+    try {lockDescriptor = fs.openSync(lockPath, "wx");}
+    catch (error) {
+      if (error.code === "EEXIST") throw Error("已有同版本打包任务正在运行；若上次异常退出，请确认没有打包进程后删除：" + lockPath);
+      throw error;
+    }
+    const previous = outputState();
     stage = fs.mkdtempSync(path.join(os.tmpdir(), "yezhiyi-release-"));
-    // 临时 ZIP 位于 dist 同一文件系统，便于最后以硬链接原子发布且不覆盖竞态中新建的旧包。
+    // 临时 ZIP 与正式包在同一文件系统，最终替换不会暴露半成品。
     pending = fs.mkdtempSync(path.join(dist, ".yezhiyi-package-"));
     const files = prepareRelease(root, stage), zip = new AdmZip();
     for (const name of files) {
@@ -77,12 +89,23 @@ function packageRelease(root = path.resolve(__dirname, "..")) {
     // wx 防止意外覆盖临时目标；正式文件名还没有出现，压缩失败不会留下半成品正式包。
     fs.writeFileSync(temporaryZip, zip.toBuffer(), {flag:"wx"});
     verifyReleaseArchive(temporaryZip, stage, files, version);
-    // 同卷硬链接是无覆盖的原子操作：并发打包只有一个成功，另一个得到 EEXIST。
-    // 不使用可覆盖目标的 rename，也不在失败时删除另一个进程生成的正式文件。
-    fs.linkSync(temporaryZip, output);
+    const latest = outputState();
+    if (previous ? !latest || ["dev", "ino", "size", "mtimeNs"].some(key => previous[key] !== latest[key]) : latest)
+      throw Error("打包期间正式文件已被其他程序修改，请重新打包：" + output);
+    if (previous) {
+      const backups = path.join(dist, "backups");fs.mkdirSync(backups, {recursive:true});
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const backup = path.join(backups, path.basename(output, ".zip") + "-" + stamp + "-" + randomUUID() + ".zip");
+      fs.copyFileSync(output, backup, fs.constants.COPYFILE_EXCL);
+      // 先完成校验与备份再原子替换；失败时不删除旧正式包。
+      fs.renameSync(temporaryZip, output);
+    } else {
+      // 首次发布仍不覆盖恰好由其他程序创建的文件。
+      fs.linkSync(temporaryZip, output);
+    }
     return output;
   } finally {
-    // 清理范围仅限本轮创建的两个目录；移除临时链接不影响已发布 ZIP。
+    // 清理范围仅限本轮创建的临时目录及锁，不清理旧包备份。
     try {
       if (pending) {
         if (path.dirname(pending) !== dist || !path.basename(pending).startsWith(".yezhiyi-package-"))
@@ -90,10 +113,17 @@ function packageRelease(root = path.resolve(__dirname, "..")) {
         fs.rmSync(pending, {recursive:true, force:true});
       }
     } finally {
-      if (stage) {
-        if (path.dirname(stage) !== path.resolve(os.tmpdir()) || !path.basename(stage).startsWith("yezhiyi-release-"))
-          throw Error("发布副本目录超出预期范围");
-        fs.rmSync(stage, {recursive:true, force:true});
+      try {
+        if (stage) {
+          if (path.dirname(stage) !== path.resolve(os.tmpdir()) || !path.basename(stage).startsWith("yezhiyi-release-"))
+            throw Error("发布副本目录超出预期范围");
+          fs.rmSync(stage, {recursive:true, force:true});
+        }
+      } finally {
+        if (lockDescriptor !== null) {
+          try {fs.closeSync(lockDescriptor);}
+          finally {fs.unlinkSync(lockPath);}
+        }
       }
     }
   }

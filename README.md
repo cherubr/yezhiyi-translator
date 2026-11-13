@@ -77,13 +77,13 @@ npx playwright install chromium
 | `npm run test:pdf` | 运行 PDF 结构、重排模型、人工修订、排版和阅读器浏览器回归 |
 | `npm run test:pdf:export` | 运行 PDF 导出及复杂表格、分栏续页回归 |
 | `npm run test:pdf:samples` | 使用代表性 PDF 样本进行浏览器回归，样本与资源要求见脚本 |
-| `npm run package` | Windows/macOS/Linux 使用 Node.js 生成并校验发布 ZIP，拒绝覆盖同名旧包 |
+| `npm run package` | Windows/macOS/Linux 使用 Node.js 生成并校验发布 ZIP，同名旧包自动备份后替换 |
 | `npm run test:package` | 在独立临时项目测试跨平台 ZIP、文件过滤、完整性及失败清理，不生成正式项目包 |
 | `npm run store:assets` | 生成全部 6 个设置导航页、4 个服务详情页截图及两张宣传图；长页另存完整预览，同时重写 `assets/icon*.png`，仅在图片相关任务使用 |
 
 测试使用独立浏览器资料和本地模拟翻译服务；不能替代真实 Chrome、第三方站点和真实账号验收。打包测试只使用系统临时目录中的小型夹具；CI 为 Windows、macOS、Linux 配置同一项打包回归，普通分支检查不会上传商店。
 
-当前 v1.0.2 待发布状态包含重建的 PDF 模块。2026-11-13 经授权完成源码检查、仓库逻辑回归、PDF 逻辑和浏览器回归、真实 PDF 导出解析与渲染验证，以及发布打包与上传脚本模拟回归；未生成截图，未验证真实翻译账号或商店审核。PDF 的功能范围与限制见上方“PDF 阅读与翻译”说明。
+当前 v1.0.2 待发布状态包含重建的 PDF 模块。2026-11-13 发布整理经授权完成源码检查、仓库逻辑回归、PDF 逻辑和浏览器回归、真实 PDF 导出解析与渲染验证，以及发布打包与上传脚本模拟回归；未生成截图，未验证真实翻译账号或商店审核。后续 dev 分支的重复打包备份及替换调整已补充回归源码，本轮尚未执行验证。PDF 的功能范围与限制见上方“PDF 阅读与翻译”说明。
 
 开发日志由 `core/constants.js` 的 `LOG_CONFIG` 控制，支持 `off/error/warn/info/debug`。日志禁止包含原文、译文、密钥和完整请求；发布脚本在临时副本中强制关闭日志，不改开发源码。
 
@@ -128,9 +128,9 @@ npx playwright install chromium
 
 ## 发布流程
 
-长期开发分支为 `dev`，稳定分支为 `main`，功能任务从 `dev` 创建临时分支。版本变更需同步 Manifest、package、锁文件和本机变更记录。`docs/` 仅提交 `privacy.html`，其余文档及根目录 `CHANGELOG.md` 保留在本地，不纳入新提交。
+日常开发和代码提交统一在 `dev`，功能任务可从 `dev` 创建临时分支；`main` 仅在明确发布整合时合入已完成的内容，不直接提交开发改动。版本变更需同步 Manifest、package、锁文件和本机变更记录。`docs/` 仅提交 `privacy.html`，其余文档及根目录 `CHANGELOG.md` 保留在本地，不纳入新提交。
 
-- `scripts/release-files.cjs` 定义发布白名单和文件过滤，`scripts/package.cjs` 用 Node.js 在 Windows、macOS 和 Linux 生成 `dist/yezhiyi-translator-<版本>.zip`，无需 PowerShell 或系统 ZIP 命令。先生成临时包，逐条读回比对路径、文件内容、版本及生产日志，通过后才生成正式文件；失败清理临时产物，同名正式包不会被覆盖。
+- `scripts/release-files.cjs` 定义发布白名单和文件过滤，`scripts/package.cjs` 用 Node.js 在 Windows、macOS 和 Linux 生成 `dist/yezhiyi-translator-<版本>.zip`，无需 PowerShell 或系统 ZIP 命令。先生成临时包，逐条读回比对路径、文件内容、版本及生产日志，通过后才发布。已有同名包时自动完整备份到 `dist/backups/` 再替换正式文件，重复执行无需手动删除旧包；失败保留旧正式包。同版本并发打包由锁文件阻止；异常退出遗留锁时，确认没有打包进程后再删除提示的 `.lock` 文件。
 - 白名单目录为 `background/`、`content/`、`core/`、`settings/`、`assets/`、`pdf/`、`popup/`，另含根目录 `manifest.json`。目录内按允许的运行资源类型复制，PDF vendor 额外保留模型、WASM、字体与许可证；过滤调试映射、隐藏文件、临时备份及依赖缓存。符号链接不入包并报错。
 - 安装包仅包含 Manifest、运行文件和资源。README、CHANGELOG、测试、脚本、本机资料及独立隐私网页均不进入安装包。
 - 推送版本一致的 `v*` 标签会触发 [商店上传工作流](.github/workflows/chrome-store-upload.yml)，校验对应提交已进入远程 `main`，默认执行检查、网页及 PDF 回归、打包，再上传现有商店条目的草稿。
