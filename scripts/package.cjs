@@ -69,9 +69,9 @@ function packageRelease(root = path.resolve(__dirname, "..")) {
       return state;
     } catch (error) {if (error.code === "ENOENT") return null; throw error;}
   };
-  let stage, pending, lock = null;
+  let stage, pending, lockDescriptor = null;
   try {
-    try {lock = fs.openSync(lockPath, "wx");}
+    try {lockDescriptor = fs.openSync(lockPath, "wx");}
     catch (error) {
       if (error.code === "EEXIST") throw Error("已有同版本打包任务正在运行；若上次异常退出，请确认没有打包进程后删除：" + lockPath);
       throw error;
@@ -120,8 +120,8 @@ function packageRelease(root = path.resolve(__dirname, "..")) {
           fs.rmSync(stage, {recursive:true, force:true});
         }
       } finally {
-        if (lock !== null) {
-          try {fs.closeSync(lock);}
+        if (lockDescriptor !== null) {
+          try {fs.closeSync(lockDescriptor);}
           finally {fs.unlinkSync(lockPath);}
         }
       }
