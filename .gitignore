@@ -35,11 +35,13 @@ Thumbs.db
 # 白名单脚本生成的安装包
 dist/
 prototypes/
-docs/pdf/**
+# docs 仅提交公开隐私网页，其他文档保留在本机
+/docs/*
+!/docs/privacy.html
 
 # 个人参考、发布填写材料、原型与生成图片，仅保留在本地
 /.local/
-CHANGELOG.md
+/CHANGELOG.md
 #AI
 /.continue/
 AGENTS.md
