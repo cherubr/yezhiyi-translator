@@ -8,7 +8,7 @@
    「缺失页保留原文导出」时该页条目只有 {page}：无快照即原样复制源页，不规划、不绘制、不进附录。
    job.mode="bilingual"（P5-D 双语导出）：每页先照录原文页，再在真有原位译文时追加一张同尺寸同 /Rotate 的对照页
    （drawPage 引用原文页内容后叠遮罩与译文），输出按「原文页 → 对照页」相邻成对；附录仍集中在末尾不单另成对。 */
-importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js", "layout-planner.js", "reflow-document.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-lib/fontkit.umd.min.js");
+importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js", "layout-planner.js", "export-fonts.js", "reflow-document.js", "export-source.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-lib/fontkit.umd.min.js");
 (function(global) {
   "use strict";
   const P = global.BT_PDF_LAYOUT_PLANNER;
@@ -190,6 +190,9 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
       const tier=await embedTier(out,{code:"builtin-"+key,label:"西文修订字体（"+name+"）",standardFont:name,metrics:{ascent:.718,lineHeight:1.25}});
       families.set(key,tier);tiers.push(tier);
     }
+    // PDF 标准符号字体补充数学／技术字形；按真实编码覆盖选用，不替换正文字符。
+    for(const [code,name,label] of [["builtin-symbol",StandardFonts.Symbol,"内置数学符号字体"],["builtin-dingbats",StandardFonts.ZapfDingbats,"内置标记符号字体"]])
+      tiers.push(await embedTier(out,{code,label,standardFont:name,metrics:{ascent:1,lineHeight:1.25}}));
     // 同一码点只判定一次分级：分段与缺字门禁共用该结论，宽度也按判定出的那只字体实测。
     const tierFor = cp => {
       if (!chosen.has(cp)) chosen.set(cp, standard.covers(cp)?standard:tiers.find(tier => tier.covers(cp)) || null);
@@ -267,7 +270,7 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
     throw error("EXPORT_GLYPH_MISSING", "导出字体（" + label + "）无法绘制" + what + "中的 " +
       missing.length + (missing.length >= MISSING_SAMPLE_LIMIT ? " 个以上" : " 个") + "字符：" +
       missing.map(ch => ch + "(U+" + ch.codePointAt(0).toString(16).toUpperCase().padStart(4, "0") + ")").join(" ") +
-      "；已拒绝导出以免生成缺字文件。请把目标语言改为该字体覆盖的语言，或改用原文导出");
+      "；已拒绝导出以免生成缺字文件。正文与内置符号字体均未覆盖这些字形；可使用「导出本页编辑稿」由浏览器打印，或保留原文导出");
   }
 
   /**
@@ -292,7 +295,9 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
       }
       const box = ok ? userBox(M, pl.maskRect) : null;
       if (!ok || !box || box.width <= 0 || box.height <= 0) continue;
-      placed.push({blockId, pl, widths, box});
+      const boxes=(pl.maskRects||[pl.maskRect]).map(rect=>userBox(M,rect));
+      if(boxes.some(rect=>!rect||rect.width<=0||rect.height<=0))continue;
+      placed.push({blockId, pl, widths, box, boxes});
     }
     return {rows, plan, angle, placed, drawn: new Set(placed.map(({blockId}) => blockId))};
   }
@@ -366,18 +371,12 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
   /** 自然分页的纯译文阅读版；复用相同的字体选级、逐字门禁与有效译文快照。 */
   async function exportTranslated(job) {
     const {requestId} = job;
-    const jobs = Array.isArray(job.pages) ? job.pages : null;
+    const jobs = Array.isArray(job.pages) ? job.pages.map(item=>item?.snapshot?{...item,snapshot:{...item.snapshot,
+      results:(item.snapshot.results||[]).map(([id,result])=>[id,global.BT_PDF_EXPORT_FONTS.normalizeResult(result)])}}:item) : null;
     const progress = (stage, message) => postMessage({type: "progress", requestId, stage, message});
     if (!jobs || !jobs.length) throw error("EXPORT_FAILED", "缺少导出页数据，请重新读取并翻译后再导出");
     progress("load", "正在读取源 PDF…");
-    let loaded;
-    try {
-      loaded = await PDFDocument.load(job.bytes);
-    } catch (cause) {
-      if (cause && cause.name === "EncryptedPDFError")
-        throw error("EXPORT_ENCRYPTED", "加密 PDF 暂不支持导出；请先在 PDF 阅读器中打开并另存为未加密文件后重试");
-      throw error("EXPORT_FAILED", "无法读取源 PDF（文件损坏或含不支持的结构），未能导出");
-    }
+    const loaded=await global.BT_PDF_EXPORT_SOURCE.load({bytes:job.bytes,lib:global.PDFLib,error});
     // 逐页身份校验：同一文档、页数与源一致、页码有效且不重复、坐标基准可逆。任何一页不合格整单拒绝。
     // snapshot 缺失的条目是「保留原文页」（未翻译页显式保留导出）：只按页码复制，不规划、不绘制、不入附录。
     const numPages = loaded.getPageCount();
@@ -534,12 +533,12 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
         : "正在绘制原位译文（" + sheet.placed.length + " 处）…");
       const {M, angle} = sheet;
       const target = sheet.target;
-      for (const {pl, widths, box} of sheet.placed) {
+      for (const {pl, widths, boxes} of sheet.placed) {
         const mc = Array.isArray(pl.maskColor) && pl.maskColor.length === 3 ? pl.maskColor : [255, 255, 255];
         const customColor=pl.textStyle?.color;
         const ink = customColor?rgb(...[1,3,5].map(offset=>parseInt(customColor.slice(offset,offset+2),16)/255)):
           luminance(mc) < 0.55 ? INK_LIGHT : INK_DARK;
-        target.drawRectangle({x: box.x, y: box.y, width: box.width, height: box.height,
+        for(const box of boxes)target.drawRectangle({x: box.x, y: box.y, width: box.width, height: box.height,
           color: rgb(mc[0] / 255, mc[1] / 255, mc[2] / 255)});
         for (const [index, line] of pl.lines.entries()) {
           // 基线锚点：行盒顶 + i×行高 + 上升部；右对齐块以行宽回退锚点。全部在固定坐标计算后经 M 映射。

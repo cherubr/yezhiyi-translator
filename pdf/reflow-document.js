@@ -11,7 +11,7 @@
     const outlines=[],ink=rgb(.12,.16,.2),border=rgb(.65,.68,.72);
     let operations=0;
     const budget=()=>{if(++operations>200000||out.getPageCount()>2000)throw error("EXPORT_FAILED","重排内容超过处理预算，请缩小页码范围");};
-    const clean=text=>String(text||"").replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g,"");
+    const clean=text=>global.BT_PDF_EXPORT_FONTS.normalize(text);
     const drawable=text=>Array.from(text).every(ch=>/\s/u.test(ch)||setup.canRender(ch));
     const translated=item=>item.result?.status==="translated"&&item.block.role==="text"&&!!clean(item.result.text).trim();
     for(const target of targets){

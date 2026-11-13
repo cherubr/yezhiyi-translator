@@ -9,7 +9,7 @@
     let current=size;
     for(let tier=0;tier<64;tier++){
       const lines=planner.wrapText(text||" ",current,width*.97,measure);
-      if(lines.length*current*style.lineHeight<=height&&lines.every(line=>measure(line,current)<=width))return {ok:true,size:current};
+      if(lines.length*current*style.lineHeight<=height&&lines.every(line=>measure(line,current)<=width))return {ok:true,size:current,lines,lineHeight:current*style.lineHeight};
       if(!auto||current<=4)return {ok:false,size:current,reason:"框内放不下，请缩短文字、调小字号，或取消后重新画大一些"};
       current=Math.max(4,current*.94);
     }
@@ -54,10 +54,15 @@
     if(edges.includes("s"))r.bottom=clamp(r.bottom+dy,r.y+4,bounds.height);
     return r;
   }
-  function create({getInput,onPrepare,onSave,onSaved,onClear}) {
+  function sourceMasksForEdit(row,rect) {
+    const placement=row?.result?.manualPlacement;
+    return (placement?(placement.sourceMasks?.length?placement.sourceMasks:[placement.rect]):[rect]).map(mask=>({...mask}));
+  }
+  function create({getInput,onPrepare,onSave,onSaved,onClear,onPreview=()=>{}}) {
     const $=id=>document.getElementById(id),panel=$("inplacePanel"),input=$("inplaceText"),box=$("inplaceSelection"),
       toggle=$("toggleInplaceEdit"),planner=global.BT_PDF_LAYOUT_PLANNER,listeners=[],drafts=new Map();
     let active=false,selected=null,drag=null,adjustment=null,panelDrag=null,saving=false,preparing=false,composing=false,disposed=false,noticeTimer=null,panelPositioned=false;
+    let previewFrame=0,fitCache=null;
     const identity=()=>getInput().identity;
     const listen=(node,name,fn,options)=>{node.addEventListener(name,fn,options);listeners.push(()=>node.removeEventListener(name,fn,options));};
     function notice(text){$("inplaceNotice").textContent=text;$("inplaceNotice").hidden=false;clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>{$("inplaceNotice").hidden=true;},4000);}
@@ -74,12 +79,13 @@
     }
     function stash(){
       if(!selected)return;
-      drafts.delete(selected.key);drafts.set(selected.key,{text:input.value,rect:{...selected.rect},fontFamily:$("inplaceFont").value,size:Number($("inplaceSize").value),auto:$("inplaceAutoFit").checked,textStyle:readStyle()});
+      drafts.delete(selected.key);drafts.set(selected.key,{text:input.value,rect:{...selected.rect},sourceMasks:selected.sourceMasks.map(mask=>({...mask})),fontFamily:$("inplaceFont").value,size:Number($("inplaceSize").value),auto:$("inplaceAutoFit").checked,textStyle:readStyle()});
       if(drafts.size>64)drafts.delete(drafts.keys().next().value);
     }
     function closeEditor(keep=false){
       stopAdjustment();stopPanelDrag();
       if(keep)stash();else if(selected)drafts.delete(selected.key);
+      if(previewFrame){cancelAnimationFrame(previewFrame);previewFrame=0;}fitCache=null;onPreview(null);
       selected=null;composing=false;input.value="";if(panel.open)panel.close();panel.hidden=true;box.hidden=true;controls();
     }
     function target(viewport){
@@ -160,22 +166,38 @@
     function readStyle(){return planner.normalizeTextStyle({bold:$("inplaceBold").getAttribute("aria-pressed")==="true",italic:$("inplaceItalic").getAttribute("aria-pressed")==="true",
       color:$("inplaceColor").value,align:$("inplaceAlign").value,lineHeight:Number($("inplaceLineHeight").value)});}
     function preview(){
-      if(!selected||composing)return;
+      if(!selected||composing||previewFrame||disposed)return;
+      previewFrame=requestAnimationFrame(()=>{previewFrame=0;paintPreview();});
+    }
+    function paintPreview(){
+      if(!selected||composing||disposed)return;
+      const state=getInput();
+      if(!state.ready||state.busy||selected.identity!==identity()){onPreview(null);return;}
       const style=readStyle(),size=Number($("inplaceSize").value);
-      const fit=fitText(input.value,selected.rect,size,$("inplaceFont").value,$("inplaceAutoFit").checked,planner,style);
+      const key=JSON.stringify([input.value,selected.rect.right-selected.rect.x,selected.rect.bottom-selected.rect.y,size,$("inplaceFont").value,$("inplaceAutoFit").checked,style]);
+      // 只移动位置时复用换行结果；输入、尺寸或样式变化才重新度量。
+      if(fitCache?.key!==key)fitCache={key,fit:fitText(input.value,selected.rect,size,$("inplaceFont").value,$("inplaceAutoFit").checked,planner,style)};
+      const fit=fitCache.fit;
       Object.assign(input.style,{fontFamily:planner.fontStack($("inplaceFont").value),fontSize:(fit.ok?fit.size:Math.max(4,Math.min(72,size||10)))+"px",
         fontWeight:style.bold?"700":"400",fontStyle:style.italic?"italic":"normal",color:style.color,textAlign:style.align||selected.align,lineHeight:String(style.lineHeight)});
-      $("inplaceMessage").textContent=fit.ok?"整框文字使用同一样式，白底覆盖。"+($("inplaceAutoFit").checked?"实际字号："+Math.round(fit.size*10)/10+"（自动适配）。":"实际字号："+size+"。")+"弹框预览不代表页面缩放比例。":fit.reason;
+      $("inplaceMessage").textContent=fit.ok?"页面正在实时预览，保存后生效；取消可恢复。原位置白底保留。"+($("inplaceAutoFit").checked?"实际字号："+Math.round(fit.size*10)/10+"（自动适配）。":"实际字号："+size+"。"):fit.reason+"；页面仅显示框内预览，尚未保存。";
       input.setAttribute("aria-invalid",String(!fit.ok));
+      box.dataset.invalid=String(!fit.ok);
+      const fontSize=fit.ok?fit.size:Math.max(4,Math.min(72,size||10));
+      onPreview({pageNumber:state.geometry.pageNumber,rect:{...selected.rect},maskRects:planner.manualMasks({rect:selected.rect,sourceMasks:selected.sourceMasks}),
+        suppressIds:[selected.blockId,...selected.replaceIds].filter(Boolean),fontFamily:$("inplaceFont").value,fontSize,textStyle:style,
+        lines:fit.lines||planner.wrapText(input.value,fontSize,(selected.rect.right-selected.rect.x)*.97,(text,points)=>planner.measure(text,points,$("inplaceFont").value,style)),
+        lineHeight:fit.lineHeight||fontSize*style.lineHeight,align:selected.align,direction:selected.align==="right"?"rtl":"ltr"});
     }
     function show(view,rect){
       const getRect=(block,result)=>result?.manualPlacement?.rect||view.state.getPlacement?.(block.id,view.viewport.id)?.maskRect||block.rect;
       const rows=rowsForEdit(view.state.rows,rect,getRect);
       const row=rows.length===1?rows[0]:null;
       const key=JSON.stringify([identity(),rect.x,rect.y,rect.right,rect.bottom]);
-      selected={identity:identity(),viewport:view.viewport,rect:{...rect},blockId:row?.block.id||null,replaceIds:row?[]:rows.map(row=>row.block.id),key,align:row?.block.direction==="rtl"?"right":"left"};
+      selected={identity:identity(),viewport:view.viewport,rect:{...rect},sourceMasks:sourceMasksForEdit(row,rect),blockId:row?.block.id||null,replaceIds:row?[]:rows.map(row=>row.block.id),key,align:row?.block.direction==="rtl"?"right":"left"};
       const draft=drafts.get(key),layout=row&&view.state.getPlacement?.(row.block.id,view.viewport.id);
       if(draft?.rect)selected.rect={...draft.rect};
+      if(draft?.sourceMasks)selected.sourceMasks=draft.sourceMasks.map(mask=>({...mask}));
       input.value=draft?.text??rows.map(row=>["translated","unchanged"].includes(row.result?.status)?row.result.text:row.block.text).join("\n");
       $("inplaceFont").value=draft?.fontFamily||row?.result?.fontFamily||"sans-serif";
       $("inplaceSize").value=String(draft?.size||row?.result?.manualPlacement?.fontSize||layout?.fontSize||Math.max(4,Math.min(72,row?.block.height||10)));
@@ -228,7 +250,7 @@
         // 人工画框表示明确覆盖意图；与旧框部分相交时按保存顺序叠放，不要求扩大到整段。
         saving=true;controls();
         const id=await onSave({identity:chosen.identity,blockId:chosen.blockId,replaceIds:chosen.replaceIds,text,fontFamily,textStyle,
-          placement:restore?null:{rect:{...chosen.rect},fontSize:fit.size},restore});
+          placement:restore?null:{rect:{...chosen.rect},sourceMasks:chosen.sourceMasks.map(mask=>({...mask})),fontSize:fit.size},restore});
         drafts.delete(chosen.key);if(selected===chosen)closeEditor();onSaved(id,restore);notice(restore?"已恢复或删除译文":"已保存，可以继续画框修改");
       }catch(error){if(selected===chosen)$("inplaceMessage").textContent=error.message||"保存失败，请重试";else notice("保存未完成，文字草稿仍保留");}
       finally{saving=false;refresh();}
@@ -241,6 +263,7 @@
       if(selected&&(selected.identity!==state.identity||!state.supported||state.busy)){closeEditor(true);active=false;}
       if(active&&(!state.supported||state.busy)){closeEditor(true);active=false;}
       document.body.dataset.inplaceEdit=String(active);toggle.setAttribute("aria-pressed",String(active));controls();track();
+      if(selected)preview();
     }
     toggle.onclick=async()=>{
       if(saving||preparing||getInput().busy)return;
@@ -279,5 +302,5 @@
     function dispose(){disposed=true;stopDrag();panelObserver?.disconnect();clearTimeout(noticeTimer);closeEditor(true);for(const off of listeners)off();}
     return {refresh,reset,dispose};
   }
-  global.BT_PDF_INPLACE_EDITOR={create,fitText,rowsInRect,rowsForEdit,adjustRect};
+  global.BT_PDF_INPLACE_EDITOR={create,fitText,rowsInRect,rowsForEdit,adjustRect,sourceMasksForEdit};
 })(window);

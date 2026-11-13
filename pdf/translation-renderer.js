@@ -25,7 +25,7 @@
   }
 
   function create({isDebug, onMarkerClick, onPlanSummary}) {
-    let overlay = null, layer = null, debugLayer = null, markerLayer = null, flashLayer = null, canvas = null;
+    let overlay = null, layer = null, draftLayer=null, draft=null, draftNodes=null, debugLayer = null, markerLayer = null, flashLayer = null, canvas = null;
     let view = null, model = null, frame = 0;
     let generation = 0, modelToken = 0, visible = true;
     let evidence = new Map(), queue = [], plan = null, planDirty = true, domFailures = new Map(), groups = new Map();
@@ -46,6 +46,8 @@
     }
     function resetPlanState() {
       generation++;
+      draftLayer?.replaceChildren();
+      draftNodes=null;
       evidence = new Map();sampledText=new Map(); queue = []; plan = null; planDirty = true; domFailures = new Map();
       if (layer) layer.replaceChildren();
       if (markerLayer) markerLayer.replaceChildren();
@@ -65,11 +67,12 @@
       overlay.setAttribute("aria-hidden", "true");
       layer = document.createElement("div");
       layer.className = "placement-layer";
+      draftLayer=document.createElement("div");draftLayer.className="placement-layer draft-placement-layer";
       markerLayer = document.createElement("div");
       markerLayer.className = "marker-layer";
       debugLayer = document.createElement("div");
       debugLayer.className = "debug-layer";
-      overlay.append(layer, markerLayer, debugLayer);
+      overlay.append(layer, draftLayer, markerLayer, debugLayer);
       // P3-E F2：联动闪光层与 Overlay 平级，不受显示模式隐藏影响。
       flashLayer = document.createElement("div");
       flashLayer.className = "flash-layer";
@@ -116,7 +119,7 @@
     function clear() {
       if (frame) { cancelAnimationFrame(frame); frame = 0; }
       if (flashTimer) { clearTimeout(flashTimer); flashTimer = 0; }
-      overlay = null; layer = null; debugLayer = null; markerLayer = null; flashLayer = null; canvas = null;
+      overlay = null; layer = null; draftLayer=null;draft=null;draftNodes=null; debugLayer = null; markerLayer = null; flashLayer = null; canvas = null;
       view = null; model = null; plan = null; markerSig = "";
       evidence = new Map();sampledText=new Map(); queue = []; domFailures = new Map(); groups = new Map();
       markerNumbers = new Map(); nextMarkerNumber = 1; markerPage = null;
@@ -140,6 +143,32 @@
       style.width = Math.max(0, rect.right - rect.x) + "px";
       style.height = Math.max(0, rect.bottom - rect.y) + "px";
     }
+    function renderDraft(){
+      if(!draftLayer)return;
+      const m=matrix(),valid=!!draft&&!!m&&draft.pageNumber===model?.geometry.pageNumber&&draft.pageNumber===view?.pageNumber;
+      const hiddenIds=new Set(valid?draft.suppressIds:[]);
+      for(const [id,entry] of groups){const hidden=hiddenIds.has(id);if(entry.group.hidden!==hidden)entry.group.hidden=hidden;}
+      for(const marker of markerLayer?.querySelectorAll(".pdf-marker")||[])marker.hidden=hiddenIds.has(marker.dataset.blockId);
+      if(!valid){draftLayer.replaceChildren();draftNodes=null;return;}
+      draftLayer.style.transform="matrix("+m.join(",")+")";
+      if(!draftNodes){const text=document.createElement("div");text.className="pdf-place-text";draftLayer.append(text);draftNodes={text,masks:[],signature:null};}
+      const {text,masks}=draftNodes,style=draft.textStyle;
+      while(masks.length>draft.maskRects.length)masks.pop().remove();
+      for(const [index,rect] of draft.maskRects.entries()){
+        if(!masks[index]){const mask=document.createElement("div");mask.className="pdf-place-mask";mask.style.background="white";draftLayer.insertBefore(mask,text);masks.push(mask);}
+        setRectStyle(masks[index].style,rect);
+      }
+      setRectStyle(text.style,draft.rect);
+      const signature=JSON.stringify([draft.fontFamily,draft.fontSize,draft.lineHeight,style,draft.align,draft.direction,draft.lines]);
+      if(signature!==draftNodes.signature){
+        Object.assign(text.style,{fontFamily:global.BT_PDF_LAYOUT_PLANNER.fontStack(draft.fontFamily),fontSize:draft.fontSize+"px",lineHeight:draft.lineHeight+"px",
+          fontWeight:style.bold?"700":"400",fontStyle:style.italic?"italic":"normal",color:style.color,textAlign:style.align||draft.align,direction:draft.direction,overflow:"hidden"});
+        text.replaceChildren();
+        for(const line of draft.lines){const child=document.createElement("div");child.className="pdf-place-line";child.textContent=line;text.append(child);}
+        draftNodes.signature=signature;
+      }
+    }
+    function setDraftPreview(value){draft=value||null;renderDraft();}
     /**
      * 构建单块「遮罩+译文」组：先以 visibility:hidden 插入完成 DOM 实测验证，
      * 通过后才可见——遮罩绝不在验证前对用户显示；失败整组移除并记录降级重规划。
@@ -156,10 +185,10 @@
       group.className = "pdf-place";
       group.dataset.blockId = id;
       group.style.visibility = "hidden";
-      const mask = document.createElement("div");
-      mask.className = "pdf-place-mask";
-      setRectStyle(mask.style, placement.maskRect);
-      mask.style.background = "rgb(" + placement.maskColor.join(",") + ")";
+      for(const rect of placement.maskRects||[placement.maskRect]){
+        const mask=document.createElement("div");mask.className="pdf-place-mask";setRectStyle(mask.style,rect);
+        mask.style.background="rgb("+placement.maskColor.join(",")+")";group.append(mask);
+      }
       const text = document.createElement("div");
       text.className = "pdf-place-text";
       setRectStyle(text.style, placement.textRect);
@@ -177,7 +206,7 @@
         element.textContent = line;
         text.append(element);
       }
-      group.append(mask, text);
+      group.append(text);
       layer.append(group);
       // scroll/client 尺寸是整数，人工框已通过浮点度量；允许至多 1px 的取整差。
       // 自动译文保留原有严格门限，不放宽自动覆盖范围。
@@ -203,7 +232,7 @@
       const keep = new Set();
       for (const [id, placement] of next.placements) {
         keep.add(id);
-        const signature = JSON.stringify([placement.maskRect, placement.textRect, placement.fontSize, placement.lineHeight,
+        const signature = JSON.stringify([placement.maskRect, placement.maskRects, placement.textRect, placement.fontSize, placement.lineHeight,
           placement.lines, placement.maskColor, placement.direction, placement.align, placement.fontFamily, placement.textStyle]);
         const existing = groups.get(id);
         if (existing && existing.signature === signature) continue;
@@ -217,6 +246,7 @@
       for(const id of next.placements.keys()){
         const entry=groups.get(id);if(entry)layer.append(entry.group);
       }
+      renderDraft();
       const changed = !plan || plan.stats.overlay !== next.stats.overlay || plan.stats.fallback !== next.stats.fallback;
       plan = next;
       assignMarkerNumbers(next);
@@ -364,6 +394,7 @@
       // 三元身份校验：页码一致 + 画布在位；不匹配时不采样、不规划、不绘制，防止跨页残留。
       if (view.pageNumber !== model.geometry.pageNumber || !canvas || !canvas.isConnected) return;
       layer.style.transform = "matrix(" + m.join(",") + ")";
+      renderDraft();
       const rowsById = new Map(model.rows.map(row => [row.block.id, row]));
       const queued = new Set(queue);
       for (const {block, result} of model.rows) {
@@ -388,10 +419,11 @@
       }
       drawDebugBoxes(m);
       drawMarkers(m);
+      renderDraft();
     }
 
     return {mount, setView, setModel, setVisible, clear, refresh, getPlanSummary, getDisplayRect,
-      getPlacement:id=>plan?.placements.get(id)||null,flashHighlight,flashDisplayRect};
+      getPlacement:id=>plan?.placements.get(id)||null,setDraftPreview,flashHighlight,flashDisplayRect};
   }
   global.BT_PDF_TRANSLATION_RENDERER = {create};
 })(window);

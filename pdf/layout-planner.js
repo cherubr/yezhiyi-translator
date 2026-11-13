@@ -19,6 +19,11 @@
       align:["left","center","right"].includes(value?.align)?value.align:null,
       lineHeight:[1.45,1.6,1.8,2].includes(value?.lineHeight)?value.lineHeight:1.45};
   }
+  /** 原文遮罩与译文位置分开保存；移动译文不撤销最初选定的覆盖区域。 */
+  function manualMasks(placement) {
+    const masks=[...(Array.isArray(placement.sourceMasks)?placement.sourceMasks:[]),placement.rect],seen=new Set();
+    return masks.filter(rect=>{const key=JSON.stringify(rect);if(seen.has(key))return false;seen.add(key);return true;});
+  }
   const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
   let measureContext = null;
   function measureCanvas() {
@@ -195,13 +200,17 @@
       const widthOf=(text,size)=>measureFn(text,size,fontFamily,textStyle);
       const r=manual.rect,size=manual.fontSize,lead=size*Math.max(textStyle.lineHeight,lineHeightRatio);
       if(!r||![r.x,r.y,r.right,r.bottom,size].every(Number.isFinite)||r.x<0||r.y<0||r.right>geometry.width||r.bottom>geometry.height||r.right<=r.x||r.bottom<=r.y||size<4||size>72){fallbacks.push({blockId:block.id,reason:"manual-bounds"});continue;}
+      const maskRects=manualMasks(manual);
+      if(maskRects.length>129||maskRects.some(mask=>!mask||![mask.x,mask.y,mask.right,mask.bottom].every(Number.isFinite)||mask.x<0||mask.y<0||mask.right>geometry.width||mask.bottom>geometry.height||mask.right<=mask.x||mask.bottom<=mask.y)){
+        fallbacks.push({blockId:block.id,reason:"manual-bounds"});continue;
+      }
       const lines=wrapText(result.text,size,(r.right-r.x)*MEASURE_MARGIN,widthOf);
       if((domFailures?.get(block.id)||0)>0||!lines.length||lines.length*lead>r.bottom-r.y||lines.some(line=>widthOf(line,size)>r.right-r.x)){
         fallbacks.push({blockId:block.id,reason:"manual-fit"});continue;
       }
-      placements.set(block.id,{blockId:block.id,manual:true,rect:block.rect,maskRect:{...r},textRect:{...r},maskColor:[255,255,255],fontSize:size,fontFamily,textStyle,lineHeight:lead,
+      placements.set(block.id,{blockId:block.id,manual:true,rect:block.rect,maskRect:{...r},maskRects:maskRects.map(mask=>({...mask})),textRect:{...r},maskColor:[255,255,255],fontSize:size,fontFamily,textStyle,lineHeight:lead,
         lines,direction:block.direction==="rtl"?"rtl":"ltr",align:textStyle.align||(block.direction==="rtl"?"right":"left"),expansion:null});
-      placedRects.push({...r});
+      placedRects.push(...maskRects.map(mask=>({...mask})));
     }
     // 第一层：结构先验。仅 translated 且有译文才是候选；unchanged 原文即正确，不遮盖也不回退。
     const candidates = [];
@@ -267,6 +276,6 @@
     }
     return {placements, fallbacks, pending, stats: {overlay: placements.size, fallback: fallbacks.length, pending: pending.length}};
   }
-  global.BT_PDF_LAYOUT_PLANNER = {plan, wrapText, measure, fontStack, normalizeTextStyle, inflate, intersects,maskFor,expansionRect,
+  global.BT_PDF_LAYOUT_PLANNER = {plan, wrapText, measure, fontStack, normalizeTextStyle, manualMasks, inflate, intersects,maskFor,expansionRect,
     constants: {MASK_PAD, CLEARANCE, RING, LINE_PAD, LINE_HEIGHT, FONT_STACK, MAX_DOM_TIERS}};
 })(typeof window !== "undefined" ? window : self);

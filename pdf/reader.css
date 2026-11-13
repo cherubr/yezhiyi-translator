@@ -34,6 +34,7 @@ h1 { font-size:16px; margin:0; } h2 { font-size:20px; margin-top:0; }
 .inplace-actions { justify-content:space-between; }
 .inplace-selection { position:fixed; z-index:60; border:2px solid #007acc; background:#007acc12; pointer-events:none; }
 .inplace-selection[data-editable="true"] { pointer-events:auto; cursor:move; touch-action:none; user-select:none; }
+.inplace-selection[data-invalid="true"] { border-color:#c0392b; }
 .inplace-selection[data-editable="false"] button { display:none; }
 .inplace-selection .inplace-move { position:absolute; left:-2px; bottom:calc(100% + 7px); min-height:24px; padding:2px 8px; white-space:nowrap; border:0; border-radius:3px; color:white; background:#007acc; font-size:12px; cursor:move; touch-action:none; }
 .inplace-selection .inplace-handle { position:absolute; width:12px; height:12px; min-height:0; padding:0; border:2px solid #007acc; border-radius:2px; background:white; touch-action:none; }

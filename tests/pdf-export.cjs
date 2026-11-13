@@ -32,8 +32,22 @@ if(require.main===module)(async()=>{
         ["1:1",{status:"translated",text:(fontBytes?"完整译文日本語한국어 ":"Complete fallback translation. ").repeat(500)+" TAIL_MARKER_END"}],
         ["1:2",{status:"translated",text:"Linux RHCE OpenShift"}]]},evidence,markerNumbers:[["1:1",1]]}]});
   const missing=await worker({...makeJob("structured","unused"),pages:[{page:1}]});
-  assert.equal((await PDFDocument.load(missing.bytes)).getPageCount(),2,"explicit keep-missing policy copies the original page");
+  assert.equal((await PDFDocument.load(missing.bytes)).getPageCount(),1,"explicit keep-missing policy copies the original page without adding an empty translation page");
+  // /Info 为非字典时可阅读的页面不应被默认元数据改写拦截。
+  const metadataSource=await PDFDocument.load(native,{updateMetadata:false});
+  metadataSource.context.trailerInfo.Info=metadataSource.context.obj(17);
+  const metadataBytes=Buffer.from(await metadataSource.save());
+  const metadataExport=await worker({...makeJob('structured','Metadata-independent translation'),bytes:metadataBytes});
+  assert.ok(metadataExport.bytes.length>0,'optional malformed metadata cannot prevent exporting readable pages');
   const outputs=[];
+  for(const mode of ['translated','structured']){
+    const symbolJob=makeJob(mode,'Keep the mathematical operator ∗ and remove only the zero\u200bwidth marker.'),before=JSON.stringify(symbolJob.pages);
+    const symbolExport=await worker(symbolJob);
+    assert.ok(symbolExport.stats.fontCodes.includes('builtin-symbol'),'missing mathematical glyphs use the actual PDF Symbol font');
+    assert.equal(JSON.stringify(symbolJob.pages),before,'worker normalization must not change caller snapshots');
+    const exported=await PDFDocument.load(symbolExport.bytes);
+    assert.ok(exported.getPageCount()>0,'both layout modes must export zero-width controls without missing-glyph failures');
+  }
   for(const mode of ["translated","structured"]){
     const result=await worker(makeJob(mode,"Saved manual revision B"));
     const name=(mode==="translated"?"preserved":"structured")+"-ascii.pdf";fs.writeFileSync(path.join(OUT,name),result.bytes);
@@ -96,7 +110,7 @@ if(require.main===module)(async()=>{
         out.push({name:output.name,text,ink,glyphs,pages:doc.numPages,images});await loading.destroy();
       }
       const originalLoad=pdfjs.getDocument({data:new Uint8Array(missing),standardFontDataUrl:"/pdf/vendor/standard_fonts/",verbosity:0}),original=await originalLoad.promise;
-      const kept=(await (await original.getPage(2)).getTextContent()).items.map(item=>item.str||"").join(" ");
+      const kept=(await (await original.getPage(1)).getTextContent()).items.map(item=>item.str||"").join(" ");
       if(!kept.includes("Original paragraph 0"))throw new Error("Structured keep-missing export lost original content");
       await originalLoad.destroy();return out;
     },{outputs,missing:[...missing.bytes],savePreviews:process.env.PDF_TEST_SAVE_PREVIEWS==="1"});

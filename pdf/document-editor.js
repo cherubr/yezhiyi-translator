@@ -107,11 +107,12 @@
       })();if(current===entry)describe();return entry.saving;
     }
     function selection() {
+      // 字号等输入框获得焦点时，浏览器可能把页面选区折叠；不能用它覆盖编辑区保存的选区。
+      if(toolbar.contains(global.document.activeElement))return;
       const value=global.getSelection();
       if(!value?.rangeCount||!paper.contains(value.anchorNode)||!paper.contains(value.focusNode))return;
       range=value.getRangeAt(0).cloneRange();
       if(current&&!captureTimer&&!composing&&!editingCommand){current.carets||=[];current.carets[current.position]=caret();}
-      if(toolbar.contains(global.document.activeElement))return;
       const node=value.anchorNode.nodeType===1?value.anchorNode:value.anchorNode.parentElement;if(!node)return;
       const runs=O.textRuns(paper,range),parents=[...new Set(runs.length?runs.map(run=>run.text.parentElement):[node])];
       const css=new Map(),styleOf=element=>{if(!css.has(element))css.set(element,getComputedStyle(element));return css.get(element);};
@@ -464,7 +465,7 @@
       clearTimeout(job.timer);printJobs.delete(event.data.token);
     });
     // 保存选区但允许按钮正常获得焦点，让尚未失焦的字号等输入框先提交 change。
-    listen(toolbar,"pointerdown",event=>{if(event.target.closest("button"))selection();});
+    listen(toolbar,"pointerdown",event=>{if(event.target.closest("button,input,select"))selection();});
     listen(toolbar,"click",event=>{
       const ui=event.target.closest("button[data-ui]"),searchButton=event.target.closest("button[data-search]");
       if(ui&&!ui.disabled){
@@ -534,7 +535,7 @@
       if(!writable()||composing)return;
       capture(true);lastEditType="";current.lastInput=0;
     }
-    listen(paper,"blur",finishTyping);
+    listen(paper,"blur",()=>{selection();finishTyping();});
     listen(paper,"pointerdown",finishTyping);
     listen(paper,"beforeinput",event=>{
       if(!writable()||composing||event.isComposing||!event.cancelable)return;

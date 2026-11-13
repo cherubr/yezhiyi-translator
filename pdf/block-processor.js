@@ -102,9 +102,24 @@
       if(c.rank===1&&c.family==="asm"&&/^\s*[A-Za-z]+\s*$/u.test(c.text)&&c.row===next.row&&c.cell===next.cell&&c.priorFlow===next.priorFlow&&
         c.font===next.font&&assembly(c.text+" "+next.text,c.mono)>=2){c.rank=2;next.rank=0;}
     }
-    // 同一清单的嵌套缩进可能超过两个字高；用实际横向交叠连接相邻代码行，不能跨到另一栏。
+    // 行号列可为深层缩进提供共同左边界；必须有相邻行的对齐证据，不能仅凭孤立数字扩展代码范围。
+    const numbers=chunks.filter(c=>/^\s*\d+\s*$/u.test(c.text)).sort((a,b)=>a.rect.y-b.rect.y),numbersByRow=new Map(),alignedNumbers=new Set();
+    for(let i=0;i<numbers.length;i++){
+      const n=numbers[i];if(!numbersByRow.has(n.row))numbersByRow.set(n.row,[]);numbersByRow.get(n.row).push(n);
+      for(const other of numbers.slice(Math.max(0,i-64),i))if(other.row!==n.row&&other.cell===n.cell&&other.priorFlow===n.priorFlow&&
+        Math.abs(other.rect.x-n.rect.x)<=Math.max(n.height,other.height)*.5&&Math.abs(other.rect.y-n.rect.y)<=Math.max(n.height,other.height)*3){
+        alignedNumbers.add(n);alignedNumbers.add(other);
+      }
+    }
+    for(const c of chunks.filter(c=>c.rank>0&&c.mono)){
+      c.gutter=(numbersByRow.get(c.row)||[]).filter(n=>alignedNumbers.has(n)&&n.cell===c.cell&&n.priorFlow===c.priorFlow&&n.rect.right<=c.rect.x&&
+        c.rect.x-n.rect.right<=Math.max(n.height,c.height)*8)
+        .sort((a,b)=>b.rect.right-a.rect.right)[0];
+    }
+    // 同一清单的嵌套缩进可能超过两个字高；用横向交叠或已确认行号列连接，不能跨到另一栏。
     const near=(a,b)=>(a.font===b.font||a.mono&&b.mono)&&a.cell===b.cell&&a.priorFlow===b.priorFlow&&
-      (Math.abs(a.rect.x-b.rect.x)<=Math.max(a.height,b.height)*2||Math.min(a.rect.right,b.rect.right)-Math.max(a.rect.x,b.rect.x)>=Math.max(a.height,b.height))&&
+      (Math.abs(a.rect.x-b.rect.x)<=Math.max(a.height,b.height)*2||Math.min(a.rect.right,b.rect.right)-Math.max(a.rect.x,b.rect.x)>=Math.max(a.height,b.height)||
+        a.gutter&&b.gutter&&Math.abs(a.gutter.rect.x-b.gutter.rect.x)<=Math.max(a.height,b.height)*.5)&&
       Math.abs(a.rect.y-b.rect.y)<=Math.max(a.height,b.height)*3;
     for(const chunk of chunks)chunk.active=chunk.rank>=2;
     // 无操作数指令和简单标签必须邻接已确认代码，单独的英文单词不触发保护。
@@ -129,7 +144,7 @@
       // 单独的行号只有紧邻同一基线上的已确认指令才归入代码，不按数字内容猜测正文性质。
       if(/^\s*\d+\s*$/u.test(c.text)){
         const right=(codeByRow.get(c.row)||[]).filter(p=>p.cell===c.cell&&p.priorFlow===c.priorFlow&&p.rect.x>=c.rect.right&&
-          p.rect.x-c.rect.right<=Math.max(p.height,c.height)*2).sort((a,b)=>a.rect.x-b.rect.x)[0];
+          (p.gutter===c||p.rect.x-c.rect.right<=Math.max(p.height,c.height)*2)).sort((a,b)=>a.rect.x-b.rect.x)[0];
         if(right){c.owner=right.owner;c.paired=right;c.owner.members.push(c);c.assign=c.spans.map(span=>({fragment:span.fragment,side:"code"}));continue;}
       }
       const left=(codeByRow.get(c.row)||[]).filter(p=>p.cell===c.cell&&p.priorFlow===c.priorFlow&&p.rect.right<=c.rect.x).sort((a,b)=>b.rect.right-a.rect.right)[0];

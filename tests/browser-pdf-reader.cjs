@@ -194,6 +194,13 @@ if(require.main===module)(async () => {
       else await page.selectOption("#viewMode",mode);
     };
     await upload(pdfs.native);
+    const pristineExportCalls=await calls();
+    await page.click('#openExportPanel');await page.selectOption('#exportContent','translated');await page.selectOption('#exportPages','current');
+    await page.waitForFunction(()=>!document.getElementById('exportNow').disabled);
+    await page.click('#exportNow');await page.waitForSelector('#exportPreflight');
+    assert.equal(await visible('#exportPrepare'),true,'an untranslated current page can enter export and offer explicit preparation');
+    assert.equal(await calls(),pristineExportCalls,'first export preflight cannot implicitly send translation requests');
+    await page.click('#openExportPanel');
     const languageCalls=await calls();
     assert.equal(await visible('#translationConfigSummary'),true);
     assert.equal(await visible('#translationFrom'),false,'language pickers stay collapsed behind the compact right-side summary');
@@ -210,9 +217,9 @@ if(require.main===module)(async () => {
     assert.equal(await page.inputValue("#zoom"),"100%");
     await setZoom('0.712');await waitReady();
     assert.equal(await page.inputValue('#zoom'),'71%','toolbar rounds the displayed percentage');
-    assert.equal(await page.locator('#zoom').getAttribute('data-scale'),'0.712','display rounding preserves the precise rendering scale');
+    assert.ok(Math.abs(Number(await page.locator('#zoom').getAttribute('data-scale'))-.712)<1e-12,'display rounding preserves the precise rendering scale');
     await page.locator('#zoom').focus();await page.locator('#zoom').press('Tab');
-    assert.equal(await page.locator('#zoom').getAttribute('data-scale'),'0.712','focusing the rounded display must not write the rounded value back');
+    assert.ok(Math.abs(Number(await page.locator('#zoom').getAttribute('data-scale'))-.712)<1e-12,'focusing the rounded display must not write the rounded value back');
     await page.click('#zoomIn');await waitReady();assert.equal(await page.inputValue('#zoom'),'80%','zoom in snaps to the next whole ten percent');
     await setZoom('0.712');await waitReady();
     await page.click('#zoomOut');await waitReady();assert.equal(await page.inputValue('#zoom'),'70%','zoom out snaps to the previous whole ten percent');
@@ -251,23 +258,52 @@ if(require.main===module)(async () => {
         assert.equal(await visible("#structuredCard"),mode==="bilingual");
       }
       if (mode === "bilingual") {
+        const previousShare=Number(await page.locator('#comparisonSplitter').getAttribute('aria-valuenow'));
         await page.locator("#comparisonSplitter").focus(); await page.keyboard.press("ArrowLeft");
-        assert.equal(await page.locator("#comparisonSplitter").getAttribute("aria-valuenow"), "55");
+        assert.equal(Number(await page.locator("#comparisonSplitter").getAttribute("aria-valuenow")),previousShare-5);
         const box = await page.locator("#comparisonSplitter").boundingBox();
         await page.mouse.move(box.x + 4, box.y + 30); await page.mouse.down();
         await page.mouse.move(box.x + 90, box.y + 30); await page.mouse.up();
-        assert.ok(Number(await page.locator("#comparisonSplitter").getAttribute("aria-valuenow")) > 55);
+        assert.ok(Number(await page.locator("#comparisonSplitter").getAttribute("aria-valuenow")) > previousShare-5);
       }
     }
     assert.equal(await page.evaluate(() => savedCanvas === document.querySelector("#canvasHost canvas")), true);
     assert.equal(await calls(), 0, "display-only actions must not translate");
-    await page.click("#translationConfigSummary"); assert.equal(await visible("#settingsPanel"), true);
+    await page.click("#translationConfigSummary"); assert.equal(await visible("#languagePopover"), true);
     assert.match(await page.locator("#translationConfigSummary").innerText(), /^Google 翻译 · 自动 → 法语$/);
     await page.click("#openFilePanel"); assert.equal(await visible("#settingsPanel"), false);
     assert.equal(await visible("#retry"), false); assert.equal(await visible("#cancel"), false);
     await page.keyboard.press("Escape");
     await page.click("#startTranslation"); await waitDone();
     await page.waitForSelector(".pdf-marker");
+    // 实时修订只写草稿层，取消恢复；不触碰源 Canvas、已保存译文或翻译请求。
+    const previewCalls=await calls();await setViewMode('translated');await page.click('#toggleInplaceEdit');
+    // 开启修订会改变顶部工具栏高度；等布局稳定后再按可见页面坐标画框。
+    await page.waitForFunction(()=>document.body.dataset.inplaceEdit==='true');
+    await page.locator('#canvasHost canvas').evaluate(async canvas=>{
+      const viewport=document.getElementById('viewport');viewport.scrollTop=0;
+      let prior='',stable=0;
+      for(let i=0;i<120&&stable<4;i++){
+        await new Promise(requestAnimationFrame);const rect=canvas.getBoundingClientRect(),key=[rect.x,rect.y,rect.width,rect.height].join(',');
+        stable=key===prior?stable+1:0;prior=key;
+      }
+    });
+    const previewCanvas=await page.locator('#canvasHost canvas').boundingBox();
+    await page.mouse.move(previewCanvas.x+20,previewCanvas.y+35);await page.mouse.down();
+    await page.mouse.move(previewCanvas.x+200,previewCanvas.y+80,{steps:4});await page.mouse.up();
+    await page.waitForSelector('#inplacePanel');await page.fill('#inplaceText','Live revision preview');
+    await page.waitForFunction(()=>document.querySelector('#canvasHost .draft-placement-layer .pdf-place-text')?.textContent==='Live revision preview');
+    const previewStart=await page.locator('#canvasHost .draft-placement-layer .pdf-place-text').boundingBox();
+    const selectionBox=await page.locator('#inplaceSelection').boundingBox();
+    await page.mouse.move(selectionBox.x+25,selectionBox.y+20);await page.mouse.down();
+    await page.mouse.move(selectionBox.x+55,selectionBox.y+60,{steps:4});await page.mouse.up();
+    await page.waitForFunction(start=>document.querySelector('#canvasHost .draft-placement-layer .pdf-place-text').getBoundingClientRect().left>start+20,previewStart.x);
+    assert.equal(await page.locator('#canvasHost .draft-placement-layer .pdf-place-mask').count(),2,'moving retains the original white mask as well as the destination mask');
+    await page.click('#inplaceCancel');
+    assert.equal(await page.locator('#canvasHost .draft-placement-layer > *').count(),0,'cancel removes all transient preview content');
+    assert.equal(await page.locator('#canvasHost .pdf-place[hidden]').count(),0,'cancel restores previously hidden saved blocks');
+    assert.equal(await calls(),previewCalls,'live editing never sends new translation requests');
+    await page.click('#toggleInplaceEdit');
     const before = await calls();
     await page.click("#openSettingsPanel");
     await page.locator(".pdf-marker").first().focus(); await page.keyboard.press("Enter");
@@ -327,10 +363,15 @@ if(require.main===module)(async () => {
     assert.ok(fitted.width <= fitted.availableWidth && fitted.height <= fitted.availableHeight);
     for (const mode of ["bilingual", "translated", "original"]) {
       await setViewMode(mode);
-      assert.equal(await page.inputValue("#zoom"), fitted.scale);
       assert.equal(await page.inputValue("#pageNumber"), fitted.page);
       assert.equal(await page.locator("#rotate").getAttribute("title"), fitted.rotation);
       await page.waitForTimeout(250);await waitReady();
+      assert.equal(await page.locator('#zoomFit').getAttribute('data-mode'),'fit-page','mode changes preserve automatic fitting rather than a fixed percentage');
+      await page.waitForFunction(()=>{
+        const viewport=document.getElementById('viewport'),canvas=viewport.querySelector('canvas'),style=getComputedStyle(viewport),box=canvas.getBoundingClientRect();
+        return box.width<=viewport.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)&&
+          box.height<=viewport.clientHeight-parseFloat(style.paddingTop)-parseFloat(style.paddingBottom);
+      });
     }
     await page.click("#translationFallback");
     assert.equal(await page.inputValue("#viewMode"), "translated", "explicit check action leaves original-only reading");

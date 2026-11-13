@@ -3,19 +3,24 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const {PDFDocument,StandardFonts}=require('../pdf/vendor/pdf-lib/pdf-lib.min.js'),{worker}=require('./pdf-export.cjs');
 (async()=>{
  const source=await PDFDocument.create(),font=await source.embedFont(StandardFonts.Helvetica),p=source.addPage([600,800]);
- p.drawText('Retained original source',{x:40,y:740,size:14,font});const bytes=Buffer.from(await source.save());
- const grid={id:'table',rows:3,columns:2,widths:[.35,.65],cells:[
-  {id:'a',row:0,column:0,rowSpan:2,colSpan:1},{id:'b',row:0,column:1,rowSpan:1,colSpan:1},
-  {id:'c',row:1,column:1,rowSpan:1,colSpan:1},{id:'d',row:2,column:0,rowSpan:1,colSpan:2}]};
+ p.drawText('Retained original source',{x:40,y:740,size:14,font});
+ p.drawText('42',{x:40,y:288,size:12,font});
+ p.drawText('Original text that must not disappear',{x:40,y:238,size:12,font});
+ const bytes=Buffer.from(await source.save());
+ const grid={id:'table',rect:{x:40,y:100,right:500,bottom:340},rows:3,columns:2,widths:[.35,.65],cells:[
+  {id:'a',row:0,column:0,rowSpan:2,colSpan:1,rect:{x:40,y:100,right:201,bottom:260}},
+  {id:'b',row:0,column:1,rowSpan:1,colSpan:1,rect:{x:201,y:100,right:500,bottom:180}},
+  {id:'c',row:1,column:1,rowSpan:1,colSpan:1,rect:{x:201,y:180,right:500,bottom:260}},
+  {id:'d',row:2,column:0,rowSpan:1,colSpan:2,rect:{x:40,y:260,right:500,bottom:340}}]};
  const texts=['Long merged cell content. '.repeat(1800)+' MERGED_TAIL','Top right cell','Second right cell','Full width final row'];
  const blocks=grid.cells.map((cell,i)=>({id:cell.id,order:i,role:'text',eligible:true,reliable:true,height:12,text:'Source '+cell.id,table:grid,cell,
-  rect:{x:40,y:100+i*80,right:500,bottom:140+i*80},lines:[{}]}));
+  rect:{...cell.rect},lines:[{}]}));
  blocks.push({id:'num',order:4,role:'number',eligible:false,reliable:true,height:12,text:'42',rect:{x:40,y:500,right:100,bottom:520}});
  blocks.push({id:'failed',order:5,role:'text',eligible:true,reliable:true,height:12,text:'Original text that must not disappear',rect:{x:40,y:550,right:500,bottom:570}});
  const results=grid.cells.map((cell,i)=>[cell.id,{status:'translated',text:texts[i],userEdited:i===1}]);results.push(['num',{status:'unchanged',text:'42'}],['failed',{status:'failed',reason:'test failure'}]);
  const done=await worker({job:'export',requestId:'complex',mode:'structured',bytes,fontCode:'builtin',fontLabel:'Helvetica',fontMetrics:{ascent:.718,lineHeight:1.25},pages:[{snapshot:{
   identity:{documentId:'source',numPages:1,page:1,to:'en'},geometry:{width:600,height:800,transform:[1,0,0,-1,0,800]},blocks,results}}]});
- assert.equal(done.stats.translated,4);assert.equal(done.stats.edited,1);assert.equal(done.stats.unchanged,1);assert.equal(done.stats.retained,1);assert.equal(done.stats.tables,1);assert.equal(done.stats.sourcePages,1);
+ assert.equal(done.stats.translated,4);assert.equal(done.stats.edited,1);assert.equal(done.stats.unchanged,1);assert.equal(done.stats.retained,1);assert.equal(done.stats.tables,1);assert.equal(done.stats.sourcePages,0,'reliably cropped source regions do not require duplicating the entire source page');
  assert.ok(done.stats.pages>3,'merged cell must actually cross page boundaries');
  // 无效表格只回退自身：前后有效段落仍在正文，表格成功译文进入补充页。
  const badGrid={id:'bad-grid',rows:2,columns:2,widths:[1,1],rect:{x:40,y:180,right:500,bottom:260},cells:[
@@ -97,10 +102,10 @@ const {PDFDocument,StandardFonts}=require('../pdf/vendor/pdf-lib/pdf-lib.min.js'
   });
   // PDF 内容流逐页书写；右列会插在跨页左列的两个片段之间。按实际单元格横坐标恢复再核对全文，
   // 不能把内容流的线性串当成表格阅读顺序，也不能只检查尾部关键字。
-  const compact=result.text.replace(/\s/g,''),leftColumn=result.dimensions.filter(item=>item.x>60&&item.x<120).map(item=>item.text).join('').replace(/\s/g,'');
+  const compact=result.text.replace(/\s/g,''),leftColumn=result.dimensions.filter(item=>item.x>=grid.cells[0].rect.x&&item.x<grid.cells[0].rect.right).map(item=>item.text).join('').replace(/\s/g,'');
   assert.ok(leftColumn.includes(texts[0].replace(/\s/g,'')),'all merged-cell text retained in its physical column');
   for(const text of texts.slice(1))assert.ok(compact.includes(text.replace(/\s/g,'')),'all remaining table-cell text retained');
-  assert.match(result.text,/Original text that must not disappear/);assert.match(result.text,/Retained original source/);assert.equal(result.outside,0);assert.ok(result.paths>10,'real cell borders must be drawn');assert.ok(result.dark>1000);
+  assert.match(result.text,/Original text that must not disappear/);assert.match(result.text,/42/);assert.equal(result.outside,0);assert.ok(result.paths>10,'real cell borders must be drawn');assert.ok(result.dark>1000);
   const right=result.dimensions.find(x=>x.text==='Top right cell'),left=result.dimensions.find(x=>x.text.startsWith('Long merged'));
   assert.ok(right&&left&&right.x>left.x+100,'cell content is in separate physical columns');
   console.log('PASS complex export: 4 translated, 1 unchanged, 1 failed; merged cells and full table text across '+done.stats.pages+' output pages; bounds, columns and source preservation verified');

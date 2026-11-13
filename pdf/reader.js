@@ -439,15 +439,16 @@
     updateExportControls();
     inplaceEditor?.refresh();
   }
-  /** P5-B/P5b 导出控件：原文只需文档就绪，本页译文需已翻译；所选页先体检，缺译页只放行「补译」「保留原文」两个显式选择。 */
+  const exportSelectionText=()=>$("exportMode").value==="translated"?String(state?.page||1):$("exportRange").value;
+  /** 译文导出统一先体检；未翻译也可进入补译流程，不依赖 hasRun。 */
   function updateExportControls() {
     syncExportOptions();
     const busy = !!exportState?.busy, ready = state?.source === "ready" && !!currentDocument;
     const mode = $("exportMode").value, range = mode === "range";
-    // 清单只在「范围模式 + 上次体检确实缺页 + 范围文本没改过」时出现；改文本或换口径都得重新体检。
-    const checked = range && !busy && exportState?.phase === "incomplete" &&
-      exportState?.checkedText === $("exportRange").value && exportState?.checkedStamp === translation.exportStamp();
-    const choose = checked && !!exportState?.missing?.length;
+    // 当前页与范围模式共用清单；切页、改范围或换配置立即使旧选择失效。
+    const checked = mode!=="original" && !busy && exportState?.phase === "incomplete" &&
+      exportState?.checkedText === exportSelectionText() && exportState?.checkedStamp === translation.exportStamp();
+    const choose = checked && !!exportState?.need?.length;
     $("exportMode").disabled = busy || !ready;
     $("exportContent").disabled = busy || !ready;
     $("exportPages").disabled = busy || !ready || mode === "original";
@@ -458,20 +459,21 @@
     $("exportPairField").hidden = true;
     $("exportPair").disabled = busy || !ready;
     const parsed = range ? window.BT_PDF_EXPORTER.parseRange($("exportRange").value, state?.numPages || 0, state?.page || 1) : null;
-    $("exportNow").disabled = !ready || busy || !!parsed?.error || (mode === "translated" && !translationState?.hasRun);
+    $("exportNow").disabled = !ready || busy || !!parsed?.error || (mode!=="original"&&(!translationState?.configReady||configDraft));
     $("exportSelectionInfo").textContent = !ready ? "请先打开 PDF。" : parsed?.error ||
       "所选原始页面：" + (mode === "original" ? state.numPages : range ? parsed.pages.length : 1) + " 页 · " +
-      (mode === "original" ? "完整源文件" : $("exportLayout").value === "structured" ? "独立重排 PDF，与右侧使用相同版面生成器" : "译文页面；回退译文放入附录");
+      (mode === "original" ? "完整源文件" : $("exportLayout").value === "structured" ? "按翻译结果自动生成独立 PDF，不含独立编辑稿改动" : "译文页面；回退译文放入附录");
     $("exportSelectionInfo").dataset.error = String(!!parsed?.error);
     $("exportNow").textContent = busy ? (exportState?.task === "prepare" ? "正在补译…" : "正在导出…") : "导出";
     $("exportPrepare").hidden = !choose;
+    $("exportPrepare").disabled = busy||!!translationState?.busy||!!startTask||configDraft||!translationState?.configured;
     $("exportKeepMissing").hidden = !choose;
     $("exportPreflight").hidden = !checked;
     $("exportPreflightSummary").textContent = checked ? exportState.message : "";
     $("exportModeHint").textContent = mode === "original" ? "导出完整源文件，内容保持不变。" :
-      $("exportLayout").value === "structured" ? "沿用源页尺寸与已识别分栏，内容增高时续页；与右侧重排译文共用生成器。含已保存编辑，无法可靠重建的内容附对应源页。" :
+      $("exportLayout").value === "structured" ? "沿用源页尺寸与已识别分栏，内容增高时续页。含已保存原位修订，不含独立编辑稿改动；要保留编辑器中的修改，请使用「导出本页编辑稿」。无法可靠重建的内容附对应源页。" :
       range ? "缺少译文时，先选择补译或保留原文；一次最多 50 页。" :
-      "导出当前页译文；无法原位显示的内容放入附录。";
+      "导出当前页译文；首次未翻译或部分完成时，先检查并选择补译或保留原文。无法原位显示的译文放入附录。";
     $("exportCancel").disabled = !busy;
     $("exportCancel").hidden = !busy;
     $("exportCancel").textContent = exportState?.task === "prepare" ? "取消补译" : "取消导出";
@@ -744,7 +746,8 @@
         getPlacement:(id,viewport)=>viewport==="bilingualViewport"?bilingualRenderer.getPlacement(id):renderer.getPlacement(id),
         canPrepare:!configDraft&&!translationState?.busy&&translationState?.configReady&&state?.view==="ready"&&viewInfo?.pageNumber===state.page,
         ready:!configDraft&&state?.view==="ready"&&viewInfo?.pageNumber===state.page&&lastGeometry?.pageNumber===state.page};
-    },onPrepare:()=>translation.prepareCorrectionPage(),onSave:value=>translation.saveCorrection(value),onClear:expected=>translation.clearPageTranslation(expected),onSaved:id=>{renderer.flashHighlight(id);bilingualRenderer.flashHighlight(id);}});
+    },onPrepare:()=>translation.prepareCorrectionPage(),onSave:value=>translation.saveCorrection(value),onClear:expected=>translation.clearPageTranslation(expected),
+    onPreview:value=>{renderer.setDraftPreview(value);bilingualRenderer.setDraftPreview(value);},onSaved:id=>{renderer.flashHighlight(id);bilingualRenderer.flashHighlight(id);}});
   // P5-B 导出编排：快照与回退编号在导出瞬间读取，导出过程不触发翻译与 OCR。
   // P5b 多页导出：范围体检/批量快照/补译都只经 translation 读取，页侧不保存第二份译文状态。
   exporter = window.BT_PDF_EXPORTER.create({session,
@@ -790,9 +793,9 @@
       : mode === "range" ? exporter.exportRange($("exportRange").value, false, pair) : exporter.exportTranslated(pair));
   };
   // 体检后的两个显式选择：补译只发缺失页的翻译请求；保留原文则把这些页原样照录，两者都不自动继续对方。
-  $("exportPrepare").onclick = () => runExportTask(exporter.prepareMissing($("exportRange").value));
+  $("exportPrepare").onclick = () => runExportTask(exporter.prepareMissing(exportSelectionText()));
   $("exportKeepMissing").onclick = () => runExportTask(
-    exporter.exportRange($("exportRange").value, true, $("exportPair").checked));
+    exporter.exportRange(exportSelectionText(), true, $("exportPair").checked));
   $("exportCancel").onclick = () => exporter.cancel();
   $("urlForm").addEventListener("submit", event => {
     event.preventDefault();
@@ -1209,8 +1212,8 @@
     String(exportState?.message||"").match(/正在下载导出字体：([\d.]+)/)?.[1]||""].join("|");
   /** 预览口径与导出选级一致：所选页只在「最近一次体检仍对应当前范围文本」时采用，否则按当前页。 */
   function fontBarPages(){
-    return $("exportMode").value==="range"&&exportState?.pages?.length&&
-      exportState.checkedText===$("exportRange").value?exportState.pages:null;
+    return $("exportMode").value!=="original"&&exportState?.pages?.length&&
+      exportState.checkedText===exportSelectionText()?exportState.pages:null;
   }
   async function refreshFontBar(force){
     if (!fontBarReady) return;

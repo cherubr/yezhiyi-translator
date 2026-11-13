@@ -428,7 +428,8 @@
     async function translateBlocks(entry,{token,config,mode,signal,valid,onBlock,onProgress}) {
       const todo=entry.blocks.filter(b=>{
         const custom=corrections?.get(editScope(),entry.geometry.pageNumber,b);
-        return b.eligible&&!(custom?custom.mode==="custom":edits.get(editScope(),entry.geometry.pageNumber,b))&&
+        const legacy=corrections?.isResetPage(editScope(),entry.geometry.pageNumber)?null:edits.get(editScope(),entry.geometry.pageNumber,b);
+        return b.eligible&&!(custom?custom.mode==="custom":legacy)&&
           (!entry.results.has(b.id)||(mode!=="auto"&&entry.results.get(b.id).status==="failed"));
       });
       if(!todo.length)return {done:true,empty:true};
@@ -610,13 +611,14 @@
           let entry=null;
           try{
             onProgress?.({page:pageNumber,stage:"extracting"});
-            const built=await buildEntry(pageNumber,currentDocument,{signal:controller.signal,valid,key:keyFor(pageNumber),
-              stage:message=>onProgress?.({page:pageNumber,stage:"recognizing",message})});
-            entry=built.entry;
+            // 多页存储独立于三页 LRU；重试缺失段时不能因 LRU 淘汰而丢掉已完成的译文。
+            const prepared=multiStore.get(pageNumber);
+            entry=prepared&&!prepared.restoreOnly?prepared:(await buildEntry(pageNumber,currentDocument,{signal:controller.signal,valid,key:keyFor(pageNumber),
+              stage:message=>onProgress?.({page:pageNumber,stage:"recognizing",message})})).entry;
             if(!valid())throw E.cancelled();
             initResults(entry);
             const eligible=entry.blocks.filter(b=>b.eligible).length;
-            if(eligible&&multiWeight()+2*blocksWeight(entry)>PAGES_BUDGET){
+            if(eligible&&multiWeight()-(prepared?weight(prepared):0)+2*blocksWeight(entry)>PAGES_BUDGET){
               summary.stopped={reason:"budget",page:pageNumber};break;
             }
             if(eligible&&!entry.empty){
@@ -685,7 +687,10 @@
         const r=placement.rect;
         if(!r||![r.x,r.y,r.right,r.bottom,placement.fontSize].every(Number.isFinite)||r.x<0||r.y<0||r.right>entry.geometry.width||r.bottom>entry.geometry.height||
           r.right-r.x<4||r.bottom-r.y<4||placement.fontSize<4||placement.fontSize>72)throw new Error("放置区域或字号无效");
-        placement={rect:{...r},fontSize:placement.fontSize};
+        const sourceMasks=placement.sourceMasks??[];
+        if(!Array.isArray(sourceMasks)||sourceMasks.length>128||sourceMasks.some(mask=>!mask||![mask.x,mask.y,mask.right,mask.bottom].every(Number.isFinite)||
+          mask.x<0||mask.y<0||mask.right>entry.geometry.width||mask.bottom>entry.geometry.height||mask.right<=mask.x||mask.bottom<=mask.y))throw new Error("原文覆盖区域无效，请重新画框");
+        placement={rect:{...r},fontSize:placement.fontSize,sourceMasks:sourceMasks.map(mask=>({x:mask.x,y:mask.y,right:mask.right,bottom:mask.bottom}))};
       }
       if(block.source==="manual"&&!restore){
         if(!placement)throw new Error("框选补译必须保留手动放置区域");

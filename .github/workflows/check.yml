@@ -17,6 +17,8 @@ jobs:
       - run: npm test
       - run: npx playwright install chromium
       - run: npm run test:browser
+      - run: npm run test:pdf
+      - run: npm run test:pdf:export
 
   # 小型隔离夹具验证三个系统的真实 ZIP 创建/读取；不上传商店或生成正式项目包。
   package-portability:

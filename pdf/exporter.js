@@ -22,7 +22,7 @@
   const COMPOSE_PAIR_MS = 8000;
   const MAX_RANGE_PAGES = 50;            // 与 session 的单轮准备上限同值：一次导出不超过 50 页
   // Worker 原样透传的错误码：这些码的文案由 Worker/注册表给出，页侧不改写也不吞掉。
-  const PASSTHROUGH_CODES = new Set(["EXPORT_ENCRYPTED", "EXPORT_SOURCE_CHANGED", "EXPORT_GLYPH_MISSING", "EXPORT_FONT_FAILED"]);
+  const PASSTHROUGH_CODES = new Set(["EXPORT_ENCRYPTED", "EXPORT_SOURCE_CHANGED", "EXPORT_SOURCE_BYTES", "EXPORT_SOURCE_UNSUPPORTED", "EXPORT_GLYPH_MISSING", "EXPORT_FONT_FAILED"]);
   function compose(a, b) {
     return [a[0]*b[0]+a[2]*b[1], a[1]*b[0]+a[3]*b[1], a[0]*b[2]+a[2]*b[3], a[1]*b[2]+a[3]*b[3],
       a[0]*b[4]+a[2]*b[5]+a[4], a[1]*b[4]+a[3]*b[5]+a[5]];
@@ -168,6 +168,9 @@
           (value.total ? " / " + (value.total / 1048576).toFixed(1) + " MiB" : "") + "…";
         publish();
       }}), {signal, ms: RELOAD_MS, stage: "export"});
+      if(getDocument()?.contentId&&result.contentId!==getDocument().contentId){
+        result.dispose();throw E.create("EXPORT_SOURCE_CHANGED","重新读取的 PDF 与当前阅读文件内容不同，请重新打开文件后翻译并导出","export",false);
+      }
       return result;
     }
     /** 独立证据位图：scale=2、viewRotation=0，与可见画布无关；返回 {canvas, matrix, pxPerCss}。 */
@@ -269,7 +272,7 @@
      */
     async function previewFonts(pages) {
       if (!getDocument()) return {state: "none", codes: [], missing: [], bytes: 0, labels: "", blocked: []};
-      const snapshots = Array.isArray(pages) && pages.length ? getSnapshots(pages) : [getSnapshot()];
+      const snapshots = Array.isArray(pages) && pages.length ? getSnapshots(pages) : [getSnapshot()||getSnapshots([getPage()])[0]];
       const texts = snapshotTexts(snapshots);
       if (!texts.length) return {state: "none", codes: [], missing: [], bytes: 0, labels: "", blocked: []};
       const selection = F.select(texts);
@@ -324,7 +327,8 @@
         if (signal?.aborted) { abort(); return; }
         // 字节以转移方式投递，页侧不再保留副本；Worker 完成后同样转移回页侧。
         const transfer = [job.bytes, ...fontBuffers(job)];
-        worker.postMessage(job, {transfer});
+        try{worker.postMessage(job, {transfer});}
+        catch(_){finish(E.create("EXPORT_FAILED","导出数据未能交给处理组件，请重新打开 PDF 后重试","export"));}
       });
     }
     /** 右侧预览与重排导出共用同一生成器。预览只读已安装字体，不暗中下载资源。 */
@@ -355,8 +359,12 @@
         if(reflowSource?.document!==currentDocument){
           reflowSource=null;onProgress({message:"正在读取源文件以重建版面…"});
           const source=await E.wait(session.reloadBytes({signal:controller.signal}),{signal:controller.signal,ms:RELOAD_MS,stage:"export"});
-          E.check(controller.signal);if(getDocument()!==currentDocument)throw E.cancelled();
-          reflowSource={document:currentDocument,bytes:toTransferable(source.bytes)};
+          try{
+            E.check(controller.signal);if(getDocument()!==currentDocument)throw E.cancelled();
+            if(currentDocument.contentId&&source.contentId!==currentDocument.contentId)
+              throw E.create("EXPORT_SOURCE_CHANGED","重新读取的 PDF 与当前阅读文件内容不同，请重新打开文件后翻译并导出","export",false);
+            reflowSource={document:currentDocument,bytes:toTransferable(source.bytes)};
+          }finally{source.dispose();}
         }
         const job={job:"export",requestId:crypto.randomUUID(),mode:"structured",bytes:reflowSource.bytes.slice(0),
           pages:[{snapshot,evidence:[],markerNumbers:[]}],...jobFonts(obtained)};
@@ -388,7 +396,7 @@
     /**
      * 范围体检（纯同步，不发任何请求）：把所选页分成 ready / partial / missing / no-text。
      * missing = 该页没有任何可用译文，导出只会得到原文页，必须让用户显式选择补译或保留原文；
-     * partial 与 no-text 不拦导出（未译段、无正文页按原文照录），但计入 need 供「翻译缺失页」补缺。
+     * partial 同样需要补译或显式保留未译内容；no-text 已确认没有正文，可按原文照录。
      */
     function describeRange(pages) {
       const byPage = new Map((getPageStatus(pages) || []).map(item => [item.page, item]));
@@ -520,16 +528,16 @@
       const currentDocument = getDocument(), name = getName();
       if (!currentDocument) { refuse("当前没有可导出的文档，请先读取 PDF"); return; }
       const stampNow = getStamp();
-      if (!stampNow) { refuse("当前还没有可用的翻译设置，请先读取并翻译 PDF"); return; }
+      if (!stampNow) { refuse("正在读取翻译设置，请稍候，或先应用当前翻译配置"); return; }
       const parsed = parseRange(text, currentDocument.numPages, getPage());
       if (parsed.error) { refuse(parsed.error); return; }
       const pages = parsed.pages;
       const range = publishRange(pages, describeRange(pages), text);
-      if (range.missing.length && !keepMissing) {
+      if (range.need.length && !keepMissing) {
         Object.assign(state, {busy: false, task: null, phase: "incomplete", stats: null,
-          message: "第 " + compact(range.missing) + " 页还没有可用译文（共选 " + pages.length + " 页）：" +
-            "点「翻译缺失页」逐页补译，或点「缺失页保留原文导出」把这些页按原文照录。" +
-            (range.partial.length ? "第 " + compact(range.partial) + " 页部分完成，未译段按原文保留。" : "") +
+          message: (range.missing.length?"第 " + compact(range.missing) + " 页还没有可用译文。":"") +
+            (range.partial.length ? "第 " + compact(range.partial) + " 页仅部分完成。" : "") +
+            "共选 " + pages.length + " 页；点「翻译缺失页」补译，或点「保留未译内容导出」，缺失内容按原文保留。" +
             (range.noText.length ? "第 " + compact(range.noText) + " 页没有可译正文，按原文照录。" : "")});
         publish();
         return;
@@ -631,7 +639,7 @@
       if (preparing) { refuse("已有补译任务在进行，请先取消或等待完成"); return; }
       if (active) { refuse("导出任务进行中，请先取消或等待完成"); return; }
       if (!getDocument()) { refuse("当前没有可导出的文档，请先读取 PDF"); return; }
-      if (!getStamp()) { refuse("当前还没有可用的翻译设置，请先读取并翻译 PDF"); return; }
+      if (!getStamp()) { refuse("正在读取翻译设置，请稍候，或先应用当前翻译配置"); return; }
       const stale = rangeIsCurrent(text);
       if (stale) { refuse(stale); return; }
       const pages = state.pages.slice();
@@ -654,7 +662,7 @@
         const range = publishRange(pages, describeRange(pages), text);
         // 无正文页只在补译时才被真正探明：回报里与「译完的页」分开数，不让用户以为空白页也产出了译文。
         const empty = summary.done.filter(item => item.state === "no-text").map(item => item.page);
-        const done = summary.done.filter(item => item.state !== "no-text").map(item => item.page);
+        const done = summary.done.filter(item => item.state === "ready").map(item => item.page);
         const failed = summary.failed.map(item => item.page);
         const stopped = summary.stopped;
         Object.assign(state, {busy: false, task: null, phase: stopped && stopped.reason !== "cancelled" ? "failed" : "incomplete",
@@ -665,9 +673,9 @@
               : stopped.reason === "budget" ? "，译文缓存已达上限，第 " + stopped.page + " 页起未准备，请缩小页码范围或分次导出"
                 : stopped.reason === "fatal" ? "，服务或识别模型异常已终止本轮（第 " + stopped.page + " 页）"
                   : "，翻译设置或文档已变化，本轮已终止") : "") +
-            "。" + (getStamp() === stampNow && range.missing.length
-              ? "仍缺第 " + compact(range.missing) + " 页译文，可再次补译或选择保留原文导出。"
-              : range.missing.length ? "请重新体检（点击「导出」）后再选择导出方式。"
+            "。" + (getStamp() === stampNow && range.need.length
+              ? "第 " + compact(range.need) + " 页仍有缺失或失败段落，可再次补译或选择保留原文导出。"
+              : range.need.length ? "请重新体检（点击「导出」）后再选择导出方式。"
                 : "缺失页已补齐，请再次点击「导出」生成译文 PDF。")});
         publish();
       } catch (error) {
@@ -689,7 +697,7 @@
       active = null; preparing = null;
     }
     publish();
-    return {exportOriginal: () => run("original"), exportTranslated: pair => run("translated", !!pair),
+    return {exportOriginal: () => run("original"), exportTranslated: pair => runRange(String(getPage()), false, !!pair),
       exportRange: (text, keepMissing, pair) => runRange(text, !!keepMissing, !!pair),
       previewFonts, reflowPDF, clearReflow(){reflowActive?.abort(E.cancelled());clearReflowCache();}, prepareMissing, cancel, dispose};
   }

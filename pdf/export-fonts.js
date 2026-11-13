@@ -100,6 +100,24 @@
    */
   const INVISIBLE = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFE00-\uFE0F\uFEFF]/g;
   const normalize = text => String(text ?? "").replace(INVISIBLE, "");
+  /** 实际绘制与选字体使用同一文本；移除不可见字符后同步修正 UTF-16 行内范围。 */
+  function normalizeResult(result,includeMachine=true) {
+    if(!result||typeof result.text!=="string")return result;
+    const text=normalize(result.text),out={...result,text};
+    if(text!==result.text&&Array.isArray(result.inline)){
+      const positions=new Uint32Array(result.text.length+1);let length=0;
+      for(let i=0;i<result.text.length;i++){if(normalize(result.text[i]))length++;positions[i+1]=length;}
+      out.inline=result.inline.flatMap(part=>{
+        if(!Number.isInteger(part.start)||!Number.isInteger(part.end)||part.start<0||part.end<=part.start||part.end>result.text.length)return [];
+        const start=positions[part.start],end=positions[part.end];if(start===end)return [];
+        const runs=Array.isArray(part.runs)?part.runs.map(run=>({...run,text:normalize(run.text)})).filter(run=>run.text):[];
+        if(!runs.length||runs.map(run=>run.text).join("")!==text.slice(start,end))return [];
+        return [{...part,start,end,runs}];
+      });
+    }
+    if(includeMachine&&result.machine)out.machine=normalizeResult(result.machine,false);
+    return out;
+  }
   // 控制符与空白不参与分级：各级字体都有空格字形，空白不决定该用哪一级字体。
   const skipChar = ch => {
     const cp = ch.codePointAt(0);
@@ -118,7 +136,8 @@
   const list = () => FONTS.map(font => ({...font}));
   const has = code => FONTS.some(font => font.code === code && font.bundled);
   const known = code => FONTS.some(font => font.code === code);
-  const label = code => FONTS.find(font => font.code === code)?.label || code;
+  const label = code => FONTS.find(font => font.code === code)?.label ||
+    ({"builtin-symbol":"内置数学符号字体","builtin-dingbats":"内置标记符号字体"})[code] || code;
   const entry = code => FONTS.find(font => font.code === code) || null;
   /** 可下载条目 → 钉死直链与摘要；内置或未注册条目返回 null。 */
   const source = code => {
@@ -166,5 +185,5 @@
 
   global.BT_PDF_EXPORT_FONTS = {FONT_SOURCE, FONT_BASE_URL, LICENSE, BLOCK_REASONS, SAMPLE_LIMIT,
     list, has, known, label, entry, source, metrics,
-    builtinCovers, normalize, classifyCodePoint, select, describeBlocked};
-})(window);
+    builtinCovers, normalize, normalizeResult, classifyCodePoint, select, describeBlocked};
+})(typeof window!=="undefined"?window:self);
