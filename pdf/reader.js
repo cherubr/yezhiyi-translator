@@ -8,6 +8,7 @@
   // P5-B 导出：页侧只持有当前文档句柄与导出状态，导出编排全部在 BT_PDF_EXPORTER 内。
   let currentDocument = null, exportState = null;
   let documentEditor=null,exporter=null,editorSignature="",editorPage=1;
+  let inplaceEditor=null;
   let thumbnails=null;
   const translationCards = new Map();
   let statusChannel = "source";
@@ -329,7 +330,7 @@
     $("editorToggleTools").hidden=page;
     $("editNotice").hidden=page;
     if(!page)$("editorViewport").scrollTop=structuredScroll;
-    syncBilingualPage();documentEditor?.refresh();
+    syncBilingualPage();documentEditor?.refresh();inplaceEditor?.refresh();
   }
   $("bilingualLayout").onchange=updateBilingualLayout;
   $("editorToggleTools").onclick=()=>documentEditor?.toggleTools();
@@ -391,6 +392,7 @@
     if (ready && previousSource !== "ready" && openPanel === "file") showReaderPanel(null, false);
     updateTranslationControls();
     updateExportControls();
+    inplaceEditor?.refresh();
   }
   function finishPassword(value) {
     if (!passwordRequest) return;
@@ -435,6 +437,7 @@
       $("translationConfigSummary").title = summary;
     }
     updateExportControls();
+    inplaceEditor?.refresh();
   }
   /** P5-B/P5b 导出控件：原文只需文档就绪，本页译文需已翻译；所选页先体检，缺译页只放行「补译」「保留原文」两个显式选择。 */
   function updateExportControls() {
@@ -696,8 +699,8 @@
       updateConfigDraft();
     },onRows(rows,geometry,meta){if(geometry)beginPanelPage(geometry.pageNumber);lastRows=rows;lastGeometry=geometry;renderRows(rows);
       renderer.setModel(rows,geometry);updateTranslationStats();
-      editorSignature=JSON.stringify(rows.map(row=>[row.block.id,row.block.kind,row.block.height,row.result?.status,row.result?.text]));
-      syncBilingualPage();void documentEditor?.update();if(geometry)restorePanelPosition();
+      editorSignature=JSON.stringify(rows.map(row=>[row.block.id,row.block.kind,row.block.height,row.block.toc,row.result?.status,row.result?.text,row.result?.fontFamily,row.result?.textStyle,row.result?.manualPlacement]));
+      syncBilingualPage();void documentEditor?.update();inplaceEditor?.refresh();if(geometry)restorePanelPosition();
       const uncertain=rows.filter(row=>!row.block.reliable&&!row.block.eligible&&!['translated','unchanged'].includes(row.result?.status)).length;
       $("editNotice").textContent=meta?.editingError||(uncertain?"有 "+uncertain+" 处文字无法可靠处理，未混入正文；原文保留，可在翻译检查中查看。":"");void refreshFontBar(true);
       // #debug=1 时输出页面分类与 OCR 区域（类型/原因/坐标与统计，不含文字内容）。
@@ -725,7 +728,7 @@
         viewport.scrollLeft = readingAnchor.x * viewport.scrollWidth - viewport.clientWidth / 2;
         viewport.scrollTop = readingAnchor.y * viewport.scrollHeight - viewport.clientHeight / 2;
       }
-      readingAnchor = null;syncBilingualPage();void documentEditor?.update(); syncMarkerHighlight(); scheduleFit();
+      readingAnchor = null;syncBilingualPage();void documentEditor?.update();inplaceEditor?.refresh(); syncMarkerHighlight(); scheduleFit();
     },
     onClear() {
       viewInfo=null;clearBilingualPage();$("canvasHost").replaceChildren(); $("empty").hidden = false; renderer.clear(); },
@@ -734,6 +737,14 @@
       $("canvasHost").replaceChildren(renderer.mount(canvas)); $("empty").hidden = true;
       $("viewport").scrollTop = $("viewport").scrollLeft = 0;
     }});
+  inplaceEditor=window.BT_PDF_INPLACE_EDITOR.create({
+    getInput:()=>{
+      const left=viewMode==="translated",right=viewMode==="bilingual"&&!$("structuredCard").hidden&&$("bilingualLayout").value==="page";
+      return {identity:translation.correctionIdentity(),supported:left||right,left,right,busy:translationState?.busy||!!startTask,rows:lastRows,geometry:lastGeometry,view:viewInfo,
+        getPlacement:(id,viewport)=>viewport==="bilingualViewport"?bilingualRenderer.getPlacement(id):renderer.getPlacement(id),
+        canPrepare:!configDraft&&!translationState?.busy&&translationState?.configReady&&state?.view==="ready"&&viewInfo?.pageNumber===state.page,
+        ready:!configDraft&&state?.view==="ready"&&viewInfo?.pageNumber===state.page&&lastGeometry?.pageNumber===state.page};
+    },onPrepare:()=>translation.prepareCorrectionPage(),onSave:value=>translation.saveCorrection(value),onClear:expected=>translation.clearPageTranslation(expected),onSaved:id=>{renderer.flashHighlight(id);bilingualRenderer.flashHighlight(id);}});
   // P5-B 导出编排：快照与回退编号在导出瞬间读取，导出过程不触发翻译与 OCR。
   // P5b 多页导出：范围体检/批量快照/补译都只经 translation 读取，页侧不保存第二份译文状态。
   exporter = window.BT_PDF_EXPORTER.create({session,
@@ -897,6 +908,7 @@
   $("startTranslation").onclick = () => {
     if (startTask || configDraft || $("startTranslation").disabled) return;
     statusChannel = "translation";
+    if(translationState?.hasRun&&!translationState.canContinue)inplaceEditor?.reset();
     const task = Promise.resolve(translation.start()); startTask = task; updateTranslationControls();
     void task.catch(error => {
       $("translationStatus").textContent = E.normalize(error, "translate").message;
@@ -975,7 +987,7 @@
     $("comparisonSplitter").hidden = !sidebarVisible || !wideReader.matches;
     if (!sidebarVisible || !wideReader.matches) endSplitterDrag();
     applyComparisonFilter();
-    syncBilingualPage();if(structuredVisible&&$("bilingualLayout").value==="flow")documentEditor?.refresh();
+    syncBilingualPage();inplaceEditor?.refresh();if(structuredVisible&&$("bilingualLayout").value==="flow")documentEditor?.refresh();
     if (returnFocus) toggle.focus({preventScroll: true});
     scheduleFit();
   }
@@ -1278,7 +1290,7 @@
   window.addEventListener("pagehide", () => { statusObserver.disconnect(); viewportObserver.disconnect();bilingualObserver.disconnect();clearBilingualPage(); clearTimeout(fitTimer);
     clearBlockHighlight();
     for (const task of [...modelDownloads.values(), ...fontDownloads.values()]) task.controller.abort();
-    finishPassword(null);thumbnails.dispose();documentEditor?.dispose(); exporter.dispose(); translation.dispose(); session.dispose(); });
+    finishPassword(null);inplaceEditor.dispose();thumbnails.dispose();documentEditor?.dispose(); exporter.dispose(); translation.dispose(); session.dispose(); });
   // 退回 BFCache 的页面已释放所有文档；重新载入干净阅读页，绝不恢复失效 Worker。
   window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });
 })();

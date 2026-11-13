@@ -297,6 +297,7 @@
     const lines=[];
     markColumnBreaks(rows);
     annotateCode(rows,page);
+    global.BT_PDF_TOC?.annotate(rows,page);
     const byIndex=new Map(fragments.map(fragment=>[fragment.index,fragment]));
     for(const fragment of fragments)if(fragment.inlineOwner!==undefined){
       const owner=byIndex.get(fragment.inlineOwner);
@@ -341,11 +342,16 @@
           }
           previous=f;
         }
-        const text=segments.map(p=>p.text).join("").trim();
+        const toc=group[0].toc;
+        let text=segments.map(p=>p.text).join("").trim();
+        if(toc?.part==="title") {
+          text=toc.rowTitle;const prefix=text.match(/^(\s*(?:\d+(?:\.\d+)*[.)、．]?|[IVXLCDM]+[.)、．])\s+)/u);
+          segments.splice(0,segments.length,...(prefix?[{text:prefix[0],protected:true},{text:text.slice(prefix[0].length)}]:[{text}]));runs.splice(0,runs.length);
+        }
         const rect=rectOf(group.flatMap(f=>[[f.rect.x,f.rect.y],[f.rect.right,f.rect.bottom]]));
         const base=group.filter(f=>f.inlineOwner===undefined),dominant=[...base].sort((a,b)=>b.text.length-a.text.length)[0]||group[0];
         const tagged=base.filter(f=>f.tag),tag=base.length&&tagged.length===base.length&&tagged.every(f=>f.tag.group===tagged[0].tag.group)?tagged[0].tag:null;
-        lines.push({text,segments,runs,rect,tag,inlineUncertain:group.some(f=>f.inlineUncertain),table:group[0].table,cell:group[0].cell,flow:group[0].flow,runInBody:group[0].runInBody,contributorRole:group.find(f=>f.contributorRole)?.contributorRole,
+        lines.push({text,segments,runs,rect,tag,toc,inlineUncertain:group.some(f=>f.inlineUncertain),table:group[0].table,cell:group[0].cell,flow:group[0].flow,runInBody:group[0].runInBody,contributorRole:group.find(f=>f.contributorRole)?.contributorRole,
           fontName:dominant.fontName,fontFamily:dominant.fontFamily,
           height:median(base.map(f=>f.height)),inkBottom:Math.max(...group.map(f=>f.inkBottom)),indices:group.map(f=>f.index),anchorIndices:group.filter(f=>f.inlineOwner===undefined).map(f=>f.index),direction:rtl?"rtl":"ltr",
           codeRole:group[0].codeRole,codeMixed:group.some(f=>f.codeMixed),
@@ -361,15 +367,15 @@
         const headingPrefix=previous&&!fragment.flow&&!fragment.table&&!fragment.codeRole&&/^\d+(?:\.\d+)*\.?$/u.test(prefix)&&
           fragment.fontName===previous.fontName&&(previous.height>em*1.12||bodyFont&&previous.fontName!==bodyFont)&&
           Math.abs(fragment.baseline-previous.baseline)<previous.height*.2&&fragment.rect.x-previous.rect.right<=previous.height*3;
-        if(previous&&bodyFont&&fragment.fontName===bodyFont&&previous.fontName!==bodyFont&&!fragment.flow&&!fragment.table&&!fragment.codeRole&&!fragment.reason&&
+        if(previous&&!fragment.toc&&bodyFont&&fragment.fontName===bodyFont&&previous.fontName!==bodyFont&&!fragment.flow&&!fragment.table&&!fragment.codeRole&&!fragment.reason&&
           group.every(f=>f.fontName===previous.fontName&&!f.reason)&&group.length&&prefix.length<=80&&
           /\p{L}.*[.:：]$/u.test(prefix)&&!/^\d+[.)]$/u.test(prefix)&&/^[\s\p{L}]/u.test(fragment.text)&&
           !fragment.columnBreakBefore&&Math.abs(fragment.baseline-previous.baseline)<previous.height*.2&&fragment.rect.x-previous.rect.right>=-previous.height*.1&&fragment.rect.x-previous.rect.right<previous.height){
           flush();const heading=lines.at(-1);Object.assign(heading,{kind:"subheading",headingLevel:2,headingEvidence:"run-in-style",runIn:true});fragment.runInBody={x:heading.rect.x};
         }
-        if(previous&&(fragment.columnBreakBefore&&!headingPrefix||fragment.tag&&previous.tag&&fragment.tag.group!==previous.tag.group||fragment.codeRole!==previous.codeRole||fragment.cell?.id!==previous.cell?.id||fragment.flow?.id!==previous.flow?.id||fragment.flow?.column!==previous.flow?.column||
+        if(previous&&(fragment.toc?.id!==previous.toc?.id||fragment.toc?.part!==previous.toc?.part||!fragment.toc&&(fragment.columnBreakBefore&&!headingPrefix||fragment.tag&&previous.tag&&fragment.tag.group!==previous.tag.group||fragment.codeRole!==previous.codeRole||fragment.cell?.id!==previous.cell?.id||fragment.flow?.id!==previous.flow?.id||fragment.flow?.column!==previous.flow?.column||
           fragment.flow?.part!==previous.flow?.part||fragment.flow?.caption!==previous.flow?.caption||!headingPrefix&&fragment.rect.x-previous.rect.right>Math.max(fragment.height,previous.height)*1.8 ||
-          (fragment.inlineOwner===undefined&&previous.inlineOwner===undefined&&Math.min(fragment.height,previous.height)/Math.max(fragment.height,previous.height)<0.7)))flush();
+          (fragment.inlineOwner===undefined&&previous.inlineOwner===undefined&&Math.min(fragment.height,previous.height)/Math.max(fragment.height,previous.height)<0.7))))flush();
         group.push(fragment);
       }
       flush();
@@ -377,11 +383,12 @@
     structure?.annotateLines(lines,page);
     const paragraphs=[];
     for(const line of lines.sort((a,b)=>a.rect.y-b.rect.y||a.rect.x-b.rect.x)){
-      const role=line.tag?.role==="Formula"?"formula":line.tag?.role==="Code"?"code":line.codeRole==="code"?"code":line.codeRole==="comment"?"text":line.contributorRole||roleOf(line.text,line.mono);
+      const role=line.toc?.part==="title"?"text":line.tag?.role==="Formula"?"formula":line.tag?.role==="Code"?"code":line.codeRole==="code"?"code":line.codeRole==="comment"?"text":line.contributorRole||roleOf(line.text,line.mono);
       line.isCaption=/^(?:fig(?:ure)?\.?|table|图|圖|表)\s*\d/iu.test(line.text);
-      const startsStructure=["heading","subheading"].includes(line.kind)||/^(?:(?:[-•◦]|\d+[.)])\s|(?:fig(?:ure)?\.?|table|图|圖|表)\s*\d)/iu.test(line.text);
+      const startsStructure=!!line.toc||["heading","subheading"].includes(line.kind)||/^(?:(?:[-•◦]|\d+[.)])\s|(?:fig(?:ure)?\.?|table|图|圖|表)\s*\d)/iu.test(line.text);
       let parent=null;
-      if(role==="text"&&["heading","subheading"].includes(line.kind)&&!line.runIn&&!/^\d+(?:\.\d+)*(?:\.|\s)/u.test(line.text)){
+      if(line.toc?.part==="title")parent=paragraphs.find(p=>p.toc?.id===line.toc.id&&p.toc.part==="title");
+      if(!line.toc&&role==="text"&&["heading","subheading"].includes(line.kind)&&!line.runIn&&!/^\d+(?:\.\d+)*(?:\.|\s)/u.test(line.text)){
         parent=paragraphs.slice(-16).reverse().find(p=>p.kind===line.kind&&p.headingLevel===line.headingLevel&&!p.runIn&&!p.reason&&
           !p.flow&&!p.table&&(!p.tag||!line.tag||p.tag.group===line.tag.group)&&p.lines.length<3&&p.fontName===line.fontName&&p.direction===line.direction&&
           Math.min(p.height,line.height)/Math.max(p.height,line.height)>.9&&
@@ -389,7 +396,7 @@
           (Math.abs(p.rect.x-line.rect.x)<line.height*.5||Math.abs(p.rect.x+p.rect.right-line.rect.x-line.rect.right)<line.height));
       }
       if(role==="text"&&!line.reason&&!startsStructure){
-        parent=paragraphs.slice(-128).reverse().find(p=>p.role==="text"&&!p.reason&&!p.isCaption&&!["heading","subheading"].includes(p.kind)&&
+        parent=paragraphs.slice(-128).reverse().find(p=>!p.toc&&p.role==="text"&&!p.reason&&!p.isCaption&&!["heading","subheading"].includes(p.kind)&&
           (!p.tag||!line.tag||p.tag.group===line.tag.group)&&p.codeRole===line.codeRole&&p.direction===line.direction&&p.cell?.id===line.cell?.id&&
           p.flow?.id===line.flow?.id&&p.flow?.column===line.flow?.column&&p.flow?.part===line.flow?.part&&p.flow?.caption===line.flow?.caption&&
           line.rect.y-p.rect.bottom>=-line.height*0.25&&line.rect.y-p.rect.bottom<line.height*0.9&&
@@ -419,6 +426,11 @@
       reliable:!block.reason,eligible:!block.reason&&block.role==="text",
       reason:block.reason||(block.codeMixed?"代码与注释共用文字项，无法可靠分离；整行保留":block.role!=="text"?protectedReason(block.role):"")}));
     structure?.describe(blocks,page);
+    for(const block of blocks)if(block.toc){
+      block.kind=block.toc.part==="title"?"toc-entry":"literal";
+      block.role=block.toc.part==="title"?"text":"symbol";
+      block.eligible=block.toc.part==="title"&&!block.reason;
+    }
     const visuals=structure?.visuals(blocks,probe,figures,tables,page)||[];
     // 保持既有段落 ID：视觉节点只参与排序，不作为新的翻译任务或译文数据源。
     const visualAtoms=visuals.filter(v=>!v.flow).map(v=>({id:v.id,visual:v,rect:v.rect,height:em,direction:"ltr"}));

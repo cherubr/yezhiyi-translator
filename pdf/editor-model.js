@@ -46,6 +46,7 @@
         if(ids.length)out.sourceIds=ids;
       }
       if(["pending","failed","skipped","unchanged","translated"].includes(node.status))out.status=node.status;
+      if(["table","title","leader","page"].includes(node.tocRole))out.tocRole=node.tocRole;
       if(node.columns&&node.tag==="section"&&[1,2,3].includes(node.columns))out.columns=node.columns;
       if(out.columns&&Array.isArray(node.widths)&&node.widths.length===out.columns&&node.widths.every(value=>Number.isFinite(value)&&value>0&&value<=10000))out.widths=[...node.widths];
       for(const key of ["rowSpan","colSpan"])if(Number.isInteger(node[key])&&node[key]>=1&&node[key]<=100)out[key]=node[key];
@@ -72,6 +73,7 @@
       // 粘贴的未知包装层仅取其文字/安全子节点，不沿用属性和链接。
       if(!tags.has(tag))return children;
       const out={tag,children,style:styles(node.style),sourceId:node.dataset.blockId,status:node.dataset.status};
+      out.tocRole=node.dataset.tocRole;
       if(node.dataset.sourceIds){try{out.sourceIds=JSON.parse(node.dataset.sourceIds);}catch(_){}}
       if(tag==="section"){
         out.columns=Number(node.dataset.columns)||undefined;
@@ -95,6 +97,7 @@
       if(node.sourceId)element.dataset.blockId=node.sourceId;
       if(node.sourceIds)element.dataset.sourceIds=JSON.stringify(node.sourceIds);
       if(node.status)element.dataset.status=node.status;
+      if(node.tocRole)element.dataset.tocRole=node.tocRole;
       if(node.columns){
         element.dataset.columns=String(node.columns);element.className="editor-columns";
         element.dataset.widths=JSON.stringify(node.widths||Array(node.columns).fill(1));
@@ -116,9 +119,19 @@
         item.block.role==="code"?"pre":"p";
       return {tag,sourceId:item.id,status:item.result?.status||"pending",style:{fontSize:style.size+"pt",lineHeight:String(style.lineHeight),
         marginTop:style.before+"pt",marginBottom:style.after+"pt",textIndent:typography.indent(item,geometry.width)+"pt",
-        fontFamily:tag==="pre"?"monospace":"sans-serif",fontWeight:tag.startsWith("h")?"bold":"normal",whiteSpace:"pre-wrap"},children:[item.text]};
+        fontFamily:tag==="pre"?"monospace":["serif","monospace"].includes(item.result?.fontFamily)?item.result.fontFamily:"sans-serif",fontWeight:tag.startsWith("h")?"bold":"normal",whiteSpace:"pre-wrap"},children:[item.text]};
     };
     const region=node=>{
+      if(node.kind==="toc")return [{tag:"table",tocRole:"table",children:[
+        {tag:"colgroup",children:[77,15,8].map(width=>({tag:"col",style:{width:width+"%"},children:[]}))},
+        {tag:"tbody",children:node.items.map(item=>{
+          const title=paragraph(item);Object.assign(title.style,{textIndent:"0pt",whiteSpace:"normal"});
+          return {tag:"tr",sourceId:item.id,children:[
+            {tag:"td",tocRole:"title",style:{paddingLeft:Math.min(72,item.block.toc.level*12)+"pt"},children:[title]},
+            {tag:"td",tocRole:"leader",children:["·".repeat(120)]},
+            {tag:"td",tocRole:"page",children:[item.block.toc.pageLabel]}
+          ]};
+        })}]}];
       if(node.kind==="table"&&node.grid){
         const grid=node.grid;
         if(!Number.isInteger(grid.rows)||grid.rows<1||grid.rows>128||!Number.isInteger(grid.columns)||grid.columns<1||grid.columns>64||

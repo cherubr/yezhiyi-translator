@@ -10,6 +10,15 @@
   const MEASURE_MARGIN = 0.97, LINE_HEIGHT = 1.25;
   const MAX_DOM_TIERS = 8;                // DOM 实测验证失败的最大字号降级次数，超限即回退
   const FONT_STACK = 'system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+  const fontStack=family=>family==="serif"?'"Songti SC", "SimSun", "Noto Serif CJK SC", "Times New Roman", serif':
+    family==="monospace"?'"SFMono-Regular", Consolas, "Liberation Mono", "Sarasa Mono SC", "Noto Sans Mono CJK SC", "SimSun", "Songti SC", monospace':FONT_STACK;
+  /** 人工修订整块共用一份样式；旧记录没有样式时保持既有默认值。 */
+  function normalizeTextStyle(value) {
+    return {bold:value?.bold===true,italic:value?.italic===true,
+      color:typeof value?.color==="string"&&/^#[0-9a-f]{6}$/i.test(value.color)?value.color.toLowerCase():"#243247",
+      align:["left","center","right"].includes(value?.align)?value.align:null,
+      lineHeight:[1.45,1.6,1.8,2].includes(value?.lineHeight)?value.lineHeight:1.45};
+  }
   const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
   let measureContext = null;
   function measureCanvas() {
@@ -20,11 +29,13 @@
     }
     return measureContext;
   }
-  function measure(text, fontSize) {
+  function measure(text, fontSize, fontFamily, textStyle) {
+    const style=normalizeTextStyle(textStyle);
     const context = measureCanvas();
-    context.font = fontSize + "px " + FONT_STACK;
+    context.font = (style.italic?"italic ":"")+(style.bold?"bold ":"")+fontSize + "px " + fontStack(fontFamily);
     context.direction = "ltr";
-    return context.measureText(text).width;
+    const metrics=context.measureText(text);
+    return Math.max(metrics.width,Number.isFinite(metrics.actualBoundingBoxRight)?metrics.actualBoundingBoxRight:0);
   }
   const median = values => {
     const sorted = values.filter(n => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
@@ -70,7 +81,8 @@
     if(!block?.rect||!block.eligible||!block.reliable||block.role!=="text"||!geometry||!result?.text||["figure","code"].includes(block.flow?.type))return null;
     if(!(Number.isFinite(block.height)&&block.height>0))return null;
     const mask=maskFor(block,geometry,rows),lead=Number.isFinite(lineHeight)&&lineHeight>0?lineHeight:LINE_HEIGHT;
-    const lines=wrapText(result.text,block.height,(mask.right-mask.x)*MEASURE_MARGIN,measureFn);
+    const widthOf=measureFn||((text,size)=>measure(text,size,result.fontFamily));
+    const lines=wrapText(result.text,block.height,(mask.right-mask.x)*MEASURE_MARGIN,widthOf);
     let bottom=Math.min(geometry.height-CLEARANCE,block.rect.y+lines.length*block.height*lead);
     if(block.cell?.rect)bottom=Math.min(bottom,block.cell.rect.bottom-CLEARANCE);
     else if(block.table)return null;
@@ -169,11 +181,35 @@
       return {placements, fallbacks, pending, stats: {overlay: 0, fallback: 0, pending: 0}};
     const bodyMedian = median(rows.filter(r => r.block.eligible && r.block.role === "text").map(r => r.block.height))
       || median(rows.map(r => r.block.height)) || 12;
+    const placedRects = [];
+    // 人工白底区域按保存顺序叠放；新框仅覆盖交集，不删除旧框在交集外的内容。
+    // 自动译文仍遵守背景、邻段和重叠校验，不能获得人工覆盖权限。
+    const manualRows=rows.filter(row=>row.result?.userEdited&&row.result?.manualPlacement).sort((a,b)=>{
+      const order=result=>Number.isFinite(result.correctionOrder)?result.correctionOrder:0;
+      return order(a.result)-order(b.result);
+    });
+    for(const {block,result} of manualRows){
+      const manual=result?.userEdited&&result?.manualPlacement;if(!manual||result.status!=="translated"||!result.text?.trim())continue;
+      const fontFamily=["serif","monospace"].includes(result.fontFamily)?result.fontFamily:"sans-serif";
+      const textStyle=normalizeTextStyle(result.textStyle);
+      const widthOf=(text,size)=>measureFn(text,size,fontFamily,textStyle);
+      const r=manual.rect,size=manual.fontSize,lead=size*Math.max(textStyle.lineHeight,lineHeightRatio);
+      if(!r||![r.x,r.y,r.right,r.bottom,size].every(Number.isFinite)||r.x<0||r.y<0||r.right>geometry.width||r.bottom>geometry.height||r.right<=r.x||r.bottom<=r.y||size<4||size>72){fallbacks.push({blockId:block.id,reason:"manual-bounds"});continue;}
+      const lines=wrapText(result.text,size,(r.right-r.x)*MEASURE_MARGIN,widthOf);
+      if((domFailures?.get(block.id)||0)>0||!lines.length||lines.length*lead>r.bottom-r.y||lines.some(line=>widthOf(line,size)>r.right-r.x)){
+        fallbacks.push({blockId:block.id,reason:"manual-fit"});continue;
+      }
+      placements.set(block.id,{blockId:block.id,manual:true,rect:block.rect,maskRect:{...r},textRect:{...r},maskColor:[255,255,255],fontSize:size,fontFamily,textStyle,lineHeight:lead,
+        lines,direction:block.direction==="rtl"?"rtl":"ltr",align:textStyle.align||(block.direction==="rtl"?"right":"left"),expansion:null});
+      placedRects.push({...r});
+    }
     // 第一层：结构先验。仅 translated 且有译文才是候选；unchanged 原文即正确，不遮盖也不回退。
     const candidates = [];
     for (const {block, result} of rows) {
+      if(result?.userEdited&&result.manualPlacement)continue;
       if (!result || !result.text || !result.text.trim()) continue;
       if (result.status !== "translated") continue;
+      if(block.toc?.unresolvedGeometry&&!result.manualPlacement){fallbacks.push({blockId:block.id,reason:"toc-geometry"});continue;}
       if (!block.eligible || !block.reliable || block.role !== "text") {
         fallbacks.push({blockId: block.id, reason: "prior"}); continue;
       }
@@ -183,8 +219,9 @@
       }
       candidates.push({block, result});
     }
-    const placedRects = [];
     for (const {block, result} of candidates) {
+      const fontFamily=["serif","monospace"].includes(result.fontFamily)?result.fontFamily:"sans-serif";
+      const widthOf=(text,size)=>measureFn(text,size,fontFamily);
       if (block.rect.x < -1 || block.rect.y < -1 || block.rect.right > geometry.width + 1 || block.rect.bottom > geometry.height + 1) {
         fallbacks.push({blockId: block.id, reason: "bounds"}); continue;
       }
@@ -212,7 +249,7 @@
       const domTier = domFailures ? domFailures.get(block.id) || 0 : 0;
       // 译文盒顶对齐原文首行（遮罩仍外扩 MASK_PAD 保证覆盖），消除 1.5pt 首行偏移。
       let textRect = {x: maskRect.x, y: block.rect.y, right: maskRect.right, bottom: maskRect.bottom},expansion=null;
-      const proof=found.expansion,candidate=proof?.blank===true?expansionRect({block,result,geometry,rows,measure:measureFn,lineHeight:lineHeightRatio}):null;
+      const proof=found.expansion,candidate=proof?.blank===true?expansionRect({block,result,geometry,rows,measure:widthOf,lineHeight:lineHeightRatio}):null;
       if(candidate&&proof?.blank===true&&proof.rect&&proof.rect.x===candidate.x&&proof.rect.right===candidate.right&&proof.rect.y===candidate.y&&
         Number.isFinite(proof.rect.bottom)&&proof.rect.bottom>candidate.y&&Array.isArray(proof.color)&&Array.isArray(found.background.color)&&
         proof.color.length===3&&proof.color.every((value,index)=>value===found.background.color[index])){
@@ -220,16 +257,16 @@
         const extended={...textRect,bottom};
         if(!placedRects.some(rect=>intersects(rect,extended))){textRect=extended;expansion={...candidate,bottom};}
       }
-      const fit = fitBlock(result.text, block.height, bodyMedian, textRect, domTier, (block.lines || []).length, measureFn, lineHeightRatio);
+      const fit = fitBlock(result.text, block.height, bodyMedian, textRect, domTier, (block.lines || []).length, widthOf, lineHeightRatio);
       if (!fit) { fallbacks.push({blockId: block.id, reason: domTier ? "dom-overflow" : "fit"}); continue; }
       placements.set(block.id, {blockId: block.id, rect: block.rect, maskRect, textRect,
-        maskColor: found.background.color, fontSize: fit.fontSize, lineHeight: fit.lineHeight,
+        maskColor: found.background.color, fontSize: fit.fontSize, fontFamily, lineHeight: fit.lineHeight,
         lines: fit.lines, direction: block.direction === "rtl" ? "rtl" : "ltr",
         align: block.direction === "rtl" ? "right" : "left", expansion});
       placedRects.push({...maskRect,bottom:Math.max(maskRect.bottom,textRect.bottom)});
     }
     return {placements, fallbacks, pending, stats: {overlay: placements.size, fallback: fallbacks.length, pending: pending.length}};
   }
-  global.BT_PDF_LAYOUT_PLANNER = {plan, wrapText, measure, inflate, intersects,maskFor,expansionRect,
+  global.BT_PDF_LAYOUT_PLANNER = {plan, wrapText, measure, fontStack, normalizeTextStyle, inflate, intersects,maskFor,expansionRect,
     constants: {MASK_PAD, CLEARANCE, RING, LINE_PAD, LINE_HEIGHT, FONT_STACK, MAX_DOM_TIERS}};
 })(typeof window !== "undefined" ? window : self);

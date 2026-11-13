@@ -137,7 +137,7 @@
                 if(!node)return;
                 if(++visited>24000||depth>64){complete=false;return;}
                 const role=typeof node.role==="string"?node.role:"";
-                const semantic=/^(?:H[1-6]?|P|L|LI|Table|TR|TH|TD|Figure|Formula|Code|Note|Caption)$/u.test(role)?{role,group:path}:owner;
+                const semantic=/^(?:H[1-6]?|P|L|LI|Table|TR|TH|TD|Figure|Formula|Code|Note|Caption|TOC|TOCI)$/u.test(role)?{role,group:path}:owner;
                 if(node.type==="content"&&typeof node.id==="string"&&semantic)tags.push({id:node.id,...semantic});
                 for(let i=0;i<(node.children?.length||0)&&visited<=24000;i++)walk(node.children[i],semantic,path+"."+i,depth+1);
               };

@@ -40,6 +40,7 @@
   function create({onState,onConfig,onRows}) {
     let documentRef=null,page=1,pageReady=false,context=null,selection=null,revision=0,generation=0;
     let active=null,currentEntry=null,started=false,paused=false,disposed=false,configTask=null;
+    let restoreController=null;
     // OCR 引擎与结果缓存独立于翻译缓存：身份含文档、页、引擎、模型版本与语言；缩放/旋转/模式切换不重识别。
     let ocr=null;
     const ocrCache=new Map();
@@ -52,17 +53,30 @@
     const cancelOcrIdle=()=>{if(ocrIdleTimer){clearTimeout(ocrIdleTimer);ocrIdleTimer=null;}};
     const scheduleOcrIdle=()=>{cancelOcrIdle();ocrIdleTimer=setTimeout(()=>{ocrIdleTimer=null;if(ocr){void ocr.terminate();ocr=null;}},OCR_IDLE_MS);};
     const cache=new Map(), edits=global.BT_PDF_EDITS.create();
+    const corrections=global.BT_PDF_INPLACE_STORE?.create();
     let editsReady=Promise.resolve(), editError="", editVersion=0;
     const editScope=()=>selection?JSON.stringify([1,selection.from,global.BT_CONST.resolveTargetLanguage(selection.to)]):"";
     function effectiveResult(entry,block) {
-      const machine=entry.results.get(block.id), saved=edits.get(editScope(),entry.geometry.pageNumber,block);
+      const machine=entry.results.get(block.id), saved=corrections?.isResetPage(editScope(),entry.geometry.pageNumber)?null:edits.get(editScope(),entry.geometry.pageNumber,block);
+      const custom=corrections?.get(editScope(),entry.geometry.pageNumber,block);
+      if(custom?.mode==="custom")return {status:"translated",text:custom.text,userEdited:true,fontFamily:custom.fontFamily||"sans-serif",textStyle:custom.textStyle,correctionOrder:custom.updated,manualPlacement:custom.placement,machine:machine||custom.machine||null};
+      if(custom?.mode==="machine")return machine||custom.machine||undefined;
       // 程序代码始终使用源字符；旧修订仍留在存储中并保留明确撤销入口。
       if(block.role==="code")return {status:"skipped",reason:block.reason||"代码保持原样",...(saved?{userEdited:true,machine:machine||saved.machine||null}:{})};
       // 已校验来源身份的显式修订不能因新规则改判保护类型而悄悄消失。
       // 原位规划器仍按 block 的可靠性/角色拒绝覆盖；旧修订仅作为兼容的读取来源，新排版保存到独立编辑稿。
       return saved?{status:"translated",text:saved.text,userEdited:true,machine:machine||saved.machine||null}:machine;
     }
-    const effectiveRows=entry=>entry.blocks.map(block=>({block,result:effectiveResult(entry,block)}));
+    const effectiveRows=entry=>{
+      const regions=corrections?.regions(editScope(),entry.geometry.pageNumber)||[];
+      const replaced=new Map();
+      for(const region of regions)for(const item of region.replaces||[])for(const key of [item.id,item.anchor]){
+        if(!replaced.has(key))replaced.set(key,new Set());replaced.get(key).add(item.source);
+      }
+      // 一个框可修订多段文字；保留原结果，只在该区域修订存在时隐藏其替代的段落。
+      return [...entry.blocks,...regions].filter(block=>!replaced.get(block.id)?.has(block.text)&&
+        !replaced.get(block.editAnchor||block.id)?.has(block.text)).map(block=>({block,result:effectiveResult(entry,block)}));
+    };
     // P5b 多页准备存储：与三页 LRU 缓存共享条目对象但独立持有引用（LRU 淘汰不影响已准备的页），
     // 总权重上限防止无限攒页；换文档、配置变化与 dispose 一并作废，语义与 cache 同口径。
     const multiStore=new Map();
@@ -83,9 +97,12 @@
     const entryKey=()=>keyFor(page);
     // 第三参数为分类与 OCR 元信息（区域坐标与统计，不含文字内容），仅供调试展示。
     const show=(entry,reveal=true)=>{if(!disposed){
-      const unmatched=entry?edits.unmatched?.(editScope(),entry.geometry.pageNumber,entry.blocks)||0:0;
+      const unmatched=entry&&!corrections?.isResetPage(editScope(),entry.geometry.pageNumber)?edits.unmatched?.(editScope(),entry.geometry.pageNumber,entry.blocks)||0:0;
+      const unmatchedCorrections=entry?corrections?.unmatched(editScope(),entry.geometry.pageNumber,entry.blocks)||0:0;
       onRows(entry?effectiveRows(entry).map(row=>({...row,result:reveal||row.result?.userEdited?row.result:null})):[],entry&&entry.geometry?entry.geometry:null,
-        entry?{classification:entry.classification||null,ocr:entry.ocr||null,editingError:editError||(unmatched?"本页有 "+unmatched+" 条旧人工修订因段落结构变化未自动套用，记录仍保留。":"")}:null);
+        entry?{classification:entry.classification||null,ocr:entry.ocr||null,editingError:editError||
+          (unmatchedCorrections?"本页有 "+unmatchedCorrections+" 条原位修订未匹配当前文字结构，记录仍保留，请核对后重新选择区域。":
+          unmatched?"本页有 "+unmatched+" 条旧人工修订因段落结构变化未自动套用，记录仍保留。":"")}:null);
     }};
     const runsWeight=runs=>(runs||[]).reduce((n,run)=>n+(run.text?.length||0)*2+160,0);
     const blocksWeight=entry=>entry.blocks.reduce((n,b)=>n+b.text.length*2+800+runsWeight(b.runs)+(b.segments||[]).reduce((s,part)=>s+runsWeight(part.runs),0),0);
@@ -102,6 +119,7 @@
     }
     function halt() {
       generation++;
+      restoreController?.abort();restoreController=null;
       if(active){active.controller.abort();adapter.cancel(active.token);active=null;}
       state.busy=false;
     }
@@ -138,7 +156,7 @@
           context=next;
           if(!selection)selection={engine:next.engine,aiProvider:next.aiProvider,from:next.from,to:next.to};
           state.configured=next.services.some(item=>item.value===global.BT_SERVICES.value(selection.engine,selection.aiProvider)&&item.ready);
-          state.configReady=true;state.message=documentRef?"翻译设置已读取，请开始或继续本页翻译":"读取 PDF 后点击开始翻译";onConfig({services:next.services,...selection});publish();
+          state.configReady=true;state.message=documentRef?"翻译设置已读取，请开始或继续本页翻译":"读取 PDF 后点击开始翻译";onConfig({services:next.services,...selection});publish();void restoreCorrections();
         }catch(error){
           if(disposed||version!==revision)return;
           state.message=error.message||"无法读取翻译配置";state.phase="config-error";publish();
@@ -153,14 +171,14 @@
       if(!context)return;
       revision++;selection={...selection,...value};
       invalidate("翻译选项已变化，点击开始翻译处理当前页");
-      state.configured=context.services.some(item=>item.value===global.BT_SERVICES.value(selection.engine,selection.aiProvider)&&item.ready);publish();
+      state.configured=context.services.some(item=>item.value===global.BT_SERVICES.value(selection.engine,selection.aiProvider)&&item.ready);publish();void restoreCorrections();
     }
     function setDocument(value) {
       halt();cancelPrepare();multiStore.clear();
       documentRef=value;editError="";
-      editsReady=edits.setDocument(value?.contentId).catch(error=>{if(documentRef===value)editError=error.message;});
+      editsReady=Promise.all([edits.setDocument(value?.contentId),corrections?.setDocument(value?.contentId)]).catch(error=>{if(documentRef===value)editError=error.message;});
       const loadedDocument=value;
-      void editsReady.then(()=>{if(!disposed&&documentRef===loadedDocument){editVersion++;show(currentEntry,!paused);publish();}});
+      void editsReady.then(()=>{if(!disposed&&documentRef===loadedDocument){editVersion++;show(currentEntry,!paused);publish();void restoreCorrections();}});
       page=1;pageReady=false;cache.clear();ocrCache.clear();currentEntry=null;started=false;paused=false;
       // 换文件/关文件即释放 OCR Worker 并复位熔断与闲置计时；同一文档内跨页复用，翻页不重建。
       ocrFailures=0;ocrSuspended=false;cancelOcrIdle();
@@ -177,6 +195,41 @@
     function viewReady() {
       pageReady=true;
       if(started&&!paused&&!active&&state.phase==="waiting-page")void run("auto");
+      else void restoreCorrections();
+    }
+    async function restoreCorrections(){
+      if(disposed||!pageReady||!documentRef||!selection||!context||active||currentEntry||restoreController||!corrections)return;
+      const controller=new AbortController(),document=documentRef,currentPage=page,version=generation,configVersion=revision,scope=editScope();restoreController=controller;
+      const valid=()=>!disposed&&!controller.signal.aborted&&documentRef===document&&page===currentPage&&generation===version&&revision===configVersion&&!active;
+      try{
+        await editsReady;if(!valid()||!corrections.hasPage(scope,currentPage))return;
+        const built=await buildEntry(currentPage,document,{signal:controller.signal,valid,key:entryKey(),restoreOnly:true});
+        if(!valid())return;
+        const entry=built.entry,ids=new Set(entry.blocks.map(block=>block.editAnchor||block.id));
+        // OCR 修订只在没有恢复识别结果的本机展示路径使用已保存的锚点，不把失配原生段落强塞回页面。
+        for(const block of corrections.savedBlocks(scope,currentPage))if(block.source==="ocr"&&!ids.has(block.editAnchor||block.id)){
+          entry.blocks.push(block);ids.add(block.editAnchor||block.id);
+        }
+        currentEntry=entry;initResults(entry);show(entry,!paused);trimCache();
+        state.hasRun=true;state.message="已恢复本机人工修订，其他内容可点击开始翻译";publish();
+      }catch(_){if(valid()){editError="本机修订暂未能显示，请开始处理本页后重试";show(currentEntry,!paused);}}
+      finally{if(restoreController===controller)restoreController=null;}
+    }
+    async function prepareCorrectionPage(){
+      if(disposed||!pageReady||!documentRef||!selection||!context)throw new Error("请先等待当前 PDF 页面和翻译语言就绪");
+      if(currentEntry)return;
+      if(active||prepareActive||restoreController)throw new Error("正在处理当前页面，请稍候再修订");
+      const controller=new AbortController(),document=documentRef,currentPage=page,version=generation,configVersion=revision;
+      restoreController=controller;
+      const valid=()=>!disposed&&!controller.signal.aborted&&documentRef===document&&page===currentPage&&generation===version&&revision===configVersion&&!active;
+      try{
+        await editsReady;if(!valid())throw E.cancelled();
+        // 只建立固定坐标文字块；扫描页同样获得页面几何，可直接框选补译，不调用 OCR 或翻译服务。
+        const {entry}=await buildEntry(currentPage,document,{signal:controller.signal,valid,key:entryKey(),restoreOnly:true});
+        if(!valid())throw E.cancelled();
+        currentEntry=entry;initResults(entry);show(entry,!paused);trimCache();
+        state.message="已准备页面修订，可选段或框选补译；未发起翻译";publish();
+      }finally{if(restoreController===controller)restoreController=null;}
     }
     function cancel() {
       if(!documentRef)return;
@@ -321,9 +374,9 @@
      * 每个 await 之后校验 valid()，过期即抛出取消（调用方按 valid 静默返回），绝不写入过期缓存。
      * key 由调用方在进入时捕获并传入：Prepare 期间翻页不改 key 口径，显示页翻页则整轮作废。
      */
-    async function buildEntry(pageNumber,currentDocument,{signal,valid,stage,key}) {
+    async function buildEntry(pageNumber,currentDocument,{signal,valid,stage,key,restoreOnly=false}) {
       const cached=cache.get(key);
-      if(cached){cache.delete(key);cache.set(key,cached);return {entry:cached,cached:true};}
+      if(cached&&(!cached.restoreOnly||restoreOnly)){cache.delete(key);cache.set(key,cached);return {entry:cached,cached:true};}
       const extracted=await currentDocument.extractPage(pageNumber,{signal});
       if(!valid())throw E.cancelled();
       const probe=await currentDocument.probePageContent(pageNumber,{signal});
@@ -332,14 +385,14 @@
       if(model.blocks.length>2000)throw E.create("TEXT_BUDGET","本页文本块过多，暂不自动翻译","extract",false);
       const classification=global.BT_PDF_BLOCKS.classifyPage(model,probe);
       let blocks=model.blocks,ocrInfo=null;
-      if(classification.type==="scanned"){
+      if(!restoreOnly&&classification.type==="scanned"){
         const recognized=await recognizePage(currentDocument,pageNumber,extracted,signal,valid,null,stage);
         if(!valid())throw E.cancelled();
         blocks=recognized.model.blocks;
         ocrInfo={engine:recognized.model.engine,engineVersion:recognized.model.engineVersion,modelVersion:recognized.model.modelVersion,
           regions:recognized.regions.map(({type,reason,rect})=>({type,reason,rect})),stats:null,orientation:recognized.orientation,
           warnings:recognized.warnings};
-      }else if(classification.type==="mixed"||classification.type==="text"){
+      }else if(!restoreOnly&&(classification.type==="mixed"||classification.type==="text")){
         // 可靠正文页也可能含转曲图中文字；复用同一候选规划，不以“存在位图”作为 OCR 的必要条件。
         // 无候选时保持原生路径，置信度门禁、候选数量和资源预算均不放宽。
         const plan=global.BT_PDF_BLOCKS.planOCR(model,probe);
@@ -353,7 +406,7 @@
         }
       }
       // geometry 为固定坐标基准（scale=1、固有旋转），供显示层与导出换算矩阵；不参与缓存权重与 key。
-      const entry={blocks,results:new Map(),empty:!blocks.length,classification,ocr:ocrInfo,
+      const entry={blocks,results:new Map(),empty:!blocks.length,classification,ocr:ocrInfo,restoreOnly,
         geometry:{pageNumber:extracted.pageNumber,width:extracted.width,height:extracted.height,transform:extracted.transform,
           structure:model.structure||null,retainSourceGraphics:!!model.retainSourceGraphics,visuals:model.visuals||[]}};
       cache.set(key,entry);
@@ -373,7 +426,11 @@
      * 返回 {done:false} 表示本轮已过期（调用方静默返回）；内容级失败记入结果后继续，服务级失败抛出。
      */
     async function translateBlocks(entry,{token,config,mode,signal,valid,onBlock,onProgress}) {
-      const todo=entry.blocks.filter(b=>b.eligible&&!edits.get(editScope(),entry.geometry.pageNumber,b)&&(!entry.results.has(b.id)||(mode!=="auto"&&entry.results.get(b.id).status==="failed")));
+      const todo=entry.blocks.filter(b=>{
+        const custom=corrections?.get(editScope(),entry.geometry.pageNumber,b);
+        return b.eligible&&!(custom?custom.mode==="custom":edits.get(editScope(),entry.geometry.pageNumber,b))&&
+          (!entry.results.has(b.id)||(mode!=="auto"&&entry.results.get(b.id).status==="failed"));
+      });
       if(!todo.length)return {done:true,empty:true};
       await adapter.bind(token,context.revision);
       if(!valid())return {done:false};
@@ -419,6 +476,13 @@
       let entry=null;
       try{
         await editsReady;if(!valid())return;
+        if(mode==="retranslate"){
+          // 重新翻译只清理当前页；旧修订与其机器结果一并移除，不能继续覆盖新结果。
+          await corrections?.resetPage(editScope(),currentPage);editVersion++;
+          if(!valid())return;
+          for(const [entryId,cached] of cache)if(cached.geometry.pageNumber===currentPage)cache.delete(entryId);
+          multiStore.delete(currentPage);currentEntry=null;show(null);
+        }
         const built=await buildEntry(currentPage,currentDocument,{signal:controller.signal,valid,key});
         entry=built.entry;
         if(!valid())return;
@@ -458,7 +522,7 @@
       return structuredClone({
         identity:{documentId:documentRef.id,numPages:documentRef.numPages,page:pageNumber,
           to:global.BT_CONST.resolveTargetLanguage(selection.to)},
-        blocks:entry.blocks,results:effectiveRows(entry).filter(row=>row.result).map(row=>[row.block.id,row.result]),geometry:entry.geometry,
+        blocks:effectiveRows(entry).map(row=>row.block),results:effectiveRows(entry).filter(row=>row.result).map(row=>[row.block.id,row.result]),geometry:entry.geometry,
         classification:entry.classification||null,ocr:entry.ocr||null});
     }
     /**
@@ -494,7 +558,7 @@
       if(!entry)return {page:pageNumber,state:"missing",usable:0,eligible:0,failed:0,pending:0,classification:null};
       const classification=entry.classification?.type||null,usable=usableResults(entry);
       const eligible=entry.blocks.filter(b=>b.eligible);
-      if(entry.empty||!eligible.length)return {page:pageNumber,state:"no-text",usable:0,eligible:0,failed:0,pending:0,classification};
+      if(!usable&&(entry.empty||!eligible.length))return {page:pageNumber,state:"no-text",usable:0,eligible:0,failed:0,pending:0,classification};
       let failed=0,pending=0;
       for(const block of eligible){
         const result=effectiveResult(entry,block);
@@ -596,13 +660,73 @@
         trimCache();scheduleOcrIdle();
       }
     }
+    async function saveCorrection({blockId,text,placement,fontFamily="sans-serif",textStyle,replaceIds=[],restore=false,identity:expected}) {
+      const document=documentRef,entry=currentEntry,currentPage=page,scope=editScope(),version=revision;
+      if(!corrections||!entry||!document||!scope||expected!==JSON.stringify([document.id,scope,currentPage]))throw new Error("页面或语言已变化，请重新选择区域");
+      if(!["sans-serif","serif","monospace"].includes(fontFamily))throw new Error("请选择支持的修订字体");
+      textStyle=global.BT_PDF_LAYOUT_PLANNER.normalizeTextStyle(textStyle);
+      await editsReady;
+      if(documentRef!==document||currentEntry!==entry||revision!==version)throw new Error("页面已变化，请重新选择区域");
+      let block=effectiveRows(entry).find(row=>row.block.id===blockId)?.block;
+      if(!block){
+        if(blockId||restore||!placement)throw new Error("原文段落已变化，请重新选择");
+        if((corrections.regions(scope,page)||[]).length>=128)throw new Error("本页补译区域过多");
+        const id="manual:"+crypto.randomUUID();block={id,editAnchor:id,text:"",rawText:"",rect:{...placement.rect},height:placement.fontSize,
+          order:100000+Date.now()/1e12,source:"manual",role:"text",kind:"paragraph",eligible:false,reliable:true,lines:[],segments:[]};
+        if(!Array.isArray(replaceIds)||replaceIds.length>128)throw new Error("框内段落过多，请缩小文字框");
+        const rows=effectiveRows(entry),ids=[...new Set(replaceIds)];
+        block.replaces=ids.map(id=>{
+          const source=rows.find(row=>row.block.id===id)?.block;
+          if(!source)throw new Error("框内文字已变化，请重新画框");
+          return {id:source.id,anchor:source.editAnchor||source.id,source:source.text};
+        });
+      }
+      if(placement){
+        const r=placement.rect;
+        if(!r||![r.x,r.y,r.right,r.bottom,placement.fontSize].every(Number.isFinite)||r.x<0||r.y<0||r.right>entry.geometry.width||r.bottom>entry.geometry.height||
+          r.right-r.x<4||r.bottom-r.y<4||placement.fontSize<4||placement.fontSize>72)throw new Error("放置区域或字号无效");
+        placement={rect:{...r},fontSize:placement.fontSize};
+      }
+      if(block.source==="manual"&&!restore){
+        if(!placement)throw new Error("框选补译必须保留手动放置区域");
+        block={...block,rect:{...placement.rect},height:placement.fontSize};
+      }
+      const machine=entry.results.get(block.id)||corrections.get(scope,currentPage,block)?.machine||edits.get(scope,currentPage,block)?.machine||null;
+      await corrections.save(scope,currentPage,block,text||"",placement,{restore,region:block.source==="manual",machine,fontFamily,textStyle});
+      editVersion++;
+      if(!disposed&&documentRef===document&&currentEntry===entry&&revision===version){
+        state.hasRun=true;
+        if(!state.busy)state.message=restore?"已恢复机器译文或删除区域补译":"人工修订已保存到本机，导出译文时采用";
+        show(entry);publish();
+      }
+      return block.id;
+    }
+    const correctionIdentity=()=>documentRef&&selection?JSON.stringify([documentRef.id,editScope(),page]):null;
+    async function clearPageTranslation(expected){
+      const document=documentRef,currentPage=page,scope=editScope();
+      if(!corrections||!document||!pageReady||expected!==correctionIdentity())throw new Error("页面或语言已变化，请重新操作");
+      halt();cancelPrepare();started=false;paused=true;
+      const version=generation,configVersion=revision;
+      const valid=()=>!disposed&&documentRef===document&&page===currentPage&&version===generation&&configVersion===revision;
+      Object.assign(state,{busy:true,phase:"clearing",message:"正在清除本页译文与修订…"});publish();
+      try{
+        await editsReady;if(!valid())throw E.cancelled();
+        await corrections.resetPage(scope,currentPage);editVersion++;
+        if(!valid())throw E.cancelled();
+        for(const [key,entry] of cache)if(entry.geometry.pageNumber===currentPage)cache.delete(key);
+        multiStore.delete(currentPage);
+        if(currentEntry){currentEntry.results.clear();initResults(currentEntry);}
+        Object.assign(state,{busy:false,phase:"idle",hasRun:false,canContinue:false,message:"已取消本页译文并清除修订，恢复原文"});
+        show(currentEntry,false);publish();scheduleOcrIdle();
+      }finally{if(valid()&&state.busy){state.busy=false;state.phase="interrupted";state.message="本页译文未能完全清除，请重试";publish();}}
+    }
     function dispose(){
       disposed=true;halt();cancelPrepare();multiStore.clear();
       cancelOcrIdle();cache.clear();ocrCache.clear();currentEntry=null;documentRef=null;adapter.dispose();if(ocr){void ocr.terminate();ocr=null;}
     }
     publish();void loadConfig();
     return {setDocument,setPage,viewReady,select,start:()=>run(state.canContinue?"continue":state.hasRun?"retranslate":"start"),cancel,loadConfig,
-      exportSnapshot,exportSnapshots,exportStamp,pageStatus,preparePages,cancelPrepare,
+      exportSnapshot,exportSnapshots,exportStamp,pageStatus,preparePages,cancelPrepare,saveCorrection,correctionIdentity,prepareCorrectionPage,clearPageTranslation,
       limits:{maxPages:MAX_PREPARE_PAGES,pageBudget:PAGES_BUDGET},dispose};
   }
   global.BT_PDF_TRANSLATION_SESSION={create};

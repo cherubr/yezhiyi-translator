@@ -19,6 +19,34 @@ h1 { font-size:16px; margin:0; } h2 { font-size:20px; margin-top:0; }
 .reader-header button.primary { background:#1a73e8; border-color:#1a73e8; color:white; }
 .reader-header button.primary:hover:not(:disabled) { background:#1967d2; color:white; }
 .reader-header :focus-visible { outline-color:#a8c7fa; }
+#toggleInplaceEdit[aria-pressed="true"] { color:var(--blue); background:var(--hover); border-color:var(--blue); }
+.inplace-panel { position:fixed; z-index:70; left:12px; top:80px; margin:0; width:420px; min-width:min(340px,calc(100vw - 24px)); min-height:240px; max-width:calc(100vw - 24px); max-height:calc(100dvh - 24px); resize:both; overflow:auto; padding:16px; border:1px solid var(--line); border-radius:8px; background:var(--card); box-shadow:0 6px 28px #0004; font-size:12px; }
+.inplace-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; cursor:move; touch-action:none; user-select:none; }
+.inplace-panel button { min-height:28px; padding:4px 8px; font-size:12px; }
+.inplace-panel textarea { width:100%; min-height:150px; max-height:45vh; resize:vertical; margin-top:10px; padding:8px; border:1px solid var(--line); border-radius:4px; color:var(--text); background:var(--card); font:14px/1.6 system-ui,sans-serif; }
+.inplace-option,.inplace-options,.inplace-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:8px; }
+.inplace-options .inplace-option input { min-height:0; margin:0; width:auto; }
+.inplace-options input { width:62px; min-height:28px; padding:4px; }
+.inplace-options select { min-height:28px; max-width:160px; padding:4px; font-size:12px; }
+.inplace-options label { display:flex; align-items:center; gap:4px; }
+.inplace-options input[type="color"] { width:32px; height:28px; padding:2px; cursor:pointer; }
+.inplace-options button[aria-pressed="true"] { color:var(--blue); background:var(--hover); border-color:var(--blue); }
+.inplace-actions { justify-content:space-between; }
+.inplace-selection { position:fixed; z-index:60; border:2px solid #007acc; background:#007acc12; pointer-events:none; }
+.inplace-selection[data-editable="true"] { pointer-events:auto; cursor:move; touch-action:none; user-select:none; }
+.inplace-selection[data-editable="false"] button { display:none; }
+.inplace-selection .inplace-move { position:absolute; left:-2px; bottom:calc(100% + 7px); min-height:24px; padding:2px 8px; white-space:nowrap; border:0; border-radius:3px; color:white; background:#007acc; font-size:12px; cursor:move; touch-action:none; }
+.inplace-selection .inplace-handle { position:absolute; width:12px; height:12px; min-height:0; padding:0; border:2px solid #007acc; border-radius:2px; background:white; touch-action:none; }
+.inplace-handle[data-handle="nw"] { left:-7px; top:-7px; cursor:nwse-resize; }
+.inplace-handle[data-handle="n"] { left:calc(50% - 6px); top:-7px; cursor:ns-resize; }
+.inplace-handle[data-handle="ne"] { right:-7px; top:-7px; cursor:nesw-resize; }
+.inplace-handle[data-handle="e"] { right:-7px; top:calc(50% - 6px); cursor:ew-resize; }
+.inplace-handle[data-handle="se"] { right:-7px; bottom:-7px; cursor:nwse-resize; }
+.inplace-handle[data-handle="s"] { left:calc(50% - 6px); bottom:-7px; cursor:ns-resize; }
+.inplace-handle[data-handle="sw"] { left:-7px; bottom:-7px; cursor:nesw-resize; }
+.inplace-handle[data-handle="w"] { left:-7px; top:calc(50% - 6px); cursor:ew-resize; }
+.inplace-notice { position:fixed; z-index:80; bottom:42px; left:50%; transform:translateX(-50%); max-width:calc(100vw - 24px); margin:0; padding:8px 14px; background:#243247; color:white; border-radius:6px; font-size:13px; pointer-events:none; }
+body[data-inplace-edit="true"] #viewport,body[data-inplace-edit="true"] #bilingualViewport { cursor:crosshair; touch-action:none; user-select:none; }
 .file-controls button[aria-expanded="true"] { color:var(--blue); border-color:var(--blue); background:var(--hover); }
 .comparison-controls button[aria-expanded="true"] { color:var(--blue); border-color:var(--blue); background:var(--hover); }
 .document-card { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; box-shadow:0 1px 3px #15254106; }
@@ -212,7 +240,7 @@ body[data-thumbnails-open="true"] .reader-workspace { grid-template-columns:210p
 /* P3-C 原位译文：placement-layer 以固定坐标布局，整体套用显示矩阵（含旋转与缩放）。 */
 .placement-layer { position:absolute; inset:0; transform-origin:0 0; }
 .debug-layer { position:absolute; inset:0; }
-.pdf-place { position:absolute; inset:0; }
+.pdf-place { position:absolute; inset:0; isolation:isolate; }
 .pdf-place-mask { position:absolute; }
 .pdf-place-text { position:absolute; font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
 .pdf-place-line { white-space:pre; }

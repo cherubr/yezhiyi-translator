@@ -66,10 +66,12 @@
         </div>
         <div class="control-group comparison-controls">
           <button id="toggleTextComparison" type="button" aria-controls="translationCard" aria-expanded="false" title="展开翻译检查">翻译检查</button>
+          <button id="toggleInplaceEdit" type="button" aria-pressed="false" aria-controls="inplacePanel" title="在页面上拖画文字框，松开后填写或修改框内译文" disabled>修订译文</button>
+          <button id="clearInplaceTranslation" type="button" title="清除本页原位译文及人工修订，恢复原文；不清除独立编辑稿" hidden disabled>取消翻译</button>
         </div>
         <div class="control-group translation-actions" role="group" aria-label="翻译操作">
           <button id="startTranslation" class="primary" type="button" disabled>开始翻译</button>
-          <button id="cancelTranslation" type="button" disabled>取消翻译</button>
+          <button id="cancelTranslation" type="button" disabled>停止翻译</button>
         </div>
       </section>
     </header>
@@ -314,6 +316,34 @@
       <div class="dialog-actions"><button id="passwordCancel" type="button">取消读取</button><button class="primary" type="submit">打开文件</button></div>
     </form>
   </dialog>
+  <dialog id="inplacePanel" class="inplace-panel" aria-labelledby="inplaceTitle" aria-describedby="inplaceFrameHelp" hidden>
+    <div class="inplace-heading"><strong id="inplaceTitle">编辑框内译文</strong><button id="inplaceClose" type="button" aria-label="取消本次编辑">×</button></div>
+    <p id="inplaceFrameHelp" class="hint">拖动蓝框可移动，拖动边角控制点可调整大小。弹框可拖动标题栏、从右下角调整大小。</p>
+    <textarea id="inplaceText" aria-label="框内文字" maxlength="20000" rows="7" placeholder="在这里输入译文" spellcheck="false" disabled></textarea>
+    <div class="inplace-options"><label>字体 <select id="inplaceFont" aria-label="修订译文字体" disabled><option value="sans-serif">黑体／无衬线</option><option value="serif">宋体／衬线</option><option value="monospace">等宽</option></select></label><label>字号 <input id="inplaceSize" type="number" min="4" max="72" step="0.5" value="10" disabled></label><label class="inplace-option"><input id="inplaceAutoFit" type="checkbox" checked disabled>自动适配</label></div>
+    <div class="inplace-options" role="group" aria-label="整框文字样式">
+      <button id="inplaceBold" type="button" aria-label="加粗" aria-pressed="false" title="整框加粗" disabled><b>B</b></button>
+      <button id="inplaceItalic" type="button" aria-label="斜体" aria-pressed="false" title="整框斜体" disabled><i>I</i></button>
+      <label>颜色 <input id="inplaceColor" type="color" value="#243247" aria-label="文字颜色" disabled></label>
+      <label>对齐 <select id="inplaceAlign" disabled><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label>
+      <label>行距 <select id="inplaceLineHeight" disabled><option value="1.45">标准</option><option value="1.6">1.6 倍</option><option value="1.8">1.8 倍</option><option value="2">2 倍</option></select></label>
+    </div>
+    <p id="inplaceMessage" class="hint" role="status">保存后，文字会显示在刚才画出的框内，并以白底覆盖该区域。</p>
+    <div class="inplace-actions"><button id="inplaceRestore" type="button" disabled>恢复自动结果</button><button id="inplaceCancel" type="button" disabled>取消</button><button id="inplaceSave" class="primary" type="button" disabled>保存</button></div>
+    <p class="hint">字体使用本机可用字体，缺少时会回退。中日韩导出沿用现有 Noto 字体，加粗与斜体使用模拟效果。修订保存在本机。</p>
+  </dialog>
+  <div id="inplaceSelection" class="inplace-selection" data-editable="false" role="group" aria-label="修订文字框" hidden>
+    <button class="inplace-move" type="button" data-handle="move" title="拖动以移动文字框；方向键微调，Shift 加速" aria-label="移动文字框">移动文字框</button>
+    <button class="inplace-handle" type="button" data-handle="nw" aria-label="调整文字框左上角" title="拖动调整左上角"></button>
+    <button class="inplace-handle" type="button" data-handle="n" aria-label="调整文字框上边" title="拖动调整上边"></button>
+    <button class="inplace-handle" type="button" data-handle="ne" aria-label="调整文字框右上角" title="拖动调整右上角"></button>
+    <button class="inplace-handle" type="button" data-handle="e" aria-label="调整文字框右边" title="拖动调整右边"></button>
+    <button class="inplace-handle" type="button" data-handle="se" aria-label="调整文字框右下角" title="拖动调整右下角"></button>
+    <button class="inplace-handle" type="button" data-handle="s" aria-label="调整文字框下边" title="拖动调整下边"></button>
+    <button class="inplace-handle" type="button" data-handle="sw" aria-label="调整文字框左下角" title="拖动调整左下角"></button>
+    <button class="inplace-handle" type="button" data-handle="w" aria-label="调整文字框左边" title="拖动调整左边"></button>
+  </div>
+  <p id="inplaceNotice" class="inplace-notice" role="status" hidden></p>
   <script src="../core/md5.js"></script>
   <script src="../core/constants.js"></script>
   <script src="../core/providers.js"></script>
@@ -324,6 +354,7 @@
   <script src="session.js"></script>
   <script src="thumbnail-sidebar.js"></script>
   <script src="reading-structure.js"></script>
+  <script src="toc-structure.js"></script>
   <script src="block-processor.js"></script>
   <script src="translation-adapter.js"></script>
   <script src="ocr-models.js"></script>
@@ -336,7 +367,9 @@
   <script src="editor-store.js"></script>
   <script src="editor-operations.js"></script>
   <script src="document-editor.js"></script>
+  <script src="inplace-editor.js"></script>
   <script src="translation-edits.js"></script>
+  <script src="inplace-store.js"></script>
   <script src="translation-session.js"></script>
   <script src="layout-planner.js"></script>
   <script src="pixel-evidence.js"></script>

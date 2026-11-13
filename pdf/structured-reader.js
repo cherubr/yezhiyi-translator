@@ -69,15 +69,21 @@
       // 新原生模型已在拼段前确定层级；此处不得再用另一套字号规则覆盖它。
       if(block.structure?.version>=2&&block.kind&&(block.role==="text"||block.kind!=="paragraph"))kind=block.kind;
       else if(["heading","subheading","caption","header","footer","footnote","formula","code","list"].includes(block.kind))kind=block.kind;
+      if(block.toc?.part==="title")kind="toc-entry";
       return {id:block.id,block,result,index,kind,success,
         text:success?result.text:(block.reliable||block.source==="ocr"||block.role!=="text"?(block.role==="code"?block.rawText||block.text:block.text):"文字层无法可靠提取，请查看左侧原文。")};
-    }).filter(item=>!(!item.block.reliable&&!item.block.eligible&&!item.success)).sort((a,b)=>(Number.isFinite(a.block.order)?a.block.order:a.index)-(Number.isFinite(b.block.order)?b.block.order:b.index));
+    }).filter(item=>(!item.block.toc||item.block.toc.part==="title")&&!(!item.block.reliable&&!item.block.eligible&&!item.success)).sort((a,b)=>(Number.isFinite(a.block.order)?a.block.order:a.index)-(Number.isFinite(b.block.order)?b.block.order:b.index));
 
   }
   // 阅读区与导出共用结构节点，不从译文文案反推表格、作者或图形。
   function sections(rows,visuals=[],{pageLayout=false}={}) {
     const out=[],groups=new Map();
     for(const item of items(rows)){
+      if(item.block.toc?.part==="title"){
+        const toc=item.block.toc;let node=groups.get(toc.regionId);
+        if(!node){node={id:toc.regionId,kind:"toc",toc,flow:{id:toc.regionId,type:"toc",rect:toc.rect},items:[]};groups.set(toc.regionId,node);out.push(node);}
+        node.items.push(item);continue;
+      }
       const grid=item.block.table,flow=item.block.flow;
       const descriptor=grid&&item.block.cell?grid:flow||visuals.find(v=>v.id===item.block.visualId);
       if(!descriptor){out.push({kind:item.kind,items:[item]});continue;}

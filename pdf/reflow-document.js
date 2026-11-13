@@ -344,6 +344,7 @@
           let advance=dx;
           for(const part of line.parts){const m=textMetrics(part.text,part.size);
             await draw(sheet,part.text,advance,cursor.y+line.above+part.shift-part.size*m.ascent,part.size,m.ascent);advance+=setup.measure(part.text,part.size);}
+          if(item.tocLayout)item.tocLayout.last={sheet,x:dx,y:cursor.y,width:w,baseline:cursor.y+line.above,size};
           for(const id of item.reflowIds||[item.id])anchor(sheet,id,dx,cursor.y,Math.min(Math.max(w,size),x+width-dx),line.height);
           cursor={sheet:cursor.sheet,y:cursor.y+line.height};
         }
@@ -492,6 +493,29 @@
         if(r&&r.right-r.x<width){const right=x+width;x=Math.max(x,r.x);width=Math.min(right,r.right)-x;
           if(width<=0)throw layoutError("内容区域超出所属栏目","region");}
         if(node.kind==="table")return table(node,cursor,x,width);
+        if(node.kind==="toc"){
+          for(const item of node.items){
+            const style=typography.resolve(item),size=style.size,label=item.block.toc.pageLabel;
+            const labelWidth=setup.measure(label,size),indent=Math.min(width*.25,item.block.toc.level*size*1.2);
+            const titleWidth=width-indent-labelWidth-size*3,tocLayout={};
+            if(titleWidth<size*3)throw layoutError("目录标题区域过窄","toc");
+            const lines=P.wrapText(clean(item.text),size,titleWidth,setup.measure);
+            const metrics=textMetrics(clean(item.text),size),height=lines.length*size*Math.max(style.lineHeight,commonMetrics.lineHeight,metrics.lineHeight);
+            if(height<=bottom-startY(cursor.sheet))cursor=room(cursor,height);
+            const safe={...item,kind:"toc-entry",plainReflow:true,tocLayout};
+            cursor=await text(safe,cursor,x+indent,titleWidth);
+            const last=tocLayout.last;
+            if(last){
+              const start=last.x+last.width+size*.5,end=x+width-labelWidth-size*.6;
+              const dotWidth=setup.measure(".",size),n=dotWidth>0?Math.max(0,Math.min(2000,Math.floor((end-start)/dotWidth))):0;
+              const ascent=(last.baseline-last.y)/size;
+              if(n)await draw(last.sheet,".".repeat(n),start,last.y,size,ascent);
+              await draw(last.sheet,label,x+width-labelWidth,last.y,size,ascent);
+            }
+            cursor=gap(cursor,size*.3);
+          }
+          return cursor;
+        }
         if(node.kind==="code")return code(node,cursor,x,width);
         if(node.kind==="retained"){
           per.quality.retainedRegions++;note("有歧义的行内内容整体保留，成功译文在补充页展示");

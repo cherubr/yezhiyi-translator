@@ -7,6 +7,11 @@
 .editor-paper td,.editor-paper th { border:.5pt solid #9aa6b5; padding:4pt; vertical-align:top; min-width:12pt; }
 .editor-paper[contenteditable="true"] .editor-active-cell { background:#f4f9ff; outline:1pt solid #007acc; outline-offset:-1pt; }
 .editor-paper td p,.editor-paper th p { margin:.15em 0; }
+.editor-paper table[data-toc-role="table"] td { border:0; padding:2pt 0; vertical-align:bottom; }
+.editor-paper [data-toc-role="title"] p { margin:0; text-indent:0!important; }
+.editor-paper [data-toc-role="leader"] { overflow:hidden; white-space:nowrap; color:#62758b; }
+.editor-paper [data-toc-role="page"] { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.editor-paper table[data-toc-role="table"] tr { break-inside:avoid; }
 .editor-paper img { display:block; max-width:100%; height:auto; margin:.5em auto; break-inside:avoid; }
 .editor-paper pre { white-space:pre-wrap; overflow-wrap:anywhere; font-family:monospace; }
 .editor-paper blockquote { margin-left:18pt; padding-left:10pt; border-left:2pt solid #aab6c6; }

@@ -94,7 +94,7 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
       const metrics = entry.metrics;
       if (!metrics || !Number.isFinite(metrics.ascent) || !(metrics.lineHeight > 0))
         throw error("EXPORT_FAILED", "缺少内置字体度量，无法安全排版");
-      const font = await out.embedFont(StandardFonts.Helvetica);
+      const font = await out.embedFont(entry.standardFont || StandardFonts.Helvetica);
       return {code: entry.code || "builtin", label, custom: false, metrics, used: false,
         covers: cp => { try { font.widthOfTextAtSize(String.fromCodePoint(cp), 1); return true; } catch (_) { return false; } },
         widthOf: (text, size) => font.widthOfTextAtSize(text, size),
@@ -175,6 +175,21 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
     // 不修改 vendor/嵌入映射；主字体仍决定安全行高，混排宽度统一按实际绘制分级重算。
     let standard=tiers.find(tier=>!tier.custom);
     if(!standard){standard=await embedTier(out,{code:"builtin",label:"内置标准字体",metrics:{ascent:.718,lineHeight:1.25}});tiers.push(standard);}
+    // 人工修订的西文字体使用 PDF 标准字体；其他字符继续走既有字形回退，不冒充已嵌入宋体。
+    const styleKey=(family,style)=>[family||"sans-serif",style.bold,style.italic].join(":");
+    const families=new Map([[styleKey("sans-serif",P.normalizeTextStyle()),standard]]);
+    const variants={
+      "sans-serif":[StandardFonts.Helvetica,StandardFonts.HelveticaBold,StandardFonts.HelveticaOblique,StandardFonts.HelveticaBoldOblique],
+      serif:[StandardFonts.TimesRoman,StandardFonts.TimesRomanBold,StandardFonts.TimesRomanItalic,StandardFonts.TimesRomanBoldItalic],
+      monospace:[StandardFonts.Courier,StandardFonts.CourierBold,StandardFonts.CourierOblique,StandardFonts.CourierBoldOblique]};
+    for(const [,result] of (job.pages||[]).flatMap(page=>page.snapshot?.results||[])){
+      if(!result?.userEdited)continue;
+      const family=variants[result.fontFamily]?result.fontFamily:"sans-serif",style=P.normalizeTextStyle(result.textStyle),key=styleKey(family,style);
+      if(families.has(key))continue;
+      const name=variants[family][Number(style.bold)+Number(style.italic)*2];
+      const tier=await embedTier(out,{code:"builtin-"+key,label:"西文修订字体（"+name+"）",standardFont:name,metrics:{ascent:.718,lineHeight:1.25}});
+      families.set(key,tier);tiers.push(tier);
+    }
     // 同一码点只判定一次分级：分段与缺字门禁共用该结论，宽度也按判定出的那只字体实测。
     const tierFor = cp => {
       if (!chosen.has(cp)) chosen.set(cp, standard.covers(cp)?standard:tiers.find(tier => tier.covers(cp)) || null);
@@ -184,10 +199,11 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
       try { return tier.widthOf(text, size); } catch (_) { return NaN; }
     };
     /** 一行文本按实际绘制级切成连续段；任一段无级可绘制返回 null（调用方按不可绘制处理）。 */
-    function runs(text, size) {
-      const list = [];
+    function runs(text, size, family, textStyle) {
+      const list = [],style=P.normalizeTextStyle(textStyle),preferred=families.get(styleKey(family,style));
       for (const ch of String(text)) {
-        const tier = tierFor(ch.codePointAt(0));
+        const cp=ch.codePointAt(0);
+        const tier = preferred?.covers(cp)?preferred:tierFor(cp);
         if (!tier) return null;
         const last = list[list.length - 1];
         if (last && last.tier === tier) { last.text += ch; continue; }
@@ -196,20 +212,32 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
       for (const run of list) {
         const width = runWidth(run.tier, run.text, size);
         if (!Number.isFinite(width)) return null;
-        run.width = width;
+        // 非西文仍使用已下载的字形，模拟粗斜体并把外伸量计入换行宽度。
+        run.synthetic=run.tier.custom&&(style.bold||style.italic);
+        run.boldOffset=run.synthetic&&style.bold?size*.025:0;
+        run.italic=run.synthetic&&style.italic;
+        run.width = width+run.boldOffset+(run.italic?size*.35:0);
       }
       return list;
     }
     /** 一行文本的真实宽度 = 各级分段宽度之和；不可绘制返回 Infinity → fitBlock 失败 → 回退附录。 */
-    const measure = (text, size) => {
-      const list = runs(text, size);
+    const measure = (text, size, family, textStyle) => {
+      const list = runs(text, size, family, textStyle);
       return list ? list.reduce((total, run) => total + run.width, 0) : Infinity;
     };
     /** 落笔前嵌入该级子集并记为「本次真的用到」：统计只报实际参与绘制的分级。 */
     async function drawRun(target, run, x, y, size, ink, rotate) {
       const font = await run.tier.ensure();
       run.tier.used = true;
-      target.drawText(run.text, {x, y, size, font, color: ink, rotate});
+      if(!run.synthetic){target.drawText(run.text, {x, y, size, font, color: ink, rotate});return;}
+      // 先转到文字局部坐标，再倾斜／加粗；旋转页与普通页使用同一套效果。
+      const radians=rotate.angle*Math.PI/180,c=Math.cos(radians),s=Math.sin(radians),lib=global.PDFLib;
+      target.pushOperators(lib.pushGraphicsState(),lib.concatTransformationMatrix(c,s,-s,c,x,y));
+      try{
+        const options={x:run.italic?size*.08:0,y:0,size,font,color:ink,ySkew:degrees(run.italic?12:0)};
+        target.drawText(run.text,options);
+        if(run.boldOffset)target.drawText(run.text,{...options,x:options.x+run.boldOffset});
+      }finally{target.pushOperators(lib.popGraphicsState());}
     }
     return {custom: main.custom, ascent: main.metrics.ascent,
       lineHeight: main.metrics.lineHeight, labels: tiers.map(tier => tier.label),
@@ -259,7 +287,7 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
       const widths = [];
       let ok = true;
       for (const line of pl.lines) {
-        try { widths.push(measure(line, pl.fontSize)); } catch (_) { ok = false; break; }
+        try { widths.push(measure(line, pl.fontSize, pl.fontFamily, pl.textStyle)); } catch (_) { ok = false; break; }
         if (!Number.isFinite(widths[widths.length - 1])) { ok = false; break; }
       }
       const box = ok ? userBox(M, pl.maskRect) : null;
@@ -393,8 +421,8 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
      * 仍通过而宽度读不出）。这里必须显式报字体异常并中止导出：既不能让 for..of 抛出生涩的 TypeError，
      * 更不能跳过这一段——静默少画就是「导出成功但看不到字」。
      */
-    const splitRuns = (text, size) => {
-      const list = setup.runs(text, size);
+    const splitRuns = (text, size, family, textStyle) => {
+      const list = setup.runs(text, size, family, textStyle);
       if (list) return list;
       // 指到具体字符：覆盖判定说画得出、实际分段失败时，用户和排查者都需要知道是哪一个字。
       let miss = "";
@@ -508,15 +536,18 @@ importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js",
       const target = sheet.target;
       for (const {pl, widths, box} of sheet.placed) {
         const mc = Array.isArray(pl.maskColor) && pl.maskColor.length === 3 ? pl.maskColor : [255, 255, 255];
-        const ink = luminance(mc) < 0.55 ? INK_LIGHT : INK_DARK;
+        const customColor=pl.textStyle?.color;
+        const ink = customColor?rgb(...[1,3,5].map(offset=>parseInt(customColor.slice(offset,offset+2),16)/255)):
+          luminance(mc) < 0.55 ? INK_LIGHT : INK_DARK;
         target.drawRectangle({x: box.x, y: box.y, width: box.width, height: box.height,
           color: rgb(mc[0] / 255, mc[1] / 255, mc[2] / 255)});
         for (const [index, line] of pl.lines.entries()) {
           // 基线锚点：行盒顶 + i×行高 + 上升部；右对齐块以行宽回退锚点。全部在固定坐标计算后经 M 映射。
           const yFixed = pl.textRect.y + index * pl.lineHeight + ascent * pl.fontSize;
           // 逐级分段绘制：每段用自己的字体（落笔时才嵌入该级子集），前进量按该段实测宽度累计后再经 M 映射（旋转页偏移方向随之正确）。
-          let xFixed = pl.align === "right" ? pl.textRect.right - widths[index] : pl.textRect.x;
-          for (const run of splitRuns(line, pl.fontSize)) {
+          let xFixed = pl.align === "right" ? pl.textRect.right - widths[index] : pl.align === "center"?
+            (pl.textRect.x+pl.textRect.right-widths[index])/2:pl.textRect.x;
+          for (const run of splitRuns(line, pl.fontSize, pl.fontFamily, pl.textStyle)) {
             const p = apply(M, xFixed, yFixed);
             await setup.drawRun(target, run, p[0], p[1], pl.fontSize, ink, degrees(angle));
             xFixed += run.width;

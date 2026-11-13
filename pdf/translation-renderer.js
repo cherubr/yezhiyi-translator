@@ -163,8 +163,11 @@
       const text = document.createElement("div");
       text.className = "pdf-place-text";
       setRectStyle(text.style, placement.textRect);
-      text.style.color = maskInk(placement.maskColor);
+      text.style.color = placement.textStyle?.color||maskInk(placement.maskColor);
+      text.style.fontWeight = placement.textStyle?.bold?"700":"400";
+      text.style.fontStyle = placement.textStyle?.italic?"italic":"normal";
       text.style.fontSize = placement.fontSize + "px";
+      text.style.fontFamily = global.BT_PDF_LAYOUT_PLANNER.fontStack(placement.fontFamily);
       text.style.lineHeight = placement.lineHeight + "px";
       text.style.direction = placement.direction;
       text.style.textAlign = placement.align;
@@ -176,9 +179,12 @@
       }
       group.append(mask, text);
       layer.append(group);
-      let ok = text.scrollHeight <= text.clientHeight + 0.5;
+      // scroll/client 尺寸是整数，人工框已通过浮点度量；允许至多 1px 的取整差。
+      // 自动译文保留原有严格门限，不放宽自动覆盖范围。
+      const rounding=placement.manual?1:0.5;
+      let ok = text.scrollHeight <= text.clientHeight + rounding;
       if (ok) for (const element of text.children) {
-        if (element.scrollWidth > element.clientWidth + 0.5) { ok = false; break; }
+        if (element.scrollWidth > element.clientWidth + rounding) { ok = false; break; }
       }
       if (!ok) {
         group.remove();
@@ -198,7 +204,7 @@
       for (const [id, placement] of next.placements) {
         keep.add(id);
         const signature = JSON.stringify([placement.maskRect, placement.textRect, placement.fontSize, placement.lineHeight,
-          placement.lines, placement.maskColor, placement.direction, placement.align]);
+          placement.lines, placement.maskColor, placement.direction, placement.align, placement.fontFamily, placement.textStyle]);
         const existing = groups.get(id);
         if (existing && existing.signature === signature) continue;
         if (existing) { existing.group.remove(); groups.delete(id); }
@@ -206,6 +212,10 @@
       }
       for (const [id, entry] of groups) {
         if (!keep.has(id)) { entry.group.remove(); groups.delete(id); }
+      }
+      // 更新旧修订时 DOM 可能被复用；重新排列以保持与规划器、PDF 导出相同的覆盖顺序。
+      for(const id of next.placements.keys()){
+        const entry=groups.get(id);if(entry)layer.append(entry.group);
       }
       const changed = !plan || plan.stats.overlay !== next.stats.overlay || plan.stats.fallback !== next.stats.fallback;
       plan = next;
@@ -263,8 +273,9 @@
       if (view.pageNumber !== model.geometry.pageNumber) return null;
       const row = model.rows.find(item => item.block.id === blockId);
       if (!row || !row.block.rect) return null;
-      const corners = [[row.block.rect.x, row.block.rect.y], [row.block.rect.right, row.block.rect.y],
-        [row.block.rect.right, row.block.rect.bottom], [row.block.rect.x, row.block.rect.bottom]]
+      const rect=row.result?.userEdited&&row.result?.manualPlacement?.rect||row.block.rect;
+      const corners = [[rect.x, rect.y], [rect.right, rect.y],
+        [rect.right, rect.bottom], [rect.x, rect.bottom]]
         .map(([x, y]) => apply(m, x, y));
       const xs = corners.map(p => p[0]), ys = corners.map(p => p[1]);
       return {x: Math.min(...xs), y: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys)};
@@ -356,8 +367,8 @@
       const rowsById = new Map(model.rows.map(row => [row.block.id, row]));
       const queued = new Set(queue);
       for (const {block, result} of model.rows) {
-        if (result && result.status === "translated" && result.text && result.text.trim() &&
-            (!evidence.has(block.id)||sampledText.get(block.id)!==result.text) && !queued.has(block.id)) {
+        if (result && !result.manualPlacement && result.status === "translated" && result.text && result.text.trim() &&
+            (!evidence.has(block.id)||sampledText.get(block.id)!==JSON.stringify([result.text,result.fontFamily])) && !queued.has(block.id)) {
           queue.push(block.id); queued.add(block.id);
         }
       }
@@ -366,7 +377,7 @@
       while (queue.length && sampled < SAMPLE_BLOCKS_PER_FRAME) {
         const row = rowsById.get(queue.shift());
         if (!row) continue;
-        evidence.set(row.block.id, sampleBlock(row.block,row.result, m));sampledText.set(row.block.id,row.result?.text);
+        evidence.set(row.block.id, sampleBlock(row.block,row.result, m));sampledText.set(row.block.id,JSON.stringify([row.result?.text,row.result?.fontFamily]));
         sampled++;
       }
       if (sampled) planDirty = true;
@@ -379,7 +390,8 @@
       drawMarkers(m);
     }
 
-    return {mount, setView, setModel, setVisible, clear, refresh, getPlanSummary, getDisplayRect, flashHighlight, flashDisplayRect};
+    return {mount, setView, setModel, setVisible, clear, refresh, getPlanSummary, getDisplayRect,
+      getPlacement:id=>plan?.placements.get(id)||null,flashHighlight,flashDisplayRect};
   }
   global.BT_PDF_TRANSLATION_RENDERER = {create};
 })(window);
