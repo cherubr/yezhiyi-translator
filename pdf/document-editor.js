@@ -243,10 +243,14 @@
       }
       focusStart(target);
     }
-    function restoreSelection() {
+    function restoreSelection(preferLive=false) {
       const x=viewport.scrollLeft,y=viewport.scrollTop;
+      const hadFocus=paper.contains(global.document.activeElement);
+      const live=global.getSelection();
+      const liveRange=(preferLive&&hadFocus&&live?.rangeCount&&paper.contains(live.anchorNode)&&paper.contains(live.focusNode))?live.getRangeAt(0).cloneRange():null;
       paper.focus({preventScroll:true});const value=global.getSelection();value.removeAllRanges();
-      if(range&&paper.contains(range.commonAncestorContainer))value.addRange(range);
+      if(liveRange){range=liveRange;value.addRange(range);}
+      else if(range&&paper.contains(range.commonAncestorContainer))value.addRange(range);
       else{const next=global.document.createRange();next.selectNodeContents(paper);next.collapse(false);value.addRange(next);}
       viewport.scrollLeft=x;viewport.scrollTop=y;
     }
@@ -595,11 +599,10 @@
       if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="y"){event.preventDefault();showHistory(1);}
     });
     listen(paper,"paste",event=>{
-      if(!writable()||composing)return;event.preventDefault();capture(true);lastEditType="";
+      if(!writable()||composing)return;event.preventDefault();capture(true);lastEditType="";restoreSelection(true);
       const text=event.clipboardData?.getData("text/plain")||"",html=event.clipboardData?.getData("text/html");
       const plain=()=>{
         if(!text)return;
-        restoreSelection();
         if(paper.textContent.length-global.getSelection().toString().length+text.length>400000)throw new Error("粘贴后文字超过编辑稿上限，请减少粘贴内容");
         // 纯文本沿用光标处格式；单行粘贴不额外拆成新段落。
         if(!global.document.execCommand("insertText",false,text))throw new Error("本次粘贴未完成，请重新定位光标后重试");
