@@ -1,0 +1,31 @@
+.editor-paper { box-sizing:border-box; background:white; color:#243247; font-family:system-ui,"Microsoft YaHei",sans-serif;
+  overflow-wrap:anywhere; line-height:1.5; margin:0 auto; outline:none; }
+.editor-paper * { box-sizing:border-box; }
+.editor-paper p,.editor-paper h1,.editor-paper h2,.editor-paper h3,.editor-paper h4,.editor-paper h5,.editor-paper h6 { margin:.35em 0; color:inherit; }
+.editor-paper p { min-height:1em; }
+.editor-paper table { border-collapse:collapse; table-layout:fixed; width:100%; margin:.5em 0; }
+.editor-paper td,.editor-paper th { border:.5pt solid #9aa6b5; padding:4pt; vertical-align:top; min-width:12pt; }
+.editor-paper[contenteditable="true"] .editor-active-cell { background:#f4f9ff; outline:1pt solid #007acc; outline-offset:-1pt; }
+.editor-paper td p,.editor-paper th p { margin:.15em 0; }
+.editor-paper img { display:block; max-width:100%; height:auto; margin:.5em auto; break-inside:avoid; }
+.editor-paper pre { white-space:pre-wrap; overflow-wrap:anywhere; font-family:monospace; }
+.editor-paper blockquote { margin-left:18pt; padding-left:10pt; border-left:2pt solid #aab6c6; }
+.editor-paper .editor-columns { display:grid; align-items:start; gap:16pt; margin:.5em 0; }
+.editor-paper .editor-columns > * { min-width:0; }
+.editor-paper .editor-page-break { border:0; border-top:1pt dashed #97a8bd; margin:16pt 0; height:1pt; }
+.editor-paper[contenteditable="true"] .editor-page-break { position:relative; overflow:visible; }
+.editor-paper[contenteditable="true"] .editor-page-break::after { content:"分页符"; position:absolute; right:0; top:-9pt; padding:0 4pt; background:white; color:#62758b; font:8pt sans-serif; }
+.editor-paper .editor-selected { outline:1pt solid #008cff; outline-offset:1pt; }
+.editor-paper .editor-active-image { outline:2pt solid #007acc; outline-offset:2pt; }
+.editor-paper [data-status="failed"],.editor-paper [data-status="skipped"],.editor-paper [data-status="pending"] { border-inline-start:2pt solid #c99020; padding-inline-start:4pt; }
+@media print {
+  .editor-paper { width:auto!important; min-height:0!important; padding:0!important; margin:0!important; zoom:1!important; box-shadow:none!important; }
+  .editor-paper .editor-selected { outline:none; }
+  .editor-paper .editor-active-image { outline:none; }
+  .editor-paper [data-status] { border-inline-start:0; padding-inline-start:0; }
+  .editor-paper .editor-page-break { break-after:page; page-break-after:always; height:0; margin:0; border:0; }
+  .editor-paper .editor-page-break::after { display:none; }
+  .editor-paper .editor-active-cell { background:transparent; outline:none; }
+  .editor-paper h1,.editor-paper h2,.editor-paper h3,.editor-paper h4,.editor-paper h5,.editor-paper h6 { break-after:avoid; }
+  .editor-paper p { orphans:2; widows:2; }
+}

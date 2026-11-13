@@ -5,40 +5,56 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PDF 阅读器 · 页知译</title>
   <link rel="stylesheet" href="reader.css">
+  <link rel="stylesheet" href="editor-paper.css">
 </head>
 <body data-view-mode="translated" data-comparison-open="false" data-sidebar-open="false">
   <main>
     <header class="reader-header">
       <div class="file-toolbar">
         <div class="file-identity">
+          <button id="toggleThumbnails" class="reader-icon-button" type="button" aria-label="收起页面缩略图" title="收起页面缩略图" aria-controls="thumbnailSidebar" aria-expanded="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
           <span class="reader-brand">页知译 · PDF</span>
           <h1 id="fileName">PDF 阅读器</h1>
-          <button id="translationConfigSummary" class="config-summary" type="button" aria-controls="readerPanel" aria-expanded="false" title="打开翻译设置">正在读取翻译设置…</button>
         </div>
         <div class="control-group file-controls" aria-label="文件与设置">
+          <div class="header-language-menu">
+            <button id="translationConfigSummary" class="config-summary" type="button" aria-controls="languagePopover" aria-expanded="false" title="选择翻译语言">正在读取翻译设置…</button>
+            <div id="languagePopover" class="language-popover" role="group" aria-label="翻译语言" hidden>
+              <strong>翻译语言</strong>
+              <div class="header-languages">
+                <label>源语言<select id="translationFrom" aria-label="源语言" disabled></select></label>
+                <span aria-hidden="true">→</span>
+                <label>目标语言<select id="translationTo" aria-label="目标语言" disabled></select></label>
+              </div>
+              <p id="headerLanguageHint">仅用于当前 PDF，应用后点击开始翻译。</p>
+              <button id="applyHeaderConfig" type="button" title="应用当前翻译配置，已有机器译文将失效；不会自动发起翻译" hidden>应用语言</button>
+            </div>
+          </div>
           <button id="openFilePanel" type="button" aria-controls="readerPanel" aria-expanded="false">打开文件</button>
           <button id="openSettingsPanel" type="button" aria-controls="readerPanel" aria-expanded="false">设置</button>
           <button id="openExportPanel" type="button" aria-controls="readerPanel" aria-expanded="false">导出</button>
         </div>
       </div>
       <section class="toolbar" aria-label="阅读与翻译控制">
-        <div class="control-group">
+        <div class="control-group page-controls" aria-label="翻页">
           <button id="previous" type="button" title="上一页" aria-label="上一页" disabled>←</button>
-          <label for="pageNumber">第</label><input id="pageNumber" type="number" min="1" value="1" aria-label="页码" disabled>
-          <span id="pageCount">/ — 页</span>
+          <input id="pageNumber" type="number" min="1" value="1" aria-label="页码" disabled>
+          <span id="pageCount">/ —</span>
           <button id="next" type="button" title="下一页" aria-label="下一页" disabled>→</button>
         </div>
         <div class="control-group view-controls">
           <button id="zoomOut" type="button" aria-label="缩小" disabled>−</button>
           <input id="zoom" type="text" inputmode="decimal" value="100%" maxlength="8" autocomplete="off" spellcheck="false"
             role="spinbutton" aria-label="缩放百分比" aria-valuemin="25" aria-valuemax="400" aria-valuenow="100"
-            title="输入 25%–400%，按 Enter 应用；加减按钮每次调整 10%。" disabled>
+            title="输入 25%–400%，按 Enter 应用；加减按钮切换到相邻的整十刻度。" disabled>
           <button id="zoomIn" type="button" aria-label="放大" disabled>＋</button>
-          <button id="zoomFit" type="button" aria-pressed="false" title="适合页面；再次点击切换为适合宽度" disabled>适合页面</button>
-          <button id="rotate" type="button" title="顺时针旋转 90°" disabled>旋转</button>
+          <button id="zoomFit" class="reader-icon-button" type="button" aria-pressed="false" aria-label="适合页面；再次点击切换为适合宽度" title="适合页面；再次点击切换为适合宽度" disabled>
+            <svg class="fit-page-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="1"/><path d="M9 8h6M9 12h6M9 16h6"/></svg>
+            <svg class="fit-width-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16M20 4v16M5 12h14M8 9l-3 3 3 3M16 9l3 3-3 3"/></svg>
+          </button>
+          <button id="rotate" class="reader-icon-button" type="button" aria-label="顺时针旋转 90°" title="顺时针旋转 90°" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9a8 8 0 1 0 1 7M19 3v6h-6"/><path d="M8 10h6v8H8z"/></svg></button>
         </div>
         <div class="control-group mode-controls">
-          <span class="mode-label">阅读模式</span>
           <div class="mode-switch" role="group" aria-label="阅读模式">
             <button id="showOriginal" type="button" aria-pressed="false">原文</button>
             <button id="showTranslated" type="button" aria-pressed="true">译文</button>
@@ -58,15 +74,20 @@
       </section>
     </header>
     <div class="reader-workspace">
+      <aside id="thumbnailSidebar" class="thumbnail-sidebar" aria-label="页面缩略图">
+        <div class="thumbnail-heading"><strong>页面</strong><button id="closeThumbnails" type="button" aria-label="收起页面缩略图" title="收起页面缩略图">×</button></div>
+        <p id="thumbnailEmpty" class="thumbnail-empty">打开 PDF 后显示页面缩略图</p>
+        <nav id="thumbnailViewport" class="thumbnail-viewport" aria-label="按缩略图跳转页面" hidden><ol id="thumbnailList" class="thumbnail-list"></ol></nav>
+      </aside>
       <div class="reader-columns">
         <section id="pdfCard" class="document-card" aria-label="PDF 页面">
-          <div class="document-heading"><strong id="pageViewTitle">原位译文</strong><span class="stage-caption">当前页</span></div>
+          <div class="document-heading"><strong id="pageViewTitle">原位译文</strong><span id="pageViewMeta" class="stage-caption">当前页</span></div>
           <div id="viewport" tabindex="0" aria-label="PDF 页面，可滚动查看" aria-busy="false">
             <p id="empty">点击「打开文件」，选择本地 PDF 或输入在线地址。</p>
             <div id="canvasHost"></div>
           </div>
         </section>
-        <div id="comparisonSplitter" class="comparison-splitter" role="separator" aria-label="调整 PDF 与侧栏宽度" aria-orientation="vertical" aria-controls="pdfCard translationCard readerPanel" aria-valuemin="35" aria-valuemax="75" aria-valuenow="60" tabindex="0" hidden></div>
+        <div id="comparisonSplitter" class="comparison-splitter" role="separator" aria-label="调整 PDF 与侧栏宽度" aria-orientation="vertical" aria-controls="pdfCard translationCard structuredCard readerPanel" aria-valuemin="35" aria-valuemax="75" aria-valuenow="50" tabindex="0" title="拖动调整两侧宽度；双击恢复均分" hidden></div>
         <section id="translationCard" class="document-card translation-card" aria-label="翻译检查" hidden>
           <div class="document-heading comparison-heading">
             <strong>翻译检查</strong>
@@ -74,12 +95,15 @@
             <span id="translationStats">开始翻译后显示原位/回退统计</span>
             <button id="showFailedTranslation" type="button" hidden>定位失败段落</button>
           </div>
-          <label class="comparison-filter">显示 <select id="comparisonFilter" aria-label="筛选翻译检查"><option value="all">全部</option><option value="attention" selected>需要关注</option><option value="ocr">OCR 不可靠</option><option value="protected">受保护内容</option><option value="pending">尚未处理</option><option value="completed">已翻译</option><option value="fallback">回退</option><option value="unfinished">未完成</option><option value="failed">失败</option></select><span id="comparisonFilterEmpty" hidden>没有符合条件的段落。</span></label>
+          <label class="comparison-filter">显示 <select id="comparisonFilter" aria-label="筛选翻译检查"><option value="all">全部</option><option value="attention" selected>需要关注</option><option value="retained">保留原文</option><option value="ocr">OCR 不可靠</option><option value="protected">受保护内容</option><option value="pending">尚未处理</option><option value="completed">已翻译</option><option value="fallback">回退</option><option value="unfinished">未完成</option><option value="failed">失败</option></select><span id="comparisonFilterEmpty" hidden>没有符合条件的段落。</span></label>
           <div id="translationRows" tabindex="0"><p class="translation-empty">开始翻译后将在此显示本页翻译检查。</p></div>
         </section>
         <section id="structuredCard" class="document-card structured-card" aria-labelledby="structuredTitle" hidden>
-          <div class="document-heading"><strong id="structuredTitle">本页译文</strong>
-            <select id="bilingualLayout" aria-label="双语译文版式"><option value="page">原位译文</option><option value="flow" selected>重排译文</option></select>
+          <div class="document-heading structured-heading"><strong id="structuredTitle">译文工作区</strong>
+            <div class="document-heading-actions">
+              <label class="layout-picker">版式 <select id="bilingualLayout" aria-label="双语译文版式"><option value="page">原位译文</option><option value="flow" selected>译文编辑器</option></select></label>
+              <button id="editorToggleTools" type="button" aria-expanded="true" aria-controls="editorToolbar" title="收起排版工具，增加阅读空间；仍可直接编辑正文">收起工具</button>
+            </div>
           </div>
           <div id="bilingualViewport" tabindex="0" aria-label="双语对照的译文页面，可滚动查看" hidden>
             <p id="bilingualEmpty" class="structured-empty">打开 PDF 后显示对应的译文页面。</p>
@@ -87,19 +111,80 @@
           </div>
           <p id="bilingualPageStatus" class="hint" role="status" hidden></p>
           <div id="reflowPanel">
-            <div class="reflow-toolbar" aria-label="重排译文操作">
-              <button id="reflowPrevious" type="button" disabled aria-label="上一张译文页">上一页</button>
-              <button id="reflowNext" type="button" disabled aria-label="下一张译文页">下一页</button>
-              <button id="reflowRetry" type="button">重新生成</button>
-              <button id="reflowCancel" type="button" hidden>取消重排</button>
-              <button id="reflowFont" type="button" hidden>准备字体并重排</button>
-              <button id="reflowExport" type="button">导出重排译文</button>
+            <div id="editorToolbar" class="editor-toolbar" aria-label="译文编辑与排版工具">
+              <div class="editor-tools">
+                <span class="editor-group-label">文字</span>
+                <button type="button" data-action="undo" aria-label="撤销" title="撤销（Ctrl / ⌘ Z）">↶</button><button type="button" data-action="redo" aria-label="重做" title="重做（Ctrl / ⌘ Shift Z）">↷</button>
+                <label>段落 <select data-action="format" aria-label="段落类型"><option value="" disabled>混合 / 其他</option><option value="p">正文</option><option value="h1">一级标题</option><option value="h2">二级标题</option><option value="h3">三级标题</option><option value="blockquote">引用</option></select></label>
+                <label>字体 <select data-action="family" aria-label="编辑字体"><option value="" disabled>混合</option><option value="sans-serif" selected>黑体</option><option value="serif">宋体</option><option value="monospace">等宽</option></select></label>
+                <label>字号 <input data-action="size" aria-label="编辑字号" type="number" min="4" max="144" step="0.5" value="10"></label>
+                <button type="button" data-action="bold" aria-label="加粗" aria-pressed="false" title="加粗（Ctrl / ⌘ B）"><b>B</b></button><button type="button" data-action="italic" aria-label="斜体" aria-pressed="false" title="斜体（Ctrl / ⌘ I）"><i>I</i></button><button type="button" data-action="underline" aria-label="下划线" aria-pressed="false" title="下划线（Ctrl / ⌘ U）"><u>U</u></button>
+                <button type="button" data-action="clear-format" title="清除选中文字的格式，保留段落、表格和内容">清除格式</button>
+              </div>
+              <div class="editor-tools editor-document-tools">
+                <span class="editor-group-label">文档</span>
+                <button type="button" data-action="save" title="自动保存到本机，也可按 Ctrl / ⌘ S">保存</button><button type="button" data-action="locate">定位原文</button>
+                <label>显示 <select data-view="zoom" aria-label="编辑区缩放" title="默认跟随顶部缩放；可单独调整右侧。再次操作顶部缩放会重新联动两侧，不改变字号和导出排版。"><option value="reader">跟随顶部缩放</option><option value="fit">适合宽度</option><option value="0.5">50%</option><option value="0.75">75%</option><option value="1">100%</option><option value="1.25">125%</option><option value="1.5">150%</option><option value="2">200%</option></select></label>
+                <button type="button" data-action="export" class="primary" title="通过浏览器打印预览另存为 PDF，包含本原文页的编辑内容及其续页">导出本页编辑稿</button>
+                <button type="button" data-ui="find" aria-expanded="false" aria-controls="editorFind">查找替换</button>
+              </div>
+              <div id="editorFind" class="editor-find" hidden>
+                <div class="editor-tools">
+                  <input data-find="query" type="text" maxlength="500" placeholder="查找本页编辑稿" aria-label="查找本页编辑稿">
+                  <label><input data-find="case" type="checkbox">区分大小写</label>
+                  <button type="button" data-search="previous" aria-label="上一个匹配">↑</button><button type="button" data-search="next" aria-label="下一个匹配">↓</button>
+                  <button type="button" data-ui="close-find" aria-label="关闭查找">关闭</button>
+                  <span data-find="status" role="status">请输入查找内容</span>
+                </div>
+                <div class="editor-tools">
+                  <input data-find="replacement" type="text" maxlength="2000" placeholder="替换为" aria-label="替换文字">
+                  <button type="button" data-search="replace">替换当前</button><button type="button" data-search="replace-all">全部替换</button>
+                </div>
+              </div>
+              <details class="editor-more">
+                <summary>更多排版与插入</summary>
+                <div class="editor-tools">
+                <label>对齐 <select data-action="align" aria-label="段落对齐"><option value="" disabled>混合 / 自定义</option><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option><option value="justify">两端对齐</option></select></label>
+                <label>行距 <select data-action="leading" aria-label="编辑行距"><option value="" disabled>混合 / 自定义</option><option value="1.2">1.2</option><option value="1.5" selected>1.5</option><option value="1.8">1.8</option><option value="2">2</option></select></label>
+                <label>段后 <input data-action="spacing" aria-label="段后间距" type="number" min="0" max="96" value="6"></label>
+                <button type="button" data-action="indent" aria-label="增加缩进">缩进＋</button><button type="button" data-action="outdent" aria-label="减少缩进">缩进－</button>
+                <button type="button" data-action="unordered">项目列表</button><button type="button" data-action="ordered">编号列表</button>
+                <label>分栏 <select data-action="columns" aria-label="编辑分栏" title="调整光标所在分栏区域；无分栏区域时应用到整页"><option value="1">单栏</option><option value="2">双栏</option><option value="3">三栏</option></select></label>
+              </div>
+              <div class="editor-tools">
+                <label>表格 <input data-option="rows" type="number" min="1" max="20" value="2" aria-label="插入表格行数"> × <input data-option="columns" type="number" min="1" max="12" value="2" aria-label="插入表格列数"></label>
+                <button type="button" data-action="table">插入表格</button><button type="button" data-action="image">插入图片</button><input type="file" accept="image/png,image/jpeg,image/webp" hidden aria-label="选择编辑稿图片"><button type="button" data-action="break">分页符</button>
+                <label>粘贴 <select data-view="paste" aria-label="粘贴方式"><option value="formatted">保留安全格式</option><option value="plain">仅粘贴文字</option></select></label>
+              </div>
+              <div class="editor-tools editor-table-tools" aria-label="调整光标所在表格">
+                <span class="hint">当前表格</span><button type="button" data-action="row-add">下方插行</button><button type="button" data-action="column-add">右侧插列</button><button type="button" data-action="row-remove">删除行</button><button type="button" data-action="column-remove">删除列</button>
+              </div>
+              <div class="editor-tools editor-image-tools" aria-label="调整选中图片">
+                <span class="hint">当前图片</span><label>宽度 <select data-action="image-width" aria-label="图片宽度"><option value="25">25%</option><option value="50">50%</option><option value="75">75%</option><option value="100">100%</option></select></label>
+                <label>对齐 <select data-action="image-align" aria-label="图片对齐"><option value="left">居左</option><option value="center" selected>居中</option><option value="right">居右</option></select></label>
+                <button type="button" data-action="image-remove">删除图片</button>
+              </div>
+              <div class="editor-tools editor-page-tools" aria-label="编辑稿页面设置">
+                <span class="hint">页面（毫米）</span>
+                <label>纸张 <select data-page="preset" aria-label="编辑稿纸张"><option value="custom">自定义 / 原尺寸</option><option value="a4">A4</option><option value="letter">Letter</option></select></label>
+                <label>宽 <input data-page="width" type="number" min="25.4" max="5080" step="0.1" aria-label="页面宽度毫米"></label>
+                <label>高 <input data-page="height" type="number" min="25.4" max="5080" step="0.1" aria-label="页面高度毫米"></label>
+                <label>边距 <input data-page="margin" type="number" min="0" step="0.1" aria-label="页面边距毫米"></label>
+                <button type="button" data-ui="page-rotate">横竖切换</button><button type="button" data-action="page-apply">应用页面设置</button>
+              </div>
+              <div class="editor-tools">
+                <button type="button" data-action="reset">重新导入译文</button>
+                <button id="editorAutoExport" type="button" title="使用自动重排生成器导出，不含编辑器中的自定义改动">导出自动排版</button>
+              </div>
+              <p class="editor-help">选中文字调整格式；表格中按 Tab / Shift Tab 切换单元格。重新导入会替换本页编辑稿。</p>
+              </details>
             </div>
-            <p id="reflowStatus" class="hint" role="status">翻译当前页后生成重排译文。</p>
-            <div id="reflowViewport" tabindex="0" aria-label="独立生成的译文 PDF"></div>
-            <details id="reflowEditor"><summary>编辑译文</summary>
-              <div id="structuredRows" tabindex="0" aria-label="译文段落编辑"></div>
-            </details>
+            <p id="editorStatus" class="hint" role="status">翻译当前页后，可直接编辑文字与排版。编辑稿自动保存到本机。</p>
+            <div id="editorRecovery" class="editor-recovery" hidden><span>本机保存的编辑稿为空，可恢复本页已有译文。</span><button id="editorRecover" type="button">恢复本页译文</button></div>
+            <div id="editorViewport" tabindex="0" aria-label="译文编辑页面，可滚动查看">
+              <div id="editorPaper" class="editor-paper" contenteditable="false" role="textbox" aria-multiline="true" aria-label="直接编辑本页译文与排版" spellcheck="false"></div>
+            </div>
+            <p id="editorMeta" class="editor-meta">编辑稿与机器译文独立保存 · 分页以打印预览为准</p>
           </div>
           <p id="editNotice" class="hint" role="status"></p>
         </section>
@@ -134,8 +219,7 @@
               <h3>翻译设置</h3>
               <p id="translationConfigHint" class="hint">选项仅用于本 PDF。修改后先应用配置，再开始翻译；不会自动发送翻译请求。</p>
               <label>服务 <select id="translationService" disabled></select></label>
-              <label>源语言 <select id="translationFrom" disabled></select></label>
-              <label>目标语言 <select id="translationTo" disabled></select></label>
+              <p class="hint">源语言和目标语言可直接在顶部翻译按钮旁选择。</p>
               <div class="panel-actions">
                 <button id="applyTranslationConfig" class="primary" type="button" hidden>应用配置</button>
               </div>
@@ -207,7 +291,7 @@
         <div id="translationCounts" class="translation-counts" role="group" aria-label="本页翻译结果，点击筛选对照" hidden>
           <button id="translationProgress" type="button" aria-controls="translationCard" title="查看已翻译段落"></button>
           <button id="translationUnfinished" type="button" aria-controls="translationCard" title="查看待处理或失败的段落"></button>
-          <span id="translationRetained" class="translation-retained" title="识别保护或无需翻译的内容，按原文保留" hidden></span>
+          <button id="translationRetained" type="button" aria-controls="translationCard" title="查看保留原文的段落及原因" hidden disabled></button>
           <button id="translationFallback" type="button" aria-controls="translationCard" title="查看已翻译但无法原位显示的段落"></button>
           <button id="translationFailed" type="button" aria-controls="translationCard" title="查看翻译失败的段落"></button>
         </div>
@@ -238,6 +322,7 @@
   <script src="source-loader.js"></script>
   <script src="document-reader.js"></script>
   <script src="session.js"></script>
+  <script src="thumbnail-sidebar.js"></script>
   <script src="reading-structure.js"></script>
   <script src="block-processor.js"></script>
   <script src="translation-adapter.js"></script>
@@ -246,6 +331,11 @@
   <script src="ocr-provider.js"></script>
   <script src="structured-reader.js"></script>
   <script src="reflow-model.js"></script>
+  <script src="reflow-typography.js"></script>
+  <script src="editor-model.js"></script>
+  <script src="editor-store.js"></script>
+  <script src="editor-operations.js"></script>
+  <script src="document-editor.js"></script>
   <script src="translation-edits.js"></script>
   <script src="translation-session.js"></script>
   <script src="layout-planner.js"></script>
@@ -254,7 +344,6 @@
   <script src="export-fonts.js"></script>
   <script src="font-store.js"></script>
   <script src="exporter.js"></script>
-  <script src="reflow-preview.js"></script>
   <script src="reader.js"></script>
 </body>
 </html>

@@ -50,7 +50,7 @@
         state.source = "ready"; state.numPages = info.numPages; state.message = "PDF 已读取，正在渲染第一页…";
         sourceController = null; publish();
         onDocument({id:crypto.randomUUID(),contentId:result.contentId,numPages:info.numPages,extractPage:currentReader.extractPage,
-          probePageContent:currentReader.probePageContent,renderPage:currentReader.renderPage});
+          probePageContent:currentReader.probePageContent,renderPage:currentReader.renderPage,renderThumbnail:currentReader.renderThumbnail});
         onPage(state.page); render();
       } catch (error) {
         if (generation !== sourceGeneration || disposed) return;

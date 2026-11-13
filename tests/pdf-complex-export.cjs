@@ -55,6 +55,22 @@ const {PDFDocument,StandardFonts}=require('../pdf/vendor/pdf-lib/pdf-lib.min.js'
   const firstTail=t[0];assert.ok(a.concat(b).filter(a=>a.page===firstTail.page).every(a=>a.y+a.height<=firstTail.y+.1),'full width content starts below both column endings');
   assert.equal(generated.stats.sourcePages,0);assert.equal(output.quality.state,'layout-checked');
  }
+ // 真实生成链路：字体内部编号与源块字号不同的正文仍使用同样的输出行高。
+ const typedBlocks=[
+  {...before,id:'style-title',kind:'heading',headingLevel:1,height:18,rect:{x:40,y:60,right:510,bottom:82}},
+  {...before,id:'style-a',order:1,height:10,fontName:'A',rect:{x:40,y:140,right:510,bottom:160}},
+  {...before,id:'style-b',order:2,height:10.7,fontName:'B',rect:{x:40,y:230,right:510,bottom:251}},
+  {...before,id:'style-c',order:3,height:12,fontName:'C',rect:{x:40,y:320,right:510,bottom:342}},
+  {...before,id:'style-note',order:4,kind:'footnote',height:6,rect:{x:40,y:560,right:510,bottom:574}}
+ ];
+ const typed=await worker({job:'export',requestId:'unified-typography',mode:'structured',bytes,fontCode:'builtin',fontLabel:'Helvetica',fontMetrics:{ascent:.718,lineHeight:1.25},pages:[{snapshot:{
+  identity:{documentId:'source',numPages:1,page:1,to:'en'},geometry:{pageNumber:1,width:600,height:800,transform:[1,0,0,-1,0,800]},blocks:typedBlocks,
+  results:typedBlocks.map(block=>[block.id,{status:'translated',text:block.id==='style-title'?'Document heading':block.id==='style-note'?'Publication note.':'An ordinary paragraph using the same output typography across fonts.'}])}}]});
+ const typedReport=typed.stats.per[0],heightFor=id=>typedReport.anchors.find(anchor=>anchor.id===id)?.height;
+ assert.equal(typed.stats.translated,5);assert.equal(typed.stats.sourcePages,0);
+ assert.equal(typedReport.typography.body,10);assert.equal(heightFor('style-a'),heightFor('style-b'));
+ assert.equal(heightFor('style-b'),heightFor('style-c'));
+ assert.ok(heightFor('style-title')>heightFor('style-a'));assert.ok(heightFor('style-note')<heightFor('style-a'));
  const root=path.resolve(__dirname,'..');
  const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://localhost');if(url.pathname==='/result.pdf'){res.setHeader('Content-Type','application/pdf');res.end(done.bytes);return;}
   if(url.pathname==='/'){res.setHeader('Content-Type','text/html');res.end('<!doctype html><meta charset="utf-8">');return;}

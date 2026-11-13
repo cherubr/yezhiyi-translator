@@ -7,7 +7,8 @@
   let comparisonOpen = false, comparisonScroll = 0, structuredScroll = 0, viewInfo = null, highlightedBlock = null;
   // P5-B 导出：页侧只持有当前文档句柄与导出状态，导出编排全部在 BT_PDF_EXPORTER 内。
   let currentDocument = null, exportState = null;
-  let reflowPreview=null,exporter=null;
+  let documentEditor=null,exporter=null,editorSignature="",editorPage=1;
+  let thumbnails=null;
   const translationCards = new Map();
   let statusChannel = "source";
   const modelDownloads = new Map(), fontDownloads = new Map();
@@ -17,6 +18,8 @@
   let fitMode = DEFAULT_FIT_MODE, fitTimer = null, readingAnchor = null, zoomEditDocument = null, zoomEdited = false;
   let bilingualCanvas = null, bilingualSource = null, bilingualViewKey = "", bilingualTimer = null;
   let bilingualRows = null, bilingualGeometry = null, bilingualScroll = {x:0,y:0}, bilingualAnchor = null;
+  let bilingualScrollFrame = null, bilingualScrollSource = null;
+  const bilingualScrollWrites = new Map();
   let exportPageChoice = "current", customExportRange = "";
   const scrollBehavior = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
   // 阅读位置按文件、语言与页码隔离；同页任务面板开关继续沿用原有滚动恢复。
@@ -26,7 +29,7 @@
     if(!panelKey||pendingPanelPosition)return;
     const check=$("translationCard"),structured=$("structuredCard");
     if(!check.hidden)comparisonScroll=$("translationRows").scrollTop;
-    if(!structured.hidden&&!$("reflowPanel").hidden)structuredScroll=$("structuredRows").scrollTop;
+    if(!structured.hidden&&!$("reflowPanel").hidden)structuredScroll=$("editorViewport").scrollTop;
     if(!structured.hidden&&!$("bilingualViewport").hidden)bilingualScroll={x:$("bilingualViewport").scrollLeft,y:$("bilingualViewport").scrollTop};
     panelPositions.delete(panelKey);panelPositions.set(panelKey,{comparison:comparisonScroll,structured:structuredScroll,pageScroll:{...bilingualScroll},selected:highlightedBlock});
     if(panelPositions.size>128)panelPositions.delete(panelPositions.keys().next().value);
@@ -41,11 +44,11 @@
   function restorePanelPosition(){
     if(!pendingPanelPosition)return;
     const saved=pendingPanelPosition;pendingPanelPosition=null;
-    $("translationRows").scrollTop=saved.comparison;$("structuredRows").scrollTop=saved.structured;
+    $("translationRows").scrollTop=saved.comparison;$("editorViewport").scrollTop=saved.structured;
     $("bilingualViewport").scrollLeft=bilingualScroll.x;$("bilingualViewport").scrollTop=bilingualScroll.y;
     const selected=translationCards.get(saved.selected);if(selected)highlightRow(selected);
   }
-  for(const id of ["translationRows","structuredRows","bilingualViewport"])$(id).addEventListener("scroll",rememberPanelPosition,{passive:true});
+  for(const id of ["translationRows","editorViewport","bilingualViewport"])$(id).addEventListener("scroll",rememberPanelPosition,{passive:true});
   /** 只消费现有状态，不维护第二套任务状态或改写会话。 */
   function refreshStatusUI() {
     const sourceBusy = ["loading", "parsing"].includes(state?.source) || state?.view === "rendering";
@@ -89,10 +92,11 @@
     $("translationCounts").hidden = !lastRows.length;
     const unfinished = lastRows.filter(row=>!row.result||row.result.status==="failed").length;
     const retained=lastRows.filter(row=>row.result?.status==="skipped").length;
-    $("translationRetained").hidden=!retained;$("translationRetained").textContent="保留原文 "+retained;
+    $("translationRetained").hidden=!retained;
     for (const [id, text, count] of [
       ["translationProgress", "已翻译 " + finished + "/" + lastRows.length, finished],
       ["translationUnfinished", "未完成 " + unfinished, unfinished],
+      ["translationRetained", "保留原文 " + retained, retained],
       ["translationFallback", "回退 " + (Number.isFinite(fallback) ? fallback : "…"), fallback],
       ["translationFailed", "失败 " + failed, failed]
     ]) {
@@ -127,7 +131,7 @@
       $(key + "Panel").hidden = key !== name;
       $(buttonId).setAttribute("aria-expanded", String(key === name));
     }
-    $("translationConfigSummary").setAttribute("aria-expanded", String(name === "settings"));
+    if(name)setLanguageMenu(false);
     if (name) {
       $("readerPanelTitle").textContent = panelTitles[name];
       if (focus) panel.focus({preventScroll: true});
@@ -139,9 +143,17 @@
     $(buttonId).onclick = () => showReaderPanel(openPanel === name ? null : name);
   }
   $("closeReaderPanel").onclick = () => showReaderPanel(null);
-  $("translationConfigSummary").onclick = () => showReaderPanel(openPanel === "settings" ? null : "settings");
+  function setLanguageMenu(open,focus=false) {
+    const menu=$("languagePopover"),button=$("translationConfigSummary"),returnFocus=!open&&menu.contains(document.activeElement);
+    menu.hidden=!open;button.setAttribute("aria-expanded",String(open));
+    if(open&&focus)$("translationFrom").focus({preventScroll:true});
+    else if(returnFocus&&focus)button.focus({preventScroll:true});
+  }
+  $("translationConfigSummary").onclick=()=>setLanguageMenu($("languagePopover").hidden,true);
+  document.addEventListener("pointerdown",event=>{if(!event.target.closest(".header-language-menu"))setLanguageMenu(false);});
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || $("passwordDialog").open) return;
+    if(!$("languagePopover").hidden){event.preventDefault();setLanguageMenu(false,true);return;}
     if (openPanel) { event.preventDefault(); showReaderPanel(null); }
     else if (comparisonOpen) {
       event.preventDefault(); comparisonOpen = false; updateTextComparison();
@@ -155,12 +167,16 @@
       window.BT_CONST.LANGUAGES[direction].find(item => item.value === (value === "browser" ? window.BT_CONST.resolveTargetLanguage(value) : value))?.label || value;
     const summary = service + " · " + language(appliedConfig.from, "from") + " → " + language(appliedConfig.to, "to");
     $("translationConfigSummary").textContent = summary;
-    $("translationConfigSummary").title = summary + "；点击打开翻译设置";
+    $("translationConfigSummary").title = summary + "；点击选择翻译语言";
   }
   function updateConfigDraft() {
     configDraft = !!appliedConfig && ($("translationService").value !== window.BT_SERVICES.value(appliedConfig.engine, appliedConfig.aiProvider) ||
       $("translationFrom").value !== appliedConfig.from || $("translationTo").value !== appliedConfig.to);
     $("applyTranslationConfig").hidden = !configDraft;
+    $("applyHeaderConfig").hidden = !configDraft;
+    $("translationConfigSummary").classList.toggle("config-pending",configDraft);
+    $("headerLanguageHint").textContent=configDraft?"语言尚未应用。应用后旧机器译文会失效，需要重新翻译；不会自动发送请求。":"仅用于当前 PDF，应用后点击开始翻译。";
+    $("applyHeaderConfig").textContent=configDraft&&appliedConfig&&$("translationService").value!==window.BT_SERVICES.value(appliedConfig.engine,appliedConfig.aiProvider)?"应用配置":"应用语言";
     $("translationConfigHint").textContent = configDraft ?
       (translationState?.hasRun ? "配置尚未应用。应用后会清除旧译文并取消旧任务，需要重新翻译；不会自动发送请求。" : "配置尚未应用，点击应用配置后再开始翻译。") :
       "选项仅用于本 PDF。应用配置与开始翻译是两个独立操作；外部配置变化会自动同步。";
@@ -185,6 +201,7 @@
   }
   $("translationProgress").onclick = () => openComparisonFilter("completed");
   $("translationUnfinished").onclick = () => openComparisonFilter("unfinished");
+  $("translationRetained").onclick = () => openComparisonFilter("retained");
   $("translationFallback").onclick = () => openComparisonFilter("fallback");
   $("translationFailed").onclick = $("showFailedTranslation").onclick = () => openComparisonFilter("failed");
   // P3-B 译文显示层：被动消费块坐标与渲染矩阵，只绘制调试描边，不参与翻译状态。
@@ -203,12 +220,47 @@
       const {overlay,fallback,pending}=summary.stats;
       $("bilingualPageStatus").textContent=bilingualRows?.some(row=>row.result?.status==="translated")?
         "原位显示 "+overlay+" 段"+(pending?" · 正在排版 "+pending+" 段":"")+
-        (fallback?" · "+fallback+" 段未能覆盖，可切换重排译文查看":""):
+        (fallback?" · "+fallback+" 段未能覆盖，可切换译文编辑器查看":""):
         "尚无可覆盖的译文；未处理或受保护内容保留原样。";
       queueMicrotask(syncMarkerHighlight);
     }});
   bilingualRenderer.setVisible(false);
+  /** 仅双语原位预览联动；两侧显示同一页，按各自可滚动范围映射，兼容不同宽度和适配倍率。 */
+  function canSyncBilingualScroll() {
+    return viewMode === "bilingual" && !$("structuredCard").hidden && !$("bilingualViewport").hidden &&
+      $("bilingualLayout").value === "page" && state?.view === "ready" && viewInfo?.pageNumber === state.page &&
+      !!bilingualCanvas?.width && bilingualSource === $("canvasHost").querySelector("canvas");
+  }
+  function scheduleBilingualScroll(source) {
+    if (!canSyncBilingualScroll()) return;
+    bilingualScrollSource = source;
+    if (bilingualScrollFrame !== null) return;
+    bilingualScrollFrame = requestAnimationFrame(() => {
+      bilingualScrollFrame = null;
+      const from = bilingualScrollSource; bilingualScrollSource = null;
+      if (!from || !canSyncBilingualScroll()) return;
+      const to = from === $("viewport") ? $("bilingualViewport") : $("viewport");
+      let moved = false;
+      for (const [position, size, visible] of [["scrollTop","scrollHeight","clientHeight"], ["scrollLeft","scrollWidth","clientWidth"]]) {
+        const range = from[size] - from[visible], targetRange = Math.max(0, to[size] - to[visible]);
+        // 某一侧整页可见时，该轴没有滚动来源，不用它重置另一侧的位置。
+        if (range <= 1) continue;
+        const value = Math.max(0, Math.min(1, from[position] / range)) * targetRange;
+        if (Math.abs(to[position] - value) > .5) { to[position] = value; moved = true; }
+      }
+      if (moved) bilingualScrollWrites.set(to, {x:to.scrollLeft, y:to.scrollTop});
+    });
+  }
+  for (const viewport of [$("viewport"), $("bilingualViewport")]) viewport.addEventListener("scroll", () => {
+    const written = bilingualScrollWrites.get(viewport);
+    // 程序滚动产生的事件不反向驱动，避免边界钳制、小数取整造成来回抖动。
+    if (written && Math.abs(viewport.scrollLeft - written.x) <= 1 && Math.abs(viewport.scrollTop - written.y) <= 1) return;
+    bilingualScrollWrites.delete(viewport);
+    scheduleBilingualScroll(viewport);
+  }, {passive:true});
   function clearBilingualPage(){
+    if(bilingualScrollFrame!==null)cancelAnimationFrame(bilingualScrollFrame);
+    bilingualScrollFrame=bilingualScrollSource=null;bilingualScrollWrites.clear();
     clearTimeout(bilingualTimer);bilingualTimer=null;bilingualRenderer.clear();
     if(bilingualCanvas)bilingualCanvas.width=bilingualCanvas.height=0;
     bilingualCanvas=bilingualSource=null;bilingualViewKey="";bilingualRows=bilingualGeometry=null;
@@ -234,14 +286,15 @@
       const canvas=document.createElement("canvas"),ratio=Math.min(1,Math.sqrt(4000000/(source.width*source.height)));
       canvas.width=Math.max(1,Math.floor(source.width*ratio));canvas.height=Math.max(1,Math.floor(source.height*ratio));
       const context=canvas.getContext("2d");
-      if(!context){canvas.width=canvas.height=0;$("bilingualPageStatus").textContent="译文页面暂时无法显示，可切换重排译文。";return;}
+      if(!context){canvas.width=canvas.height=0;$("bilingualPageStatus").textContent="译文页面暂时无法显示，可切换译文编辑器。";return;}
       context.drawImage(source,0,0,canvas.width,canvas.height);
       canvas.setAttribute("role","img");canvas.setAttribute("aria-label","第 "+info.pageNumber+" 页译文，未能安全覆盖的内容保留原文");
       bilingualCanvas=canvas;bilingualSource=source;
       $("bilingualCanvasHost").replaceChildren(bilingualRenderer.mount(canvas));$("bilingualEmpty").hidden=true;
     }
     const key=JSON.stringify([info.pageNumber,info.width,info.height,info.viewportTransform]);
-    if(key!==bilingualViewKey){
+    const resized=key!==bilingualViewKey;
+    if(resized){
       bilingualCanvas.style.width=info.width+"px";bilingualCanvas.style.height=info.height+"px";
       bilingualRenderer.setView(info);bilingualViewKey=key;
     }
@@ -257,7 +310,9 @@
       viewport.scrollLeft=bilingualAnchor?.page===info.pageNumber?bilingualAnchor.x*viewport.scrollWidth-viewport.clientWidth/2:bilingualScroll.x;
       viewport.scrollTop=bilingualAnchor?.page===info.pageNumber?bilingualAnchor.y*viewport.scrollHeight-viewport.clientHeight/2:bilingualScroll.y;
       bilingualAnchor=null;
+      bilingualScrollWrites.set(viewport,{x:viewport.scrollLeft,y:viewport.scrollTop});
     }
+    if(changed||resized)scheduleBilingualScroll($("viewport"));
   }
   function scheduleBilingualPage(){
     clearTimeout(bilingualTimer);bilingualTimer=setTimeout(()=>{bilingualTimer=null;syncBilingualPage();},180);
@@ -270,12 +325,14 @@
     rememberPanelPosition();
     const page=$("bilingualLayout").value==="page";
     $("bilingualViewport").hidden=!page;$("bilingualPageStatus").hidden=!page;$("reflowPanel").hidden=page;
-    $("structuredRows").hidden=false;
+    $("structuredTitle").textContent=page?"译文预览":"译文工作区";
+    $("editorToggleTools").hidden=page;
     $("editNotice").hidden=page;
-    if(!page)$("structuredRows").scrollTop=structuredScroll;
-    syncBilingualPage();reflowPreview?.setVisible(!page&&!$("structuredCard").hidden);
+    if(!page)$("editorViewport").scrollTop=structuredScroll;
+    syncBilingualPage();documentEditor?.refresh();
   }
   $("bilingualLayout").onchange=updateBilingualLayout;
+  $("editorToggleTools").onclick=()=>documentEditor?.toggleTools();
   const bilingualObserver=new ResizeObserver(scheduleBilingualPage);
   bilingualObserver.observe($("bilingualViewport"));
   $("bilingualCanvasHost").onclick=event=>{
@@ -298,6 +355,7 @@
         y: (viewport.scrollTop + viewport.clientHeight / 2) / viewport.scrollHeight};
     }
     state = next;
+    thumbnails?.setPage(state.page, state.rotation, state.source === "ready");
     const loading = ["loading", "parsing"].includes(state.source), ready = state.source === "ready";
     if (loading || state.view === "rendering") statusChannel = "source";
     $("pdfUrl").disabled = $("loadUrl").disabled = $("selectFile").disabled = $("fileInput").disabled = loading;
@@ -318,7 +376,8 @@
     $("loadUrl").textContent = loading ? "正在读取…" : state.source === "failed" ? "重新读取在线 PDF" : "读取在线 PDF";
     $("pageNumber").value = state.page;
     $("pageNumber").max = Math.max(1, state.numPages);
-    $("pageCount").textContent = "/ " + (state.numPages || "—") + " 页";
+    $("pageCount").textContent = "/ " + (state.numPages || "—");
+    $("pageViewMeta").textContent=state.numPages?"第 "+state.page+" 页 / 共 "+state.numPages+" 页":"当前页";
     syncZoomPicker();
     $("rotate").title = "顺时针旋转 90°（当前 " + state.rotation + "°）";
     $("rotate").setAttribute("aria-label", $("rotate").title);
@@ -361,10 +420,11 @@
     $("startTranslation").textContent=busy?(translationState.phase === "recognizing" ? "正在识别…" : "正在翻译…"):
       translationState.canContinue?(failed ? "重试未完成" : "继续翻译"):translationState.hasRun?"重新翻译":"开始翻译";
     $("startTranslation").classList.toggle("primary", busy || !translationState.hasRun || translationState.canContinue);
-    $("startTranslation").title = configDraft ? "请先在设置面板应用配置" : "";
+    $("startTranslation").title = configDraft ? "请先点击顶部的应用语言或应用配置" : "";
     $("cancelTranslation").disabled=state?.source!=="ready"||!busy;
     $("cancelTranslation").hidden = !busy;
     for(const id of ["translationService","translationFrom","translationTo"])$(id).disabled=!translationState.configReady;
+    $("applyHeaderConfig").disabled=!translationState.configReady;
     $("translationStatus").textContent=translationState.message;
     $("translationStatus").dataset.error = String(["config-error", "interrupted"].includes(translationState.phase));
     if (translationState.busy) statusChannel = "translation";
@@ -475,17 +535,27 @@
     for (const card of translationCards.values()) {
       card.element.classList.remove("translation-row-active"); card.element.removeAttribute("aria-current");
     }
-    syncMarkerHighlight();structuredReader.highlight(null);reflowPreview?.highlight(null);
+    syncMarkerHighlight();documentEditor?.highlight(null);
   }
   function highlightRow(card) {
     clearBlockHighlight(); highlightedBlock = card.element.dataset.blockId;
     card.element.classList.add("translation-row-active");
-    card.element.setAttribute("aria-current", "true"); syncMarkerHighlight();structuredReader.highlight(highlightedBlock);reflowPreview?.highlight(highlightedBlock);
+    card.element.setAttribute("aria-current", "true"); syncMarkerHighlight();documentEditor?.highlight(highlightedBlock);
 
   }
   /** 面板 → PDF：按 blockId 取显示矩形居中滚动并闪高亮；getDisplayRect 为 null（页不匹配/块不存在）时 no-op。 */
+  function sourceDisplayRect(blockId) {
+    const blockRect=renderer.getDisplayRect(blockId);if(blockRect)return blockRect;
+    if(!lastGeometry||!viewInfo||lastGeometry.pageNumber!==viewInfo.pageNumber)return null;
+    const visual=lastGeometry.visuals?.find(item=>item.id===blockId),rect=visual?.sourceRect||visual?.rect;
+    if(!rect)return null;
+    const BM=window.BT_PDF_BLOCKS.matrix,m=BM.compose(viewInfo.viewportTransform,BM.invert(lastGeometry.transform));
+    const points=[[rect.x,rect.y],[rect.right,rect.y],[rect.right,rect.bottom],[rect.x,rect.bottom]].map(([x,y])=>BM.apply(m,x,y));
+    if(points.some(point=>point.some(value=>!Number.isFinite(value))))return null;
+    return {x:Math.min(...points.map(point=>point[0])),y:Math.min(...points.map(point=>point[1])),right:Math.max(...points.map(point=>point[0])),bottom:Math.max(...points.map(point=>point[1]))};
+  }
   function focusPdfBlock(blockId) {
-    const rect = renderer.getDisplayRect(blockId);
+    const rect = sourceDisplayRect(blockId);
     if (!rect) return;
     const viewport = $("viewport"), canvas = $("canvasHost").querySelector("canvas");
     if (!canvas) return;
@@ -493,9 +563,9 @@
     const ox = base.left - box.left + viewport.scrollLeft, oy = base.top - box.top + viewport.scrollTop;
     viewport.scrollTo({left: Math.max(0, ox + (rect.x + rect.right) / 2 - viewport.clientWidth / 2),
       top: Math.max(0, oy + (rect.y + rect.bottom) / 2 - viewport.clientHeight / 2), behavior: scrollBehavior()});
-    renderer.flashHighlight(blockId);
+    renderer.flashDisplayRect(rect);
     bilingualRenderer.flashHighlight(blockId);
-    const card = translationCards.get(blockId); if (card) highlightRow(card);
+    const card = translationCards.get(blockId); if (card) highlightRow(card);else documentEditor?.highlight(blockId);
   }
   /** P3-D 三分类统计与行徽标：原位=overlay+unchanged；回退有译文=plan.fallbacks；未完成=null/failed；识别保护与其他 skipped 单独计数。 */
   function updateTranslationStats() {
@@ -535,6 +605,7 @@
       const show = filter === "all" || (filter === "fallback" && fallbacks.has(block.id)) ||
         (filter === "completed" && ["translated", "unchanged"].includes(result?.status)) ||
         (filter === "failed" && result?.status === "failed") ||
+        (filter === "retained" && result?.status === "skipped") ||
         (filter === "unfinished" && (!result||result.status==="failed")) ||
         (filter === "pending" && !result) || (filter === "ocr" && block.source === "ocr" && !block.reliable) ||
         (filter === "protected" && result?.status === "skipped" && (block.role !== "text" || block.segments?.every(part=>part.protected))) ||
@@ -543,12 +614,11 @@
     }
     $("comparisonFilterEmpty").hidden = !lastRows.length || visible > 0;
     for (const [id, value] of [["translationProgress", "completed"], ["translationUnfinished", "unfinished"],
-      ["translationFallback", "fallback"], ["translationFailed", "failed"]]) {
+      ["translationRetained", "retained"], ["translationFallback", "fallback"], ["translationFailed", "failed"]]) {
       $(id).setAttribute("aria-pressed", String(comparisonOpen && !openPanel && filter === value));
     }
   }
   $("comparisonFilter").onchange = applyComparisonFilter;
-  const structuredScope=()=>JSON.stringify([currentDocument?.contentId,appliedConfig?.from,appliedConfig?.to]);
   const visualSources=new WeakMap();
   function paintVisual(target,visual) {
     const source=$("canvasHost").querySelector("canvas"),BM=window.BT_PDF_BLOCKS.matrix;
@@ -568,35 +638,49 @@
     context.drawImage(source,x,y,width,height,0,0,target.width,target.height);target.hidden=false;
     visualSources.set(target,{source,id:visual.id});return true;
   }
-  const structuredReader=window.BT_PDF_STRUCTURED.create({host:$("structuredRows"),
-    onSave:(id,text)=>translation.saveEdit(id,text),onRestore:id=>translation.saveEdit(id,"",true),onLocate:focusPdfBlock,onVisual:paintVisual});
+  documentEditor=window.BT_PDF_DOCUMENT_EDITOR.create({viewport:$("editorViewport"),paper:$("editorPaper"),
+    toolbar:$("editorToolbar"),status:$("editorStatus"),onLocate:focusPdfBlock,onVisual:paintVisual,
+    getInput:()=>({key:currentDocument?.contentId&&appliedConfig?JSON.stringify([1,currentDocument.contentId,appliedConfig.engine,
+      appliedConfig.aiProvider,appliedConfig.from,appliedConfig.to,editorPage]):null,
+      page:editorPage,name:state?.name||"PDF",rows:lastRows,geometry:lastGeometry,signature:editorSignature,
+      available:!!currentDocument&&lastGeometry?.pageNumber===editorPage&&viewInfo?.pageNumber===editorPage&&lastRows.length>0,
+      busy:!!translationState?.busy,scale:state?.scale||1,fitMode})});
   function discardDrafts() {
-    if(!structuredReader.hasDrafts())return true;
+    if(!documentEditor.hasDrafts())return true;
     if(!window.confirm("有尚未保存的译文编辑。是否放弃这些编辑并继续？"))return false;
-    structuredReader.discardDrafts();return true;
+    return documentEditor.discardDrafts();
   }
-  window.addEventListener("beforeunload",event=>{if(structuredReader.hasDrafts()){event.preventDefault();event.returnValue="";}});
+  window.addEventListener("beforeunload",event=>{if(documentEditor.hasDrafts()){event.preventDefault();event.returnValue="";}});
   $("canvasHost").addEventListener("click",event=>{
     if(viewMode!=="bilingual"||event.target.closest("button, .pdf-marker"))return;
     const canvas=$("canvasHost").querySelector("canvas");if(!canvas)return;
-    const box=canvas.getBoundingClientRect(),x=event.clientX-box.left,y=event.clientY-box.top;
+    const box=canvas.getBoundingClientRect();if(!box.width||!box.height||!viewInfo)return;
+    const x=(event.clientX-box.left)*viewInfo.width/box.width,y=(event.clientY-box.top)*viewInfo.height/box.height;
+    if($("bilingualLayout").value==="flow"){
+      if(!lastGeometry||lastGeometry.pageNumber!==viewInfo.pageNumber)return;
+      const BM=window.BT_PDF_BLOCKS.matrix,m=BM.compose(lastGeometry.transform,BM.invert(viewInfo.viewportTransform)),point=BM.apply(m,x,y);
+      const candidates=lastRows.map(({block})=>({id:block.id,rect:block.rect,lines:block.lines}));
+      for(const visual of lastGeometry.visuals||[])candidates.push({id:visual.id,rect:visual.sourceRect||visual.rect});
+      const hit=window.BT_PDF_EDITOR_OPERATIONS.pickSource(candidates,...point);
+      if(hit&&documentEditor?.reveal(hit.id)){
+        const card=translationCards.get(hit.id);if(card)highlightRow(card);
+      }
+      return;
+    }
     const row=lastRows.find(({block})=>{const rect=renderer.getDisplayRect(block.id);return rect&&x>=rect.x&&x<=rect.right&&y>=rect.y&&y<=rect.bottom;});
     if(row){
-      if($("bilingualLayout").value==="flow")reflowPreview?.reveal(row.block.id);
-      else {
-        const rect=bilingualRenderer.getDisplayRect(row.block.id);
-        if(rect&&bilingualCanvas){
-          const viewport=$("bilingualViewport"),base=bilingualCanvas.getBoundingClientRect(),bounds=viewport.getBoundingClientRect();
-          viewport.scrollTo({left:Math.max(0,base.left-bounds.left+viewport.scrollLeft+(rect.x+rect.right)/2-viewport.clientWidth/2),
-            top:Math.max(0,base.top-bounds.top+viewport.scrollTop+(rect.y+rect.bottom)/2-viewport.clientHeight/2),behavior:scrollBehavior()});
-          bilingualRenderer.flashHighlight(row.block.id);
-        }
+      const rect=bilingualRenderer.getDisplayRect(row.block.id);
+      if(rect&&bilingualCanvas){
+        const viewport=$("bilingualViewport"),base=bilingualCanvas.getBoundingClientRect(),bounds=viewport.getBoundingClientRect();
+        viewport.scrollTo({left:Math.max(0,base.left-bounds.left+viewport.scrollLeft+(rect.x+rect.right)/2-viewport.clientWidth/2),
+          top:Math.max(0,base.top-bounds.top+viewport.scrollTop+(rect.y+rect.bottom)/2-viewport.clientHeight/2),behavior:scrollBehavior()});
+        bilingualRenderer.flashHighlight(row.block.id);
       }
       const card=translationCards.get(row.block.id);if(card)highlightRow(card);
     }
   });
   const translation=window.BT_PDF_TRANSLATION_SESSION.create({
-    onState(value){const wasBusy=translationState?.busy;translationState=value;updateTranslationControls();if(wasBusy!==value.busy)reflowPreview?.update();},
+    onState(value){const wasBusy=translationState?.busy;translationState=value;updateTranslationControls();if(wasBusy!==value.busy)void documentEditor?.update();},
     onConfig(config){
       const draft = configDraft ? {service: $("translationService").value, from: $("translationFrom").value, to: $("translationTo").value} : null;
       appliedConfig = {engine: config.engine, aiProvider: config.aiProvider, from: config.from, to: config.to};
@@ -612,22 +696,26 @@
       updateConfigDraft();
     },onRows(rows,geometry,meta){if(geometry)beginPanelPage(geometry.pageNumber);lastRows=rows;lastGeometry=geometry;renderRows(rows);
       renderer.setModel(rows,geometry);updateTranslationStats();
-      structuredReader.render(rows,structuredScope(),geometry?.visuals||[]);syncBilingualPage();reflowPreview?.update();if(geometry)restorePanelPosition();
+      editorSignature=JSON.stringify(rows.map(row=>[row.block.id,row.block.kind,row.block.height,row.result?.status,row.result?.text]));
+      syncBilingualPage();void documentEditor?.update();if(geometry)restorePanelPosition();
       const uncertain=rows.filter(row=>!row.block.reliable&&!row.block.eligible&&!['translated','unchanged'].includes(row.result?.status)).length;
       $("editNotice").textContent=meta?.editingError||(uncertain?"有 "+uncertain+" 处文字无法可靠处理，未混入正文；原文保留，可在翻译检查中查看。":"");void refreshFontBar(true);
       // #debug=1 时输出页面分类与 OCR 区域（类型/原因/坐标与统计，不含文字内容）。
       if(debugOverlay&&meta)console.info("[pdf-ocr]",meta.classification?.type||"none",meta.ocr?.regions||[],meta.ocr?.stats||null);}
   });
+  thumbnails=window.BT_PDF_THUMBNAILS.create({onNavigate:page=>session.navigate(page),
+    onToggle:()=>requestAnimationFrame(()=>{scheduleFit();documentEditor?.refresh();})});
   const session = window.BT_PDF_SESSION.create({onState: showState, onPassword: askPassword,
     getFitScale:size=>fitMode?calculateFit(size.width,size.height):null,
     // 导出需要文档句柄渲染独立证据位图；页侧自己留存一份，翻译会话行为不变。
     onDocument(value){
       // 每个新文件从 100% 开始；同文件翻页、旋转和面板开关保留用户缩放。
       clearTimeout(fitTimer);fitTimer=null;fitMode=DEFAULT_FIT_MODE;viewInfo=null;
-      currentDocument=value;lastGeometry=null;readingAnchor=null;panelPositions.clear();panelKey=null;pendingPanelPosition=null;
-      comparisonScroll=structuredScroll=0;bilingualScroll={x:0,y:0};bilingualAnchor=null;clearBilingualPage();reflowPreview?.clear();exporter?.clearReflow();structuredReader.clear();translation.setDocument(value);syncZoomPicker();updateExportControls();
+      currentDocument=value;editorPage=1;lastGeometry=null;readingAnchor=null;panelPositions.clear();panelKey=null;pendingPanelPosition=null;
+      thumbnails.setDocument(value);
+      comparisonScroll=structuredScroll=0;bilingualScroll={x:0,y:0};bilingualAnchor=null;clearBilingualPage();exporter?.clearReflow();documentEditor?.clear();translation.setDocument(value);syncZoomPicker();updateExportControls();
     },
-    onPage(value){beginPanelPage(value);translation.setPage(value);},
+    onPage(value){editorPage=value;beginPanelPage(value);translation.setPage(value);void documentEditor?.update();},
     onViewReady(info){
       viewInfo={...info,scale:state.scale};syncZoomPicker();translation.viewReady();renderer.setView(info);
       // 缩放/旋转会重建 Canvas 并清空 Renderer；重新挂接本页已确认模型，不另行提取或启动文字任务。
@@ -637,7 +725,7 @@
         viewport.scrollLeft = readingAnchor.x * viewport.scrollWidth - viewport.clientWidth / 2;
         viewport.scrollTop = readingAnchor.y * viewport.scrollHeight - viewport.clientHeight / 2;
       }
-      readingAnchor = null;structuredReader.refreshVisuals();syncBilingualPage();reflowPreview?.refresh(); syncMarkerHighlight(); scheduleFit();
+      readingAnchor = null;syncBilingualPage();void documentEditor?.update(); syncMarkerHighlight(); scheduleFit();
     },
     onClear() {
       viewInfo=null;clearBilingualPage();$("canvasHost").replaceChildren(); $("empty").hidden = false; renderer.clear(); },
@@ -660,13 +748,7 @@
     getMarkers: () => planSummary,
     getName: () => state?.name || "",
     onState(value) { exportState = value; updateExportControls(); }});
-  reflowPreview=window.BT_PDF_REFLOW_PREVIEW.create({panel:$("reflowPanel"),viewport:$("reflowViewport"),status:$("reflowStatus"),
-    previous:$("reflowPrevious"),next:$("reflowNext"),retry:$("reflowRetry"),cancel:$("reflowCancel"),font:$("reflowFont"),
-    getInput:()=>({scope:JSON.stringify([currentDocument?.id,appliedConfig,state?.page]),available:!!currentDocument&&lastGeometry?.pageNumber===state?.page&&lastRows.length>0,
-      busy:!!translationState?.busy,rotation:state?.rotation||0,scale:state?.scale||1,fitMode}),
-    generate:options=>exporter.reflowPDF(options),onLocate:focusPdfBlock,
-    onEdit(id){$("reflowEditor").open=true;structuredReader.reveal(id);}});
-  $("reflowExport").onclick=()=>{
+  $("editorAutoExport").onclick=()=>{
     $("exportContent").value="translated";$("exportLayout").value="structured";$("exportPages").value="current";
     exportPageChoice="current";updateExportControls();showReaderPanel("export");
   };
@@ -736,7 +818,8 @@
   /** 适配模式只调用现有缩放接口；固定百分比与自适应状态互不覆盖。 */
   function syncZoomPicker() {
     if (!state) return;
-    const picker = $("zoom"), percent = Math.round(state.scale * 1000) / 10, fit = $("zoomFit");
+    // 自适应保留实际浮点倍率，仅将工具栏显示取整，避免把显示舍入写回渲染尺寸。
+    const picker = $("zoom"), percent = Math.round(state.scale * 100), fit = $("zoomFit");
     if (document.activeElement !== picker) { picker.value = percent + "%"; picker.removeAttribute("aria-invalid"); picker.setCustomValidity(""); }
     picker.dataset.scale = String(state.scale);
     picker.setAttribute("aria-valuenow", String(percent));
@@ -744,7 +827,6 @@
     fit.dataset.mode = fitMode || "";
     fit.disabled = state.view !== "ready" || !viewInfo || viewInfo.pageNumber !== state.page;
     fit.setAttribute("aria-pressed", String(!!fitMode));
-    fit.textContent = fitMode === "fit-page" ? "适合宽度" : "适合页面";
     fit.title = (fitMode === "fit-page" ? "当前适合页面；点击适合宽度" : fitMode === "fit-width" ? "当前适合宽度；点击适合页面" : "适合页面；再次点击切换为适合宽度") + "。输入百分比或点击加减可退出自动适配。";
     fit.setAttribute("aria-label", fit.title);
   }
@@ -773,7 +855,14 @@
     $("zoom").value = value + "%"; $("zoom").removeAttribute("aria-invalid"); $("zoom").setCustomValidity("");
     session.zoom(value / 100); syncZoomPicker();
     // 百分比不变时 session 不重渲染，但退出适配仍需同步右侧的显示模式。
-    syncBilingualPage(); reflowPreview?.refresh();
+    syncBilingualPage(); documentEditor?.followZoom();
+  }
+  function stepZoom(direction) {
+    if(!state)return;
+    const percent=state.scale*100;
+    // 适配后的 71.2% 放大为 80%、缩小为 70%；25% 和 400% 保留为边界。
+    const next=(direction>0?Math.floor((percent+1e-7)/10)+1:Math.ceil((percent-1e-7)/10)-1)*10;
+    manualZoom(next);
   }
   function commitZoom() {
     const input = $("zoom"), raw = input.value.trim(), value = Number(raw.replace(/%$/, "").trim());
@@ -790,13 +879,13 @@
     if (event.isComposing) return;
     if (event.key === "Enter") { event.preventDefault(); if (commitZoom()) $("zoom").blur(); else $("zoom").reportValidity(); }
     else if (event.key === "Escape") { event.preventDefault(); zoomEdited = false; $("zoom").value = $("zoom").dataset.editValue; $("zoom").blur(); }
-    else if (["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); manualZoom(Math.round(state.scale * 1000) / 10 + (event.key === "ArrowUp" ? 10 : -10)); }
+    else if (["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); stepZoom(event.key === "ArrowUp" ? 1 : -1); }
   };
-  $("zoomIn").onclick = () => manualZoom(Math.round(state.scale * 1000) / 10 + 10);
-  $("zoomOut").onclick = () => manualZoom(Math.round(state.scale * 1000) / 10 - 10);
+  $("zoomIn").onclick = () => stepZoom(1);
+  $("zoomOut").onclick = () => stepZoom(-1);
   $("zoomFit").onclick = () => {
     fitMode = fitMode === "fit-page" ? "fit-width" : "fit-page"; clearTimeout(fitTimer); fitTimer = null;
-    fitCurrentPage(fitMode); syncBilingualPage(); reflowPreview?.refresh();
+    fitCurrentPage(fitMode); syncBilingualPage(); documentEditor?.followZoom();
   };
   $("rotate").onclick = session.rotate;
   $("retry").onclick = session.retry;
@@ -817,7 +906,7 @@
   $("cancelTranslation").onclick=translation.cancel;
   /** 对照开关只更新外层网格和可访问状态，不调用 Renderer，避免开关侧栏时重算原位译文。 */
   const wideReader = window.matchMedia("(min-width:951px)");
-  let readerShare = 60, splitterPointer = null;
+  let readerShare = 50, splitterPointer = null;
   try { const saved = Number(localStorage.getItem("bt-pdf-reader-share")); if (saved >= 35 && saved <= 75) readerShare = saved; } catch (_) {}
   function setReaderShare(value) {
     readerShare = Math.max(35, Math.min(75, Math.round(value)));
@@ -851,7 +940,7 @@
     if (available > 0) setReaderShare((event.clientX - rect.left - padding - gap - 4) / available * 100);
   };
   for (const name of ["pointerup", "pointercancel", "lostpointercapture"]) $("comparisonSplitter").addEventListener(name, endSplitterDrag);
-  $("comparisonSplitter").ondblclick = () => setReaderShare(60);
+  $("comparisonSplitter").ondblclick = () => setReaderShare(50);
   $("comparisonSplitter").onkeydown = event => {
     const value = {ArrowLeft: readerShare - 5, ArrowRight: readerShare + 5, Home: 35, End: 75}[event.key];
     if (value === undefined) return;
@@ -870,7 +959,7 @@
     if(!structuredVisible&&!$("structuredCard").hidden)rememberPanelPosition();
     const structuredOpening=structuredVisible&&$("structuredCard").hidden;
     $("structuredCard").hidden = !structuredVisible;
-    if(structuredOpening)$("structuredRows").scrollTop=structuredScroll;
+    if(structuredOpening)$("editorViewport").scrollTop=structuredScroll;
     const returnFocus = (!visible && card.contains(document.activeElement)) ||
       ((!visible || !wideReader.matches) && document.activeElement === $("comparisonSplitter"));
     const opening = visible && card.hidden;
@@ -886,7 +975,7 @@
     $("comparisonSplitter").hidden = !sidebarVisible || !wideReader.matches;
     if (!sidebarVisible || !wideReader.matches) endSplitterDrag();
     applyComparisonFilter();
-    syncBilingualPage();reflowPreview?.setVisible(structuredVisible&&$("bilingualLayout").value==="flow");
+    syncBilingualPage();if(structuredVisible&&$("bilingualLayout").value==="flow")documentEditor?.refresh();
     if (returnFocus) toggle.focus({preventScroll: true});
     scheduleFit();
   }
@@ -931,13 +1020,16 @@
     if (row) { event.preventDefault(); focusPdfBlock(row.dataset.blockId); }
   });
   for (const id of ["translationService", "translationFrom", "translationTo"]) $(id).onchange = updateConfigDraft;
-  $("applyTranslationConfig").onclick = () => {
+  function applyTranslationConfig() {
     if (!configDraft || !translationState?.configReady || !discardDrafts()) return;
     appliedConfig = {...window.BT_SERVICES.parse($("translationService").value), from: $("translationFrom").value, to: $("translationTo").value};
     configDraft = false;
     translation.select(appliedConfig);
     updateConfigDraft(); updateConfigSummary();
-  };
+    setLanguageMenu(false,true);
+  }
+  $("applyTranslationConfig").onclick=applyTranslationConfig;
+  $("applyHeaderConfig").onclick=applyTranslationConfig;
   $("refreshTranslationConfig").onclick=()=>{void translation.loadConfig();};
   $("openTranslationSettings").onclick=()=>{
     try{chrome.runtime.sendMessage({action:"OPEN_SETTINGS"},()=>{void chrome.runtime.lastError;});}catch(_){}
@@ -1186,7 +1278,7 @@
   window.addEventListener("pagehide", () => { statusObserver.disconnect(); viewportObserver.disconnect();bilingualObserver.disconnect();clearBilingualPage(); clearTimeout(fitTimer);
     clearBlockHighlight();
     for (const task of [...modelDownloads.values(), ...fontDownloads.values()]) task.controller.abort();
-    finishPassword(null);reflowPreview?.dispose(); exporter.dispose(); translation.dispose(); session.dispose(); });
+    finishPassword(null);thumbnails.dispose();documentEditor?.dispose(); exporter.dispose(); translation.dispose(); session.dispose(); });
   // 退回 BFCache 的页面已释放所有文档；重新载入干净阅读页，绝不恢复失效 Worker。
   window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });
 })();

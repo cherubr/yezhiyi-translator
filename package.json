@@ -5,7 +5,7 @@
   "scripts": {
     "test": "node tests/translation-style.cjs && node tests/logging.cjs && node tests/regression.cjs && node tests/storage.cjs && node tests/network.cjs && node tests/permissions.cjs && node tests/runtime.cjs && node tests/request-policy.cjs && node tests/languages.cjs && node tests/baidu-verification.cjs && node tests/store-upload.cjs && node tests/glossary.cjs && node tests/frame-sessions.cjs && node tests/navigation.cjs && node tests/package.cjs",
     "test:browser": "node tests/browser-layout.cjs && node tests/browser-dynamic.cjs && node tests/browser-collection.cjs && node tests/browser-extension.cjs && node tests/browser-shadow.cjs && node tests/browser-features.cjs && node tests/browser-navigation.cjs && node tests/browser-frame-shift.cjs",
-    "test:pdf": "node tests/pdf-structure.cjs && node tests/pdf-reflow-model.cjs && node tests/pdf-edits.cjs && node tests/pdf-layout.cjs && node tests/browser-pdf-reader.cjs",
+    "test:pdf": "node tests/pdf-structure.cjs && node tests/pdf-reflow-model.cjs && node tests/pdf-edits.cjs && node tests/pdf-editor.cjs && node tests/pdf-layout.cjs && node tests/browser-pdf-reader.cjs",
     "test:pdf:export": "node tests/pdf-export.cjs && node tests/pdf-complex-export.cjs",
     "test:pdf:samples": "node tests/browser-pdf-samples.cjs",
     "check": "node scripts/check.cjs",

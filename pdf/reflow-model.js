@@ -1,7 +1,7 @@
 (function(global) {
   "use strict";
   // 重排专用中间模型。只派生布局副本，不修改送翻块、结果、人工修订或原位坐标。
-  const VERSION=2;
+  const VERSION=3;
   const valid=r=>r&&[r.x,r.y,r.right,r.bottom].every(Number.isFinite)&&r.right>r.x&&r.bottom>r.y;
   const union=rects=>({x:Math.min(...rects.map(r=>r.x)),y:Math.min(...rects.map(r=>r.y)),right:Math.max(...rects.map(r=>r.right)),bottom:Math.max(...rects.map(r=>r.bottom))});
   const overlap=(a,b)=>Math.max(0,Math.min(a.right,b.right)-Math.max(a.x,b.x))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.y,b.y));

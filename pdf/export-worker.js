@@ -8,7 +8,7 @@
    「缺失页保留原文导出」时该页条目只有 {page}：无快照即原样复制源页，不规划、不绘制、不进附录。
    job.mode="bilingual"（P5-D 双语导出）：每页先照录原文页，再在真有原位译文时追加一张同尺寸同 /Rotate 的对照页
    （drawPage 引用原文页内容后叠遮罩与译文），输出按「原文页 → 对照页」相邻成对；附录仍集中在末尾不单另成对。 */
-importScripts("structured-reader.js", "reflow-model.js", "layout-planner.js", "reflow-document.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-lib/fontkit.umd.min.js");
+importScripts("structured-reader.js", "reflow-model.js", "reflow-typography.js", "layout-planner.js", "reflow-document.js", "vendor/pdf-lib/pdf-lib.min.js", "vendor/pdf-lib/fontkit.umd.min.js");
 (function(global) {
   "use strict";
   const P = global.BT_PDF_LAYOUT_PLANNER;

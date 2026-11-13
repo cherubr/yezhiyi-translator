@@ -49,7 +49,7 @@
       catch (error) { await close(); throw E.normalize(error, "parse"); }
     }
     /** 调用者串行等待旧句柄结束；取消时 getPage 的迟到结果不得启动 render。 */
-    function renderPage({pageNumber, scale, viewRotation, canvas, pixelBudget}, {signal}) {
+    function renderPage({pageNumber, scale, viewRotation, canvas, pixelBudget}, {signal, thumbnail = false}) {
       let cancelled = false, renderTask = null, page = null, settled = false;
       const cancel = () => { cancelled = true; renderTask?.cancel(); };
       const dispose = () => {
@@ -62,6 +62,10 @@
         E.check(signal);
         if (cancelled || closed) throw E.cancelled();
         const rotation = (page.rotate + viewRotation) % 360;
+        if (thumbnail) {
+          const size = page.getViewport({scale:1, rotation});
+          scale = Math.min(128 / size.width, 172 / size.height);
+        }
         const viewport = page.getViewport({scale, rotation});
         if (!Number.isFinite(viewport.width * viewport.height) || viewport.width <= 0 || viewport.height <= 0)
           throw E.create("RENDER_FAILED", "本页尺寸无效", "render");
@@ -84,10 +88,13 @@
       // 先登记句柄，再由 microtask 启动，便于换文件立即取消。
       const handle = {cancel, dispose, promise: null};
       handle.promise = E.wait(Promise.resolve().then(work).finally(() => { settled = true; dispose(); }),
-        {signal, stage: "render", onCancel: error => { cancel(); if (error.code === "TIMEOUT") void close(); }})
+        {signal, stage: "render", onCancel: error => { cancel(); if (!thumbnail && error.code === "TIMEOUT") void close(); }})
         .finally(() => { if (active === handle) active = null; });
-      active = handle;
+      if (!thumbnail) active = handle;
       return handle;
+    }
+    function renderThumbnail({pageNumber, viewRotation, canvas}, {signal}) {
+      return renderPage({pageNumber, viewRotation, canvas, scale:1, pixelBudget:100000}, {signal, thumbnail:true});
     }
     /** 公开文字 API；独立于缩放/视图旋转，返回固有页面坐标与 PDF 逻辑字符串。 */
     async function extractPage(pageNumber, {signal}) {
@@ -280,7 +287,7 @@
       closing = destroy();
       return closing;
     }
-    return {open, renderPage, pageSize, extractPage, probePageContent, close};
+    return {open, renderPage, renderThumbnail, pageSize, extractPage, probePageContent, close};
   }
   global.BT_PDF_READER = {create: createReader};
 })(window);

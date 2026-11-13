@@ -59,7 +59,7 @@
       // 程序代码始终使用源字符；旧修订仍留在存储中并保留明确撤销入口。
       if(block.role==="code")return {status:"skipped",reason:block.reason||"代码保持原样",...(saved?{userEdited:true,machine:machine||saved.machine||null}:{})};
       // 已校验来源身份的显式修订不能因新规则改判保护类型而悄悄消失。
-      // 原位规划器仍按 block 的可靠性/角色拒绝覆盖；用户可查看并明确撤销旧修订。
+      // 原位规划器仍按 block 的可靠性/角色拒绝覆盖；旧修订仅作为兼容的读取来源，新排版保存到独立编辑稿。
       return saved?{status:"translated",text:saved.text,userEdited:true,machine:machine||saved.machine||null}:machine;
     }
     const effectiveRows=entry=>entry.blocks.map(block=>({block,result:effectiveResult(entry,block)}));
@@ -596,26 +596,13 @@
         trimCache();scheduleOcrIdle();
       }
     }
-    async function saveEdit(blockId,text,restore=false) {
-      const entry=currentEntry, doc=documentRef, scope=editScope();
-      const block=entry?.blocks.find(item=>item.id===blockId);
-      // 新识别规则可能把旧版可编辑文字归入作者/公式保护区；仍允许用户明确撤销已有修订。
-      const saved=block&&edits.get(scope,page,block);
-      if(!doc?.contentId||!block||(!restore||!saved)&&(!block.eligible||block.role!=="text"))throw new Error("本段没有可靠的可编辑译文");
-      const machine=entry.results.get(blockId)||edits.get(scope,page,block)?.machine;
-      if(!restore&&!machine&&!effectiveResult(entry,block))throw new Error("请先翻译本段再编辑");
-      if(editError)throw new Error(editError);
-      if(restore){const prior=await edits.remove(scope,page,block);if(!entry.results.has(blockId)&&prior)entry.results.set(blockId,prior);}
-      else await edits.save(scope,page,block,text,machine);
-      if(!disposed&&documentRef===doc&&editScope()===scope){editVersion++;show(currentEntry,!paused);publish();}
-    }
     function dispose(){
       disposed=true;halt();cancelPrepare();multiStore.clear();
       cancelOcrIdle();cache.clear();ocrCache.clear();currentEntry=null;documentRef=null;adapter.dispose();if(ocr){void ocr.terminate();ocr=null;}
     }
     publish();void loadConfig();
     return {setDocument,setPage,viewReady,select,start:()=>run(state.canContinue?"continue":state.hasRun?"retranslate":"start"),cancel,loadConfig,
-      exportSnapshot,exportSnapshots,exportStamp,pageStatus,preparePages,cancelPrepare,saveEdit,
+      exportSnapshot,exportSnapshots,exportStamp,pageStatus,preparePages,cancelPrepare,
       limits:{maxPages:MAX_PREPARE_PAGES,pageBudget:PAGES_BUDGET},dispose};
   }
   global.BT_PDF_TRANSLATION_SESSION={create};

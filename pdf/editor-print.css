@@ -1,0 +1,5 @@
+body { margin:0; background:#e3e8ef; }
+header { position:sticky; top:0; z-index:1; padding:12px; background:white; border-bottom:1px solid #cdd7e4; font:14px system-ui,sans-serif; }
+header button { margin-right:12px; padding:8px 12px; }
+.editor-paper { margin:16px auto; box-shadow:0 1px 8px #0002; }
+@media print { body { background:white; } header { display:none; } }

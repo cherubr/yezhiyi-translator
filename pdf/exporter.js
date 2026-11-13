@@ -328,15 +328,15 @@
       });
     }
     /** 右侧预览与重排导出共用同一生成器。预览只读已安装字体，不暗中下载资源。 */
-    async function reflowPDF({signal,authorization,onProgress=()=>{}}={}) {
+    async function reflowPDF({signal,authorization,force=false,onProgress=()=>{}}={}) {
       E.check(signal);const currentDocument=getDocument(),snapshot=getSnapshot(),stamp=getStamp();
       if(!currentDocument||!snapshot)throw E.create("EXPORT_FAILED","请先翻译当前页，再生成重排译文","export");
-      const fingerprint=JSON.stringify([global.BT_PDF_REFLOW_MODEL.VERSION,snapshot]),digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(fingerprint));
+      const fingerprint=JSON.stringify([global.BT_PDF_REFLOW_MODEL.VERSION,global.BT_PDF_REFLOW_TYPOGRAPHY.VERSION,snapshot]),digest=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(fingerprint));
       const key=Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,"0")).join("");
       E.check(signal);
       if(disposed||getDocument()!==currentDocument||getStamp()!==stamp)throw E.cancelled();
       const cached=reflowCache.get(key);
-      if(cached){reflowCache.delete(key);reflowCache.set(key,cached);return {bytes:cached.bytes.slice(0),stats:cached.stats};}
+      if(cached&&!force){reflowCache.delete(key);reflowCache.set(key,cached);return {bytes:cached.bytes.slice(0),stats:cached.stats};}
       const controller=new AbortController(),abort=()=>controller.abort(E.cancelled());
       signal?.addEventListener("abort",abort,{once:true});reflowActive?.abort(E.cancelled());reflowActive=controller;
       try{
@@ -364,6 +364,7 @@
         const done=await composeInWorker(job,controller.signal,onProgress);
         E.check(controller.signal);
         if(disposed||getDocument()!==currentDocument||getStamp()!==stamp||getSnapshot()?.identity.page!==snapshot.identity.page)throw E.cancelled();
+        const old=reflowCache.get(key);if(old){reflowCacheBytes-=old.bytes.byteLength;reflowCache.delete(key);}
         if(done.bytes.byteLength<=32*1048576){
           reflowCache.set(key,{bytes:done.bytes,stats:done.stats});reflowCacheBytes+=done.bytes.byteLength;
           while(reflowCache.size>3||reflowCacheBytes>32*1048576){const first=reflowCache.keys().next().value;reflowCacheBytes-=reflowCache.get(first).bytes.byteLength;reflowCache.delete(first);}

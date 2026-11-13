@@ -330,9 +330,10 @@
     }
     /** P3-E F2：高亮环挂在不受 Overlay 开关影响的 flash-layer，双语模式定位也有反馈；身份不匹配 no-op，翻页/缩放随 resetPlanState 清空。 */
     function flashHighlight(blockId) {
-      if (!flashLayer) return;
-      const rect = getDisplayRect(blockId);
-      if (!rect) return;
+      flashDisplayRect(getDisplayRect(blockId));
+    }
+    function flashDisplayRect(rect) {
+      if (!flashLayer||!rect||![rect.x,rect.y,rect.right,rect.bottom].every(Number.isFinite)) return;
       if (flashTimer) { clearTimeout(flashTimer); flashTimer = 0; }
       for (const old of flashLayer.querySelectorAll(".pdf-marker-flash")) old.remove();
       const el = document.createElement("div");
@@ -378,7 +379,7 @@
       drawMarkers(m);
     }
 
-    return {mount, setView, setModel, setVisible, clear, refresh, getPlanSummary, getDisplayRect, flashHighlight};
+    return {mount, setView, setModel, setVisible, clear, refresh, getPlanSummary, getDisplayRect, flashHighlight, flashDisplayRect};
   }
   global.BT_PDF_TRANSLATION_RENDERER = {create};
 })(window);

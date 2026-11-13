@@ -64,7 +64,10 @@ function installChrome() {
   const NativeWorker = window.Worker;
   window.Worker = class extends NativeWorker {
     constructor(url, options) { super(url, options); this.isExport = String(url).includes("export-worker.js"); }
-    postMessage(...args) { if (this.isExport && control.holdExport) { control.exportHeld = true; return; } super.postMessage(...args); }
+    postMessage(...args) {
+      if (this.isExport && control.holdExport) { control.exportHeld = true; return; }
+      super.postMessage(...args);
+    }
   };
   const ports = [], changed = listeners();
   window.chrome = {
@@ -191,14 +194,35 @@ if(require.main===module)(async () => {
       else await page.selectOption("#viewMode",mode);
     };
     await upload(pdfs.native);
+    const languageCalls=await calls();
+    assert.equal(await visible('#translationConfigSummary'),true);
+    assert.equal(await visible('#translationFrom'),false,'language pickers stay collapsed behind the compact right-side summary');
+    await page.click('#translationConfigSummary');
+    assert.equal(await visible('#translationFrom'),true);assert.equal(await visible('#translationTo'),true);
+    await page.selectOption('#translationTo','es');
+    assert.equal(await visible('#applyHeaderConfig'),true,'language configuration is available without opening settings');
+    assert.equal(await visible('#settingsPanel'),false);assert.equal(await calls(),languageCalls,'choosing a language does not translate');
+    await page.selectOption('#translationTo','fr');assert.equal(await visible('#applyHeaderConfig'),false,'returning to the applied language clears the pending configuration');
+    await page.keyboard.press('Escape');assert.equal(await visible('#languagePopover'),false);
     await page.click("#zoomIn"); await waitReady();
     assert.equal(await page.inputValue("#zoom"),"110%");
     await page.click("#zoomOut"); await waitReady();
     assert.equal(await page.inputValue("#zoom"),"100%");
+    await setZoom('0.712');await waitReady();
+    assert.equal(await page.inputValue('#zoom'),'71%','toolbar rounds the displayed percentage');
+    assert.equal(await page.locator('#zoom').getAttribute('data-scale'),'0.712','display rounding preserves the precise rendering scale');
+    await page.locator('#zoom').focus();await page.locator('#zoom').press('Tab');
+    assert.equal(await page.locator('#zoom').getAttribute('data-scale'),'0.712','focusing the rounded display must not write the rounded value back');
+    await page.click('#zoomIn');await waitReady();assert.equal(await page.inputValue('#zoom'),'80%','zoom in snaps to the next whole ten percent');
+    await setZoom('0.712');await waitReady();
+    await page.click('#zoomOut');await waitReady();assert.equal(await page.inputValue('#zoom'),'70%','zoom out snaps to the previous whole ten percent');
+    await setZoom('1');await waitReady();
     await page.fill("#zoom","500%"); await page.locator("#zoom").press("Enter");
     assert.equal(await page.locator("#zoom").getAttribute("data-scale"),"1");
     await page.locator("#zoom").press("Escape");
     await setZoom("fit-page"); await waitReady();
+    assert.match(await page.inputValue('#zoom'),/^\d+%$/,'fit mode displays an integer without discarding the calculated scale');
+    assert.equal(await page.locator('#zoomFit svg').count(),2,'fit icons survive state updates');
     await page.locator("#zoom").focus(); await page.keyboard.press("Escape");
     assert.equal(await page.locator("#zoomFit").getAttribute("data-mode"),"fit-page","cancelled editing preserves fit mode");
     await page.waitForFunction(() => {
@@ -360,6 +384,10 @@ if(require.main===module)(async () => {
     await page.waitForFunction(id=>document.activeElement?.classList.contains("translation-row-active")&&document.activeElement.dataset.blockId===id,rightId);
     assert.equal(await calls(),markerCalls,"marker navigation reuses results without translation requests");
     await setViewMode("original");assert.equal(await visible("#canvasHost .page-overlay"),false);
+    await setViewMode("bilingual");await page.selectOption("#bilingualLayout","flow");
+    await page.waitForFunction(()=>document.getElementById('editorPaper').contentEditable==='true');
+    assert.equal(await page.locator('#reflowEditor').count(),0,'folded legacy editor is deleted');
+    assert.equal(await calls(),markerCalls,'opening editable layout reuses existing translation');
     await setViewMode("translated");
     console.log("PASS PDF UI: local load, modes, canvas identity, keyboard marker, bilingual translation inspection navigation, page cache, zoom/rotation");
 
@@ -445,11 +473,13 @@ if(require.main===module)(async () => {
     await page.waitForFunction(() => /中断/.test(document.getElementById("translationStatus").textContent));
     assert.equal(await page.locator("#translationPanelStatus").getAttribute("data-error"), "true");
     await page.evaluate(() => { pdfUiTest.delay = 0; }); await page.click("#startTranslation"); await waitDone();
-    await page.click("#openSettingsPanel"); await page.selectOption("#translationTo", "es");
+    await page.click('#translationConfigSummary');await page.selectOption("#translationTo", "es");
     assert.ok(await page.locator(".translation-result").count() > 0, "draft configuration preserves existing translations");
-    assert.equal(await visible("#applyTranslationConfig"), true);
+    assert.equal(await visible("#applyHeaderConfig"), true);
+    assert.equal(await visible("#settingsPanel"), false);
     assert.equal(await page.locator("#startTranslation").isDisabled(), true);
-    await page.click("#applyTranslationConfig");
+    await page.click("#applyHeaderConfig");
+    assert.equal(await visible('#languagePopover'),false,'applying a language restores the compact header');
     assert.equal(await page.locator(".translation-result").count(), 0);
     await page.keyboard.press("Escape"); await page.click("#startTranslation"); await waitDone();
     await page.evaluate(() => { pdfUiTest.failAt = "paragraph 3"; }); await page.click("#startTranslation");
@@ -521,9 +551,10 @@ if(require.main===module)(async () => {
     assert.equal(await page.locator("#comparisonSplitter").getAttribute("aria-valuenow"), "35", "restore saved split ratio");
     await page.setViewportSize({width:1440,height:900});
     await upload(pdfs.native);await page.click("#startTranslation");await waitDone();await setViewMode("bilingual");
-    assert.equal(await page.inputValue('#bilingualLayout'),'page','bilingual defaults to the translated page, independently of translation checks');
+    assert.equal(await page.inputValue('#bilingualLayout'),'flow','bilingual defaults to the document editor');
+    await page.selectOption('#bilingualLayout','page');
     await page.waitForSelector('#bilingualCanvasHost .pdf-place-text');
-    assert.equal(await visible('#structuredRows'),false);
+    assert.equal(await visible('#editorViewport'),false);
     assert.equal(await visible('#translationCard'),false);
     const bilingualCalls=await calls();
     await page.evaluate(()=>{window.bilingualSourceCanvas=document.querySelector('#canvasHost canvas');});
@@ -535,154 +566,224 @@ if(require.main===module)(async () => {
     assert.ok(rightPage.pixels<=4000000,'one bounded preview bitmap');
     await page.click('#openSettingsPanel');assert.equal(await page.locator('#bilingualCanvasHost canvas').count(),0,'hidden task panels release the preview');
     await page.keyboard.press('Escape');await page.waitForSelector('#bilingualCanvasHost .pdf-place-text');
-    await page.selectOption('#bilingualLayout','flow');assert.equal(await visible('#structuredRows'),true);
+    await page.selectOption('#bilingualLayout','flow');assert.equal(await visible('#editorViewport'),true);
     assert.equal(await page.locator('#bilingualCanvasHost canvas').count(),0);
     await page.selectOption('#bilingualLayout','page');await page.waitForSelector('#bilingualCanvasHost .pdf-place-text');
     assert.equal(await calls(),bilingualCalls,'bilingual presentation and task panels must not translate');
     assert.equal(await page.evaluate(()=>bilingualSourceCanvas===document.querySelector('#canvasHost canvas')),true);
     await page.selectOption('#bilingualLayout','flow');
-    const firstBlock=page.locator("#structuredRows .structured-block").first();
-    const machineText=await firstBlock.locator(".structured-text").textContent();
-    await setZoom("0.75");await waitReady();
-    const locateCalls=await calls();await page.evaluate(()=>{window.locateCanvas=document.querySelector("#canvasHost canvas");});
-    await firstBlock.locator(".structured-text").click();
-    assert.equal(await firstBlock.getAttribute("aria-current"),"true");
-    await page.locator("#structuredRows .structured-block").nth(1).locator(".structured-text").click();
-    assert.equal(await firstBlock.getAttribute("aria-current"),null);
-    await page.locator("#canvasHost canvas").click({position:{x:60,y:71}});
-    assert.equal(await firstBlock.getAttribute("aria-current"),"true");
-    assert.equal(await calls(),locateCalls,"two-way structured navigation must not translate");
-    assert.equal(await page.evaluate(()=>locateCanvas===document.querySelector("#canvasHost canvas")),true,"two-way navigation preserves canvas");
-    await setZoom("1");await waitReady();
-    const editText=async text=>{
-      await firstBlock.getByRole("button",{name:"编辑",exact:true}).click();
-      await firstBlock.locator("textarea").fill(text);
-      await firstBlock.getByRole("button",{name:"保存",exact:true}).click();
-      await firstBlock.locator("textarea").waitFor({state:"hidden"});
-    };
-    await editText("Saved manual revision B");
-    assert.match(await firstBlock.textContent(),/已修改/);
-    await setViewMode("translated");
-    await page.waitForFunction(()=>document.querySelector("#canvasHost .pdf-place-text")?.textContent.replace(/\s/g,"").includes("SavedmanualrevisionB"));
-    await setViewMode("bilingual");
-    await firstBlock.getByRole("button",{name:"编辑",exact:true}).click();await firstBlock.locator("textarea").fill("   ");
-    await firstBlock.getByRole("button",{name:"保存",exact:true}).click();assert.match(await firstBlock.textContent(),/不能为空/);
-    await firstBlock.locator("textarea").fill("Unsaved draft");
-    await page.click("#openSettingsPanel");assert.equal(await visible("#structuredCard"),false);
-    await page.keyboard.press("Escape");assert.equal(await firstBlock.locator("textarea").inputValue(),"Unsaved draft","task panels preserve editor draft");
-    await setViewMode("original");assert.equal(await visible("#structuredCard"),false);await setViewMode("bilingual");
-    assert.equal(await firstBlock.locator("textarea").inputValue(),"Unsaved draft");
-    await page.click("#next");await waitDone();await page.click("#previous");await waitDone();
-    assert.equal(await firstBlock.locator("textarea").inputValue(),"Unsaved draft");
-    await firstBlock.getByRole("button",{name:"取消",exact:true}).click();
-    assert.equal(await firstBlock.locator(".structured-text").textContent(),"Saved manual revision B");
-    await page.click("#startTranslation");await waitDone();assert.equal(await firstBlock.locator(".structured-text").textContent(),"Saved manual revision B");
-    await setZoom("1.25");await waitReady();
-    const parseExport=async buffer=>page.evaluate(async bytes=>{
-      const pdfjs=await import("/pdf/vendor/build/pdf.mjs");pdfjs.GlobalWorkerOptions.workerSrc="/pdf/vendor/build/pdf.worker.mjs";
-      const loading=pdfjs.getDocument({data:new Uint8Array(bytes),standardFontDataUrl:"/pdf/vendor/standard_fonts/",verbosity:0}),doc=await loading.promise;
-      let text="";for(let i=1;i<=doc.numPages;i++)text+=(await (await doc.getPage(i)).getTextContent()).items.map(item=>item.str||"").join(" ");
-      await loading.destroy();return text;
-    },[...buffer]);
-    await page.click("#openExportPanel");assert.equal(await page.inputValue("#zoom"),"125%");
-    assert.equal(await page.locator("#exportContent option[value=bilingual]").count(),0);
-    for(const layout of ["preserved","structured"]){
-      await page.selectOption("#exportContent","translated");await page.selectOption("#exportPages","current");await page.selectOption("#exportLayout",layout);
-      const downloadPromise=page.waitForEvent("download");await page.click("#exportNow");const downloaded=await downloadPromise;
-      assert.ok((await parseExport(fs.readFileSync(await downloaded.path()))).includes("Saved manual revision B"),"effective edits exported: "+layout);
+    await page.waitForFunction(()=>document.getElementById('editorPaper').contentEditable==='true');
+    assert.equal(await page.locator('#reflowEditor, .structured-actions, .structured-editor').count(),0);
+    // 双向定位只改变滚动与高亮，不修改编辑稿、切换模式或发起翻译。
+    const linkedBefore=await page.locator('#editorPaper').textContent(),linkedCalls=await calls();
+    const sourceAt=await page.locator('#editorPaper [data-block-id]').first().getAttribute('data-block-id');
+    await page.locator('#editorPaper [data-block-id]').first().click();await page.waitForSelector('#canvasHost .pdf-marker-flash');
+    assert.equal(await page.locator('#editorPaper .editor-selected').first().getAttribute('data-block-id'),sourceAt);
+    await page.evaluate(()=>document.querySelector('#canvasHost .pdf-marker-flash')?.remove());
+    await page.locator('#viewport').evaluate(node=>{node.scrollTop=0;node.scrollLeft=0;});
+    await page.locator('#canvasHost canvas').evaluate(canvas=>{
+      const rect=canvas.getBoundingClientRect();canvas.dispatchEvent(new MouseEvent('click',{bubbles:true,clientX:rect.left+rect.width*100/600,clientY:rect.top+rect.height*95/800}));
+    });
+    assert.equal(await page.locator('#editorPaper .editor-selected').first().getAttribute('data-block-id'),sourceAt,'source text click highlights its editor paragraph');
+    assert.equal(await page.locator('#editorPaper').textContent(),linkedBefore);assert.equal(await calls(),linkedCalls);
+    assert.equal(await page.inputValue('#viewMode'),'bilingual');
+    await page.click('#next');await waitDone();
+    await page.waitForFunction(()=>document.getElementById('editorStatus').textContent.includes('原文第 2 页')&&document.getElementById('editorPaper').textContent.trim().length>0);
+    await page.click('#previous');await waitDone();
+    await page.waitForFunction(()=>document.getElementById('editorStatus').textContent.includes('原文第 1 页')&&document.getElementById('editorPaper').textContent.trim().length>0);
+    await page.evaluate(async()=>{
+      // 用独立宿主和延迟存储重现翻页清屏时失焦，不动真实阅读器和数据库。
+      const host=document.createElement('div');host.innerHTML=document.getElementById('structuredCard').innerHTML;
+      const paper=host.querySelector('#editorPaper'),viewport=host.querySelector('#editorViewport'),toolbar=host.querySelector('#editorToolbar'),status=host.querySelector('#editorStatus');
+      const documentFor=text=>({version:1,page:{width:600,height:800,margin:20},style:{fontSize:'10pt'},children:text?[{tag:'p',sourceId:'block',children:[text]}]:[]});
+      const saved=new Map([['A',{document:documentFor('Page A draft'),revision:1}],['B',{document:documentFor('Page B draft'),revision:1}],['C',{document:documentFor(''),revision:1}]]),writes=[];
+      let key='A',releaseB;
+      const input=()=>({key,page:key==='A'?1:key==='B'?2:3,name:'test.pdf',available:true,busy:false,signature:key,
+        rows:[{block:{id:'block',text:'Source paragraph',role:'text',kind:'paragraph',height:10,eligible:true,reliable:true,order:0,rect:{x:20,y:20,right:250,bottom:50},lines:[]},result:{status:'translated',text:'Recovered translation'}}],
+        geometry:{pageNumber:3,width:600,height:800,visuals:[]},scale:1});
+      const storage={read:async value=>{if(value==='B')await new Promise(resolve=>{releaseB=resolve;});return saved.get(value)||null;},
+        write:async(value,document,revision,meta)=>{writes.push({value,document,meta});const record={document,revision:revision+1,...meta};saved.set(value,record);return record;},remove:async()=>{}};
+      const replace=paper.replaceChildren.bind(paper);
+      paper.replaceChildren=(...nodes)=>{replace(...nodes);paper.dispatchEvent(new FocusEvent('blur'));};
+      const editor=BT_PDF_DOCUMENT_EDITOR.create({viewport,paper,toolbar,status,getInput:input,onLocate:()=>{},storage});
+      try{
+        await editor.update();if(paper.textContent!=='Page A draft')throw new Error('first draft not mounted');
+        key='B';const waiting=editor.update();paper.dispatchEvent(new FocusEvent('blur'));
+        key='A';await editor.update();releaseB();await waiting;
+        if(paper.textContent!=='Page A draft'||writes.length)throw new Error('late read or cleared DOM overwrote an untouched draft');
+        key='B';await editor.update();if(paper.textContent!=='Page B draft'||writes.length)throw new Error('cached-page mount became an empty saved draft');
+        key='C';await editor.update();if(host.querySelector('#editorRecovery').hidden)throw new Error('legacy blank draft has no recovery entry');
+        host.querySelector('#editorRecover').click();if(!paper.textContent.includes('Recovered translation'))throw new Error('blank draft recovery did not import existing translation');
+        toolbar.querySelector('[data-action="save"]').click();await new Promise(resolve=>setTimeout(resolve,0));
+        replace();paper.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'deleteContentBackward'}));
+        toolbar.querySelector('[data-action="save"]').click();await new Promise(resolve=>setTimeout(resolve,0));
+        if(saved.get('C').intentionalEmpty!==true)throw new Error('intentional user clearing was not distinguished from a legacy empty draft');
+      }finally{editor.dispose();}
+    });
+    await page.evaluate(()=>{
+      const O=BT_PDF_EDITOR_OPERATIONS,root=document.createElement('div');
+      const rect={x:0,y:0,right:100,bottom:100},small={x:20,y:20,right:30,bottom:30};
+      if(O.pickSource([{id:'large',rect},{id:'small',rect:small}],25,25)?.id!=='small')throw new Error('overlapping region chose the first rather than smallest target');
+      if(O.pickSource([{id:'small',rect:small},{id:'line',rect,lines:[{rect:small}]}],25,25)?.id!=='line')throw new Error('text-line evidence was ignored');
+      if(O.pickSource([{id:'small',rect:small}],80,80))throw new Error('blank space guessed another paragraph');
+      root.innerHTML='<p>Alpha <b>Beta</b> a+b[0] 😀</p><p>Gamma</p><table><tbody><tr><td>One</td><td>Two</td></tr></tbody></table>';
+      if(O.find(root,'alpha beta').ranges.length!==1)throw new Error('styled text not found');
+      if(O.find(root,'alpha beta',{caseSensitive:true}).ranges.length)throw new Error('case-sensitive search ignored');
+      if(O.find(root,'a+b[0]').ranges.length!==1||O.find(root,'😀').ranges.length!==1)throw new Error('literal or unicode search failed');
+      if(O.find(root,'😀Gamma').ranges.length||O.find(root,'OneTwo').ranges.length)throw new Error('search crossed a structure boundary');
+      const match=O.find(root,'Beta').ranges[0],mark=O.bookmark(root,match);root.innerHTML=root.innerHTML;
+      if(O.restore(root,mark)?.toString()!=='Beta')throw new Error('selection bookmark not restored');
+      root.textContent='x x x';const limited=O.find(root,'x',{limit:2});if(!limited.limited||limited.ranges.length!==2)throw new Error('match budget ignored');
+      root.style.fontSize='10pt';root.innerHTML='<h2>Title</h2>';
+      let range=document.createRange();range.selectNodeContents(root.firstChild);range.collapse(false);
+      if(!O.newline(root,range)||root.lastElementChild.tagName!=='P'||root.lastElementChild.style.fontSize!=='10pt')throw new Error('heading did not continue as body');
+      root.innerHTML='<p>one <b>two</b> three</p>';
+      range=document.createRange();range.setStart(root.querySelector('b').firstChild,1);range.collapse(true);
+      if(!O.newline(root,range,{soft:true})||root.children.length!==1||root.textContent!=='one two three'||root.querySelector('b').textContent!=='t')throw new Error('soft break lost text or changed trailing styles');
+      root.innerHTML='<table><tbody><tr><td><p>Cell text</p></td></tr></tbody></table>';
+      range=document.createRange();range.setStart(root.querySelector('p').firstChild,4);range.collapse(true);
+      if(!O.newline(root,range)||root.querySelectorAll('td').length!==1||root.querySelectorAll('td > p').length!==2)throw new Error('paragraph break damaged the table');
+    });
+    const beforeEditor=await calls();
+    await page.locator('#editorPaper').evaluate(node=>{
+      node.innerHTML='<p><span style="font-size:10pt;font-family:sans-serif">small </span><strong style="font-size:20pt;font-family:serif">large</strong></p>';
+      node.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText'}));node.focus();
+      const range=document.createRange();range.selectNodeContents(node);getSelection().removeAllRanges();getSelection().addRange(range);
+      document.dispatchEvent(new Event('selectionchange'));
+    });
+    assert.equal(await page.locator('[data-action="size"]').inputValue(),'','mixed font sizes do not show a misleading single value');
+    assert.equal(await page.locator('[data-action="family"]').inputValue(),'');
+    assert.equal(await page.locator('[data-action="bold"]').getAttribute('aria-pressed'),'mixed');
+    await page.locator('#editorPaper').fill('Draft');await page.locator('[data-action="save"]').click();
+    await page.waitForFunction(()=>document.getElementById('editorStatus').textContent.includes('编辑稿已保存'));
+    await page.locator('#editorPaper').press('ControlOrMeta+End');await page.keyboard.type(' typed');
+    await page.locator('#editorPaper').evaluate(node=>{
+      node.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+      document.execCommand('insertText',false,'中文');
+      node.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true,data:'中文'}));
+    });
+    await page.locator('#editorPaper').press('ControlOrMeta+Z');
+    assert.equal(await page.locator('#editorPaper').textContent(),'Draft typed','undo separates IME text from earlier typing');
+    await page.locator('#editorPaper').evaluate(node=>{
+      const data=new DataTransfer();data.setData('text/plain',' pasted');
+      node.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));
+    });
+    await page.locator('#editorPaper').press('ControlOrMeta+Z');
+    assert.equal(await page.locator('#editorPaper').textContent(),'Draft typed','undoing paste preserves previously typed text');
+    await page.locator('.editor-more summary').click();await page.selectOption('[data-view="paste"]','plain');
+    await page.locator('#editorPaper').press('ControlOrMeta+End');
+    const beforePlainParagraphs=await page.locator('#editorPaper p').count();
+    await page.locator('#editorPaper').evaluate(node=>{
+      const data=new DataTransfer();data.setData('text/plain',' plain');data.setData('text/html','<h1> plain</h1>');
+      node.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));
+    });
+    assert.equal(await page.locator('#editorPaper').textContent(),'Draft typed plain');
+    assert.equal(await page.locator('#editorPaper p').count(),beforePlainParagraphs,'single-line plain paste stays in the current paragraph');
+    assert.equal(await page.locator('#editorPaper h1').count(),0,'plain paste ignores clipboard formatting');
+    await page.locator('#editorPaper').press('ControlOrMeta+Z');
+    await page.selectOption('[data-view="paste"]','formatted');await page.locator('.editor-more summary').click();
+    await page.locator('#editorPaper').fill('An edited document paragraph.');
+    await page.locator('#editorPaper').press('ControlOrMeta+A');
+    await page.locator('[data-action="size"]').fill('14');
+    await page.locator('[data-action="bold"]').click();
+    assert.equal(await page.evaluate(()=>getSelection().toString()),'An edited document paragraph.','consecutive toolbar changes use the same selection');
+    const beforeFormatSpans=await page.locator('#editorPaper span').count();
+    for(let size=15;size<=22;size++){
+      await page.locator('[data-action="size"]').fill(String(size));await page.locator('[data-action="size"]').press('Tab');
     }
-    await page.keyboard.press("Escape");assert.equal(await visible("#structuredCard"),true);assert.equal(await page.inputValue("#zoom"),"125%");
-    await firstBlock.getByRole("button",{name:"恢复机器翻译",exact:true}).click();
-    await page.waitForFunction(expected=>document.querySelector("#structuredRows .structured-text")?.textContent===expected,machineText);
-    await editText("Saved manual revision B");
-    await page.evaluate(()=>{pdfUiTest.delay=600;});const delayedCalls=await calls();await page.click("#startTranslation");
-    await page.waitForFunction(count=>pdfUiTest.calls.length>count,delayedCalls);
-    await editText("Saved manual revision C");await waitDone();
-    assert.equal(await firstBlock.locator(".structured-text").textContent(),"Saved manual revision C");
-    await page.reload();await upload(pdfs.native,"same-content-new-name.pdf");await page.click("#startTranslation");await waitDone();await setViewMode("bilingual");
-    await page.selectOption('#bilingualLayout','flow');
-    assert.equal(await firstBlock.locator(".structured-text").textContent(),"Saved manual revision C","saved edits survive reopening same bytes under a new name");
-    await page.click("#openSettingsPanel");await page.selectOption("#translationTo","es");await page.click("#applyTranslationConfig");await page.keyboard.press("Escape");
-    await page.click("#startTranslation");await waitDone();assert.notEqual(await firstBlock.locator(".structured-text").textContent(),"Saved manual revision C");
-    await page.click("#openSettingsPanel");await page.selectOption("#translationTo","fr");await page.click("#applyTranslationConfig");await page.keyboard.press("Escape");
-    await page.click("#startTranslation");await waitDone();assert.equal(await firstBlock.locator(".structured-text").textContent(),"Saved manual revision C");
-    console.log("PASS PDF product: three modes, edit/save/cancel/restore, drafts, real edited exports, late-task protection and persistent language isolation");
-    // 真实 PDF.js 结构、图片保留与编辑/导出链路；服务边界仍为可计数替身。
-    await page.evaluate(()=>{pdfUiTest.delay=0;pdfUiTest.long=false;delete pdfUiTest.targetText;});
-    await upload(pdfs.complex,'complex-content.pdf');await setViewMode('bilingual');
-    const complexCalls=await calls();await page.click('#startTranslation');await waitDone();
-    await page.waitForSelector('#structuredRows table');
-    assert.equal(await page.locator('#structuredRows table tr').count(),3);
-    assert.equal(await page.locator('#structuredRows table td').count(),9);
-    assert.equal(await page.locator('.structured-contributor-columns').count(),1);
-    const sent=await page.evaluate(n=>pdfUiTest.calls.slice(n).map(x=>x.text),complexCalls);
-    assert.ok(!sent.some(s=>/Alice Smith|Bob Jones|alice@example|bob@example|Research Institute/.test(s)),'authors and affiliations stay protected');
-    const cell=page.locator('#structuredRows td .structured-block').filter({hasText:'Translated: Cell 1 0'});
-    await cell.hover();await cell.getByRole('button',{name:'编辑',exact:true}).click();
-    await cell.locator('textarea').fill('Edited table cell');await cell.getByRole('button',{name:'保存',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('#structuredRows table')?.textContent.includes('Edited table cell'));
-    await page.click('#openExportPanel');await page.selectOption('#exportPages','current');await page.selectOption('#exportLayout','structured');
-    let complexDownload=page.waitForEvent('download');await page.click('#exportNow');let exported=await complexDownload;
-    assert.match(await parseExport(fs.readFileSync(await exported.path())),/Edited table cell/);
-    assert.match(exported.suggestedFilename(),/结构化译文/);await page.keyboard.press('Escape');
-    await page.click('#next');await waitDone();
-    await page.waitForFunction(()=>{const c=document.querySelector('#structuredRows .structured-visual');return c&&!c.hidden&&c.width>10;});
-    assert.equal(await page.locator('#structuredRows .structured-visual').count(),1,'one diagram preview, not one per label');
-    const diagramPixels=await page.locator('#structuredRows .structured-visual').evaluate(canvas=>{
-      const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;let dark=0;
-      for(let i=0;i<pixels.length;i+=4)if(pixels[i]<150&&pixels[i+1]<150&&pixels[i+2]<150)dark++;return dark;
-    });assert.ok(diagramPixels>50,'the diagram contains real original strokes');
-    const label=page.locator('#structuredRows .structured-figure .structured-block').filter({hasText:'Translated: Input'});
-    await label.hover();await label.getByRole('button',{name:'编辑',exact:true}).click();await label.locator('textarea').fill('Edited graph label');
-    await label.getByRole('button',{name:'保存',exact:true}).click();await page.waitForFunction(()=>document.getElementById('structuredRows').textContent.includes('Edited graph label'));
-    const revisedLabel=page.locator('#structuredRows .structured-figure .structured-block').filter({hasText:'Edited graph label'});
-    await revisedLabel.click();await page.waitForSelector('.pdf-marker-flash');
-    await page.click('#openExportPanel');await page.selectOption('#exportLayout','structured');complexDownload=page.waitForEvent('download');await page.click('#exportNow');exported=await complexDownload;
-    assert.match(await parseExport(fs.readFileSync(await exported.path())),/Edited graph label/);await page.keyboard.press('Escape');
-    const noReissue=await calls();await setZoom("1.25");await waitReady();
-    await setViewMode('original');await setViewMode('translated');await setViewMode('bilingual');assert.equal(await calls(),noReissue);
-    assert.match(await revisedLabel.textContent(),/Edited graph label/,'graph label edit survives zoom and mode changes');
-    await page.click('#next');await waitDone();
-    await page.waitForFunction(()=>{const c=document.querySelector('#structuredRows .structured-visual');return c&&!c.hidden&&c.width>10;});
-    assert.equal(await page.locator('#structuredRows .structured-visual').count(),1);
-    const photo=await page.locator('#structuredRows .structured-visual').evaluate(canvas=>{
-      const p=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;let colored=0;
-      for(let i=0;i<p.length;i+=4)if(p[i+2]>p[i]+30)colored++;return {ratio:canvas.width/canvas.height,colored};
-    });assert.ok(photo.colored>100,'embedded bitmap retains its colored pixels');assert.ok(Math.abs(photo.ratio-200/140)<.03);
-    await page.click('#openExportPanel');await page.selectOption('#exportLayout','structured');complexDownload=page.waitForEvent('download');await page.click('#exportNow');exported=await complexDownload;
-    const exportedImage=await page.evaluate(async bytes=>{
-      const pdfjs=await import('/pdf/vendor/build/pdf.mjs');const loading=pdfjs.getDocument({data:new Uint8Array(bytes),standardFontDataUrl:'/pdf/vendor/standard_fonts/',verbosity:0}),doc=await loading.promise;
-      let images=0;for(let i=1;i<=doc.numPages;i++){const ops=await (await doc.getPage(i)).getOperatorList();images+=ops.fnArray.filter(x=>x===pdfjs.OPS.paintImageXObject||x===pdfjs.OPS.paintInlineImageXObject).length;}
-      await loading.destroy();return images;
-    },[...fs.readFileSync(await exported.path())]);assert.equal(exportedImage,1,'structured export preserves the bitmap once');
-    await page.keyboard.press('Escape');
-    await page.click('#next');await waitDone();
-    assert.ok(!await page.evaluate(()=>pdfUiTest.calls.some(x=>x.text==='y = x^2 + 1'||x.text==='const answer = 42;')));
-    for(const number of [5,6]){
-      await page.fill('#pageNumber',String(number));await page.locator('#pageNumber').press('Enter');await waitDone();
-      await setZoom("fit-page");await waitReady();
-      assert.equal(await page.evaluate(()=>{const v=document.getElementById('viewport'),c=v.querySelector('canvas').getBoundingClientRect();return c.width<=v.clientWidth&&c.height<=v.clientHeight;}),true);
-    }
-    await page.fill('#pageNumber','7');await page.locator('#pageNumber').press('Enter');await waitDone();
-    await page.waitForFunction(()=>{const c=document.querySelector('#structuredRows .structured-visual');return c&&!c.hidden&&c.width>10;});
-    assert.equal(await page.locator('#structuredRows .structured-visual').count(),1,'one original chart, not reconstructed bars');
-    assert.ok(await page.locator('#structuredRows .structured-visual').evaluate(canvas=>{
-      const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;let blue=0;
-      for(let i=0;i<pixels.length;i+=4)if(pixels[i+2]>pixels[i]+50)blue++;return blue>100;
-    }),'source chart bars remain visible');
-    await page.fill('#pageNumber','1');await page.locator('#pageNumber').press('Enter');await waitDone();
-    assert.match(await page.locator('#structuredRows table').textContent(),/Edited table cell/,'table-cell edit survives page-cache eviction');
-    console.log('PASS PDF complex: 3x3 table, author protection, edited cells, original diagram/bitmap pixels, one-image export, mixed page sizes and cache eviction');
-    // 模拟后续结构规则把旧版可编辑文字改判为保护内容；已有修订仍能明确撤销，不能卡死恢复入口。
-    await page.evaluate(()=>{const process=BT_PDF_BLOCKS.process;BT_PDF_BLOCKS.process=(...args)=>{
-      const model=process(...args);for(const block of model.blocks)if(block.text==='Cell 1 0'){block.role='author';block.eligible=false;block.reason='作者姓名与标记保持原样';}return model;
-    };});
-    await upload(pdfs.complex,'protected-migration.pdf');await page.click('#startTranslation');await waitDone();
-    const migrated=page.locator('#structuredRows table .structured-block').filter({hasText:'Edited table cell'});
-    await migrated.hover();await migrated.getByRole('button',{name:'恢复机器翻译',exact:true}).click();
-    await page.waitForFunction(()=>!document.querySelector('#structuredRows table')?.textContent.includes('Edited table cell'));
-    assert.ok((await page.locator('#structuredRows table .structured-text').allTextContents()).includes('Cell 1 0'),'restore keeps the newly protected original, not an obsolete machine translation');
-    console.log('PASS PDF edit migration: saved revision remains removable after protected-content reclassification');
+    await page.locator('[data-action="size"]').fill('14');await page.locator('[data-action="size"]').press('Tab');
+    assert.ok(await page.locator('#editorPaper span').count()<=beforeFormatSpans+1,'repeated font changes reuse an existing format wrapper');
+    await page.locator('[data-action="save"]').click();
+    await page.waitForFunction(()=>document.getElementById('editorStatus').textContent.includes('编辑稿已保存'));
+    assert.ok(await page.locator('#editorPaper span').evaluateAll(nodes=>nodes.some(node=>node.style.fontSize==='14pt')));
+    await page.locator('#editorPaper').click();await page.locator('#editorPaper').press('ControlOrMeta+End');
+    await page.locator('.editor-more summary').click();
+    await page.locator('[data-action="table"]').click();
+    assert.equal(await page.locator('#editorPaper table td').count(),4);
+    assert.equal(await page.locator('#editorPaper p table, #editorPaper span table').count(),0,'block insertion stays outside paragraph and inline wrappers');
+    await page.locator('#editorPaper table td').first().click();
+    await page.locator('[data-action="row-add"]').click();assert.equal(await page.locator('#editorPaper table tr').count(),3);
+    await page.locator('[data-action="column-add"]').click();assert.equal(await page.locator('#editorPaper table td').count(),9);
+    await page.locator('[data-action="row-remove"]').click();
+    await page.locator('[data-action="column-remove"]').click();assert.equal(await page.locator('#editorPaper table td').count(),4);
+    const beforeZoom=await page.locator('#editorPaper').evaluate(node=>node.textContent);
+    await page.selectOption('[data-view="zoom"]','1.5');
+    assert.equal(await page.locator('#editorPaper').evaluate(node=>node.style.zoom),'1.125');
+    assert.equal(await page.locator('#editorPaper').textContent(),beforeZoom,'view zoom does not change document content');
+    await page.fill('#zoom','120%');await page.locator('#zoom').press('Enter');await waitReady();
+    assert.equal(await page.locator('[data-view="zoom"]').inputValue(),'reader','top zoom resumes linked control of both sides');
+    await page.waitForFunction(()=>Math.abs(Number(document.getElementById('editorPaper').style.zoom)-.9)<.00001);
+    await page.click('#zoomIn');await waitReady();
+    await page.waitForFunction(()=>Math.abs(Number(document.getElementById('editorPaper').style.zoom)-.975)<.00001);
+    await page.click('#zoomOut');await waitReady();
+    await page.waitForFunction(()=>Math.abs(Number(document.getElementById('editorPaper').style.zoom)-.9)<.00001);
+    await page.click('#zoomFit');await waitReady();
+    assert.equal(await page.locator('[data-view="zoom"]').inputValue(),'reader','fit actions keep the editor linked');
+    await page.click('#editorToggleTools');assert.equal(await visible('#editorToolbar'),false);
+    assert.equal(await page.locator('#editorPaper').getAttribute('contenteditable'),'true','collapsing tools preserves direct editing');
+    assert.equal(await page.locator('#editorPaper').textContent(),beforeZoom,'collapsing tools preserves the current document');
+    await page.click('#editorToggleTools');assert.equal(await visible('#editorToolbar'),true);
+    await page.locator('[data-ui="find"]').click();
+    await page.locator('[data-find="query"]').fill('edited document');
+    await page.locator('[data-search="next"]').click();
+    assert.equal(await page.evaluate(()=>getSelection().toString()),'edited document','search works across inline formatting');
+    await page.locator('[data-find="replacement"]').fill('revised document');
+    await page.locator('[data-search="replace"]').click();
+    assert.match(await page.locator('#editorPaper').textContent(),/An revised document paragraph/);
+    await page.locator('[data-action="undo"]').click();
+    assert.match(await page.locator('#editorPaper').textContent(),/An edited document paragraph/);
+    assert.equal(await page.evaluate(()=>getSelection().toString()),'edited document','undo restores the edited selection');
+    await page.locator('[data-ui="close-find"]').click();
+    await page.selectOption('[data-page="preset"]','a4');await page.locator('[data-page="margin"]').fill('15');
+    await page.locator('[data-action="page-apply"]').click();
+    const editorPage=await page.locator('#editorPaper').evaluate(node=>({width:node.style.width,padding:node.style.padding}));
+    assert.equal(editorPage.width,'595.28pt');assert.equal(editorPage.padding,'42.52pt');
+    await page.locator('[data-page="margin"]').fill('1000');await page.locator('[data-action="page-apply"]').click();
+    assert.equal(await page.locator('#editorPaper').evaluate(node=>node.style.padding),'42.52pt','invalid margins leave the document unchanged');
+    await page.locator('[data-action="save"]').click();await page.waitForFunction(()=>document.getElementById('editorStatus').textContent.includes('编辑稿已保存'));
+    await page.click('#next');await waitDone();await page.click('#previous');await waitDone();
+    await page.waitForFunction(()=>document.getElementById('editorPaper').textContent.includes('An edited document paragraph.'));
+    assert.equal(await page.locator('#editorPaper table td').count(),4,'page-local custom layout survives navigation');
+    assert.ok(!(await page.locator('#translationRows').textContent()).includes('An edited document paragraph.'),'custom editor does not overwrite machine results');
+    await page.click('#openSettingsPanel');await page.keyboard.press('Escape');
+    assert.match(await page.locator('#editorPaper').textContent(),/An edited document paragraph/);
+    assert.equal(await calls(),beforeEditor,'editing and returning to cached pages must not translate');
+    await page.context().addInitScript(()=>{window.print=()=>{window.__editorPrinted=true;};});
+    const popupPromise=page.waitForEvent('popup');await page.locator('[data-action="export"]').click();const printPage=await popupPromise;
+    await printPage.waitForFunction(()=>window.__editorPrinted===true);
+    assert.match(await printPage.locator('#printPaper').textContent(),/An edited document paragraph/);
+    assert.equal(await printPage.locator('#printPaper table td').count(),4,'print output uses custom layout');
+    assert.equal(await printPage.locator('#printPaper').evaluate(node=>node.style.width),'595.28pt','custom paper size reaches the print document');await printPage.close();
+    await page.reload();await page.waitForFunction(()=>document.getElementById('translationConfigSummary').textContent.includes('Google'));
+    await upload(pdfs.native);await setViewMode('bilingual');await page.selectOption('#bilingualLayout','flow');
+    await page.waitForFunction(()=>document.getElementById('editorPaper').textContent.includes('An edited document paragraph.'));
+    assert.equal(await page.locator('#editorPaper').getAttribute('contenteditable'),'true','saved custom document opens without translating again');
+    // 存储事务拒绝迟到写入和并行编辑冲突，不覆盖另一页或另一标签保存的版本。
+    await page.evaluate(async()=>{
+      const store=BT_PDF_EDITOR_STORE.create(),key='editor-transaction-regression',document={version:1,page:{width:600,height:800,margin:20},style:{},children:[{tag:'p',children:['sample']}]};
+      const first=await store.write(key,document,0);let conflict=false;
+      try{await store.write(key,document,0);}catch(_){conflict=true;}
+      if(!conflict)throw new Error('conflicting write accepted');
+      const second=await store.write(key,document,first.revision);await store.remove(key,second.revision);
+      if(await store.read(key))throw new Error('document not removed');
+    });
+    console.log('PASS PDF editor: direct editing, format, tables, persistence, page isolation, print model and storage conflicts');
+    await page.evaluate(()=>{pdfUiTest.long=false;delete pdfUiTest.targetText;});
+    await upload(pdfs.complex,'complex-content.pdf');await setViewMode('bilingual');await page.selectOption('#bilingualLayout','flow');
+    await page.click('#startTranslation');await waitDone();await page.waitForSelector('#editorPaper table');
+    assert.equal(await page.locator('#editorPaper table td').count(),9,'source table imports with cell structure');
+    await page.click('#next');await waitDone();await page.waitForSelector('#editorPaper img');
+    assert.equal(await page.locator('#editorPaper img').count(),1,'diagram imports once rather than as separate labels');
+    assert.match(await page.locator('#editorPaper img').getAttribute('src'),/^data:image\/png;base64,/);
+    await page.locator('#editorPaper img').click();
+    await page.waitForSelector('#canvasHost .pdf-marker-flash');
+    assert.equal(await page.locator('#editorPaper img.editor-selected').count(),1,'figure click locates and highlights the original region');
+    await page.selectOption('[data-action="image-width"]','50');await page.selectOption('[data-action="image-align"]','right');
+    const imageStyle=await page.locator('#editorPaper img').evaluate(node=>({width:node.style.width,left:node.style.marginLeft,right:node.style.marginRight}));
+    assert.equal(imageStyle.width,'50%');assert.equal(imageStyle.left,'auto');assert.ok(['0pt','0px'].includes(imageStyle.right));
+    await page.locator('[data-action="save"]').click();await page.waitForFunction(()=>document.getElementById('editorStatus').textContent.includes('编辑稿已保存'));
+    await page.click('#previous');await waitDone();await page.click('#next');await waitDone();
+    await page.waitForFunction(()=>document.querySelector('#editorPaper img')?.style.width==='50%');
     assert.deepEqual(errors, [], "no unhandled browser errors");
     console.log("PASS PDF UI: responsive bounds, dark/reduced-motion modes and clean browser runtime");
   } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }

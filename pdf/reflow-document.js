@@ -5,25 +5,12 @@
     right:Math.max(...rects.map(r=>r.right)),bottom:Math.max(...rects.map(r=>r.bottom))});
   // Worker 内生成独立 PDF；不以原页作文字背景，不发起翻译、OCR 或网络请求。
   async function compose({out,setup,targets,loaded,job,userBox,error,rgb,degrees,addOutlines}) {
-    const model=global.BT_PDF_STRUCTURED,IR=global.BT_PDF_REFLOW_MODEL,P=global.BT_PDF_LAYOUT_PLANNER;
+    const model=global.BT_PDF_STRUCTURED,IR=global.BT_PDF_REFLOW_MODEL,T=global.BT_PDF_REFLOW_TYPOGRAPHY,P=global.BT_PDF_LAYOUT_PLANNER;
     const stats={mode:"structured",pages:0,selected:targets.length,translated:0,edited:0,retained:0,unchanged:0,
       tables:0,figures:0,sourcePages:0,protected:0,supplementalPages:0,translationPages:0,overlay:0,appendixItems:0,appendixPages:0,per:[]};
     const outlines=[],ink=rgb(.12,.16,.2),border=rgb(.65,.68,.72);
     let operations=0;
     const budget=()=>{if(++operations>200000||out.getPageCount()>2000)throw error("EXPORT_FAILED","重排内容超过处理预算，请缩小页码范围");};
-    const median=list=>{const a=list.filter(n=>n>0&&Number.isFinite(n)).sort((a,b)=>a-b);return a[Math.floor(a.length/2)]||10;};
-    // 同类、相近字号才共享样式，小字和脚注不能把整页正文拉低到最小字号。
-    const styleSizes=rows=>{
-      const groups=[],sizes=new Map();
-      for(const item of [...rows].sort((a,b)=>a.block.height-b.block.height)){
-        const size=item.block.height;if(!Number.isFinite(size)||size<=0)continue;
-        const key=[item.kind,!!item.block.mono,item.block.fontName||""].join(":");
-        let group=groups.find(g=>g.key===key&&size/g.min<=1.1);
-        if(!group){group={key,min:size,items:[]};groups.push(group);}group.items.push(item);
-      }
-      for(const group of groups){const size=median(group.items.map(item=>item.block.height));for(const item of group.items)sizes.set(item.id,size);}
-      return sizes;
-    };
     const clean=text=>String(text||"").replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g,"");
     const drawable=text=>Array.from(text).every(ch=>/\s/u.test(ch)||setup.canRender(ch));
     const translated=item=>item.result?.status==="translated"&&item.block.role==="text"&&!!clean(item.result.text).trim();
@@ -68,9 +55,19 @@
         note("旧版文字结构保留现有译文；重新翻译本页后可更新标题与行内格式");
       const rows=model.items(allRows).map(item=>item.block.role==="text"&&!(item.result?.status==="translated"&&!translated(item))?item:
         {...item,text:item.block.rawText||item.block.text}),headers=rows.filter(item=>["header","footer"].includes(item.kind));
-      const sizes=styleSizes(rows);
       const bodyRows=allRows.filter(row=>!headers.some(item=>item.id===row.block.id));
       const documentModel=IR.page({rows:bodyRows,geometry}),candidates=documentModel.nodes;
+      const typography=T.create({items:rows,nodes:candidates});
+      per.typography=typography.summary();
+      // 一页内同类文字共用行距；不能因某段仅有英文、另一段含汉字而改变正文的行高。
+      const commonMetrics={ascent:.718,descent:1.25-.718,lineHeight:1.25};
+      for(const item of rows)if(translated(item)&&drawable(clean(item.text))){
+        const metrics=textMetrics(clean(item.text),typography.resolve(item).size);
+        commonMetrics.ascent=Math.max(commonMetrics.ascent,metrics.ascent);
+        commonMetrics.descent=Math.max(commonMetrics.descent,metrics.descent);
+        commonMetrics.lineHeight=Math.max(commonMetrics.lineHeight,metrics.lineHeight);
+      }
+      commonMetrics.lineHeight=Math.max(commonMetrics.lineHeight,commonMetrics.ascent+commonMetrics.descent);
       per.modelVersion=documentModel.version;
       per.quality={state:"pending",sourceItems:documentModel.sourceCount,regions:candidates.length,retainedRegions:0,validatedBoxes:0};
       for(const issue of documentModel.issues)diagnostic(issue.code,"structure",issue.id,"region");
@@ -111,7 +108,7 @@
       if(documentModel.issues.some(issue=>["DUPLICATE_SOURCE","STRUCTURE_BUDGET","INLINE_BUDGET"].includes(issue.code))){
         for(const node of nodes)defer(node);nodes.length=0;
       }
-      const tree=IR.prune(documentModel.tree,new Set(nodes))||{kind:"stack",rect:null,children:[]},em=median(rows.map(item=>item.block.height)),rect=tree.rect;
+      const tree=IR.prune(documentModel.tree,new Set(nodes))||{kind:"stack",rect:null,children:[]},em=typography.bodySize,rect=tree.rect;
       if(allRows.length>rows.length){stats.retained+=allRows.length-rows.length;retain("部分文字无法可靠重建，已保留源页");}
       if(geometry.retainSourceGraphics)retain("存在尚未重建的图形，已保留源页");
       // 页边距沿用源页内容边界，避免把封面的大段下方留白当作分页禁区。
@@ -153,6 +150,7 @@
       async function crop(sheet,r,x,y,width,ids=[]){
         if(!canCrop||!validRect(r)||![x,y,width].every(Number.isFinite)||width<=0)
           throw layoutError("原始区域不能安全裁切","crop");
+        note("原图保留区域沿用原始字体与字号");
         const box=userBox(target.M,r);
         if(!box||![box.x,box.y,box.width,box.height].every(Number.isFinite)||!(box.width>0&&box.height>0))
           throw layoutError("原始区域坐标无效","crop");
@@ -179,9 +177,9 @@
           const previousRegion=currentRegion;
           for(const item of supplemental?[]:activeHeaders){
             currentRegion={kind:item.kind,items:[item]};
-            const r=item.block.rect,value=clean(item.text),size=sizes.get(item.id)??item.block.height;
+            const r=item.block.rect,value=clean(item.text),style=typography.resolve(item),size=style.size;
             if(translated(item)&&drawable(value)){
-              const metrics=textMetrics(value,size),lead=size*metrics.lineHeight,lines=P.wrapText(value,size,r.right-r.x,setup.measure);
+              const metrics=textMetrics(value,size),lead=size*Math.max(style.lineHeight,commonMetrics.lineHeight),lines=P.wrapText(value,size,r.right-r.x,setup.measure);
               let limit=item.kind==="header"?top:H;
               for(const other of activeHeaders)if(other.id!==item.id&&other.block.rect.y>r.y&&other.block.rect.x<r.right&&other.block.rect.right>r.x)limit=Math.min(limit,other.block.rect.y);
               if(lines.length*lead<=limit-r.y&&lines.every(line=>setup.measure(line,size)<=r.right-r.x+.01)){
@@ -205,9 +203,12 @@
       function textMetrics(value,size){
         const runs=setup.runs(value,size);if(!runs)throw error("EXPORT_GLYPH_MISSING","重排字体缺少所需字形");
         // 以本段实际字体计量，范围导出增加其他语言的字体时不得改变本段分页。
-        let ascent=.718,lineHeight=1.25;
-        for(const run of runs){ascent=Math.max(ascent,run.tier.metrics.ascent);lineHeight=Math.max(lineHeight,run.tier.metrics.lineHeight);}
-        return {ascent,lineHeight};
+        let ascent=.718,descent=1.25-.718,lineHeight=1.25;
+        for(const run of runs){
+          ascent=Math.max(ascent,run.tier.metrics.ascent);lineHeight=Math.max(lineHeight,run.tier.metrics.lineHeight);
+          descent=Math.max(descent,run.tier.metrics.lineHeight-run.tier.metrics.ascent);
+        }
+        return {ascent,descent,lineHeight};
       }
       async function draw(sheet,text,x,y,size,ascent){
         budget();const runs=setup.runs(text,size);
@@ -219,14 +220,13 @@
         for(const run of runs){const dx=x;commands.push(()=>setup.drawRun(sheet.pdf,run,dx,H-y-size*a,size,ink,degrees(0)));x+=run.width;}
       }
       async function text(item,cursor,x,width){
-        const size=item.reflowSize??sizes.get(item.id)??item.block.height,sourceLines=item.block.lines||[];
-        // 统一字号不等于原文字号时，原始绝对行距不再适用，改用该字体的实测行高。
-        const useSourceSpacing=size===item.block.height&&sourceLines.length>1;
-        const sourceSpacing=useSourceSpacing?sourceLines.slice(1).flatMap((line,i)=>validRect(line.rect)&&validRect(sourceLines[i].rect)?[line.rect.y-sourceLines[i].rect.y]:[]):[];
-        const value=clean(item.text),metrics=textMetrics(value,size),lead=Math.max(size*metrics.lineHeight,sourceSpacing.length?median(sourceSpacing):0);
+        const style=typography.resolve(item),size=style.size;
+        const value=clean(item.text),metrics=textMetrics(value,size),lead=size*Math.max(style.lineHeight,commonMetrics.lineHeight,metrics.lineHeight);
         // 栏的可用宽度来自区域树，短首行/小标题的字框不能成为整段的硬宽度。
         if(![size,x,width,lead].every(Number.isFinite)||!(size>0&&width>size&&lead>0))throw layoutError("文字区域过窄或尺寸无效","text");
         if(!drawable(value))throw error("EXPORT_GLYPH_MISSING","译文字形缺失，请检查字体");
+        // 缩进先参与第一行的可用宽度计算，不能排满后再尝试平移，否则长首行会丢失缩进。
+        const indent=typography.indent(item,width);
         // 新任务保存的是 decode 校验后的 UTF-16 范围。人工修订和旧结果仅在原子出现唯一时兼容，
         // 绝不按译文长度、出现顺序或原文坐标猜测样式位置。
         let inline=item.plainReflow?[]:item.result?.inline;
@@ -248,7 +248,7 @@
             part.runs.some(run=>!Number.isFinite(run.height)||run.height<=0||!Number.isFinite(run.shift)||Math.abs(run.shift)>item.block.height))continue;
           ranges.push(part);end=part.end;
         }
-        const atoms=[];let pendingSpace=false,forceBreak=false;
+        const atoms=[];let pendingSpace=false,forceBreak=0;
         const cjk=/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u;
         const add=(parts,{east=false,attach=false}={})=>{
           const w=parts.reduce((sum,part)=>sum+setup.measure(part.text,part.size),0),last=atoms.at(-1);
@@ -256,35 +256,46 @@
             if(pendingSpace)last.parts.push({text:" ",size,shift:0});
             last.parts.push(...parts);last.width+=w+(pendingSpace?setup.measure(" ",size):0);
           }else atoms.push({parts,width:w,space:pendingSpace,newLine:forceBreak,east});
-          pendingSpace=false;forceBreak=false;
+          pendingSpace=false;forceBreak=0;
         };
         const plain=value=>{
-          for(const token of clean(value).match(/\n|[^\S\n]+|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]|[^\s\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu)||[]){
-            if(token==="\n"){forceBreak=true;pendingSpace=false;}
+          for(const token of clean(value).match(/\n|[^\S\n]+|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}，。！？；：、（）【】《》「」『』〈〉〔〕［］｛｝“”‘’]|[^\s\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}，。！？；：、（）【】《》「」『』〈〉〔〕［］｛｝“”‘’]+/gu)||[]){
+            if(token==="\n"){forceBreak++;pendingSpace=false;}
             else if(/^\s/u.test(token))pendingSpace=true;
-            else add([{text:token,size,shift:0}],{east:cjk.test(token)});
+            else add([{text:token,size,shift:0}],{east:cjk.test(token)||/^[，。！？；：、（）【】《》「」『』〈〉〔〕［］｛｝“”‘’]$/u.test(token)});
           }
         };
         let offset=0;
         for(const range of ranges){
           plain(item.text.slice(offset,range.start));
-          add(range.runs.map(run=>({text:clean(run.text),size:size*run.height/item.block.height,shift:size*run.shift/item.block.height})),{attach:range.attachPrevious});
+          add(range.runs.map(run=>typography.inline({...run,text:clean(run.text)},item.block.height,size)),{attach:range.attachPrevious});
           offset=range.end;
         }
         plain(item.text.slice(offset));
-        const lines=[];let current={parts:[],width:0};
-        const flush=()=>{if(current.parts.length)lines.push(current);current={parts:[],width:0};};
-        const put=(parts,w,space=false)=>{if(space&&current.parts.length){current.parts.push({text:" ",size,shift:0});current.width+=setup.measure(" ",size);}current.parts.push(...parts);current.width+=w;};
+        // 禁则在折行前建立不可分边界，不把句末标点挤到下一行或把开括号留在行尾。
+        const wrappedAtoms=[];
         for(const atom of atoms){
-          if(atom.newLine)flush();
+          const previous=wrappedAtoms.at(-1),value=atom.parts.map(part=>part.text).join("");
+          const prior=previous?.parts.map(part=>part.text).join("")||"";
+          if(previous&&!atom.newLine&&!atom.space&&previous.width+atom.width<=width-indent&&
+            (/^[，。！？；：、）】》」』〉〕］｝”’]/u.test(value)||/[（【《「『〈〔［｛“‘]$/u.test(prior))){
+            previous.parts.push(...atom.parts);previous.width+=atom.width;previous.keepBoundary=true;
+          }else wrappedAtoms.push({...atom,parts:[...atom.parts]});
+        }
+        const lines=[];let current={parts:[],width:0,spaceBefore:0};
+        const flush=()=>{if(current.parts.length)lines.push(current);current={parts:[],width:0,spaceBefore:0};};
+        const lineWidth=()=>width-(lines.length===0?indent:0);
+        const put=(parts,w,space=false)=>{if(space&&current.parts.length){current.parts.push({text:" ",size,shift:0});current.width+=setup.measure(" ",size);}current.parts.push(...parts);current.width+=w;};
+        for(const atom of wrappedAtoms){
+          if(atom.newLine){flush();current.spaceBefore=Math.max(0,atom.newLine-1)*lead;}
           const space=atom.space&&current.parts.length?setup.measure(" ",size):0;
-          if(current.width+space+atom.width>width)flush();
-          if(atom.width<=width){put(atom.parts,atom.width,atom.space);continue;}
+          if(current.parts.length&&current.width+space+atom.width>lineWidth())flush();
+          if(atom.width<=lineWidth()){put(atom.parts,atom.width,atom.space);continue;}
           // 超长普通单词允许硬换行；有上下标的原子不能截断或缩到不可读。
-          if(atom.parts.some(part=>part.shift!==0||part.size!==size))throw layoutError("行内原子超出栏宽","inline");
+          if(atom.keepBoundary||atom.parts.some(part=>part.shift!==0||part.size!==size))throw layoutError("行内原子超出栏宽","inline");
           for(const part of atom.parts)for(const ch of part.text){
-            const w=setup.measure(ch,size);if(w>width)throw layoutError("译文字形超出栏宽","text");
-            if(current.width+w>width)flush();put([{text:ch,size,shift:0}],w);
+            const w=setup.measure(ch,size);if(w>lineWidth())throw layoutError("译文字形超出栏宽","text");
+            if(current.width+w>lineWidth())flush();put([{text:ch,size,shift:0}],w);
           }
         }
         flush();
@@ -294,32 +305,42 @@
           for(const part of line.parts){const last=merged.at(-1);
             if(last&&last.size===part.size&&last.shift===part.shift)last.text+=part.text;else merged.push({...part});}
           line.parts=merged;line.width=merged.reduce((sum,part)=>sum+setup.measure(part.text,part.size),0);
-          line.above=size*metrics.ascent;line.below=lead-line.above;
+          line.above=size*Math.max(commonMetrics.ascent,metrics.ascent);line.below=lead-line.above;
           for(const part of line.parts){const m=textMetrics(part.text,part.size);
             line.above=Math.max(line.above,part.size*m.ascent-part.shift);
             line.below=Math.max(line.below,part.shift+part.size*(m.lineHeight-m.ascent));
           }
           line.height=line.above+line.below;
-          if(!Number.isFinite(line.height)||line.height<=0||line.width>width+.01)throw layoutError("行内排版尺寸无效","inline");
+          const limit=width-(line===lines[0]?indent:0);
+          if(!Number.isFinite(line.height)||line.height<=0||line.width>limit+.01)throw layoutError("行内排版尺寸无效","inline");
         }
         const r=item.block.rect,center=x+width/2;
         const centered=["heading","subheading","caption"].includes(item.kind)&&Math.abs((r.x+r.right)/2-center)<size;
         const right=item.block.direction==="rtl";
         if(["heading","subheading"].includes(item.kind)){
-          const height=lines.reduce((sum,line)=>sum+line.height,0),keep=height+(item.keepAfter??em*1.25);
+          const height=lines.reduce((sum,line)=>sum+line.spaceBefore+line.height,0),keep=height+(item.keepAfter??em*1.25);
           if(height>bottom-startY(cursor.sheet))throw layoutError("标题整体超过页面可用高度","heading");
           cursor=room(cursor,keep<=bottom-startY(cursor.sheet)?keep:height);
         }
+        const spanHeight=(from,count)=>lines.slice(from,from+count).reduce((sum,line)=>sum+line.spaceBefore+line.height,0);
+        if(item.kind==="paragraph"&&lines.length>1&&cursor.y>startY(cursor.sheet)+.01){
+          // 短段尽量整体保留；长段至少留下两行开头，不能在页尾只排一行。
+          const keep=spanHeight(0,lines.length===3?3:2);
+          if(keep<=bottom-startY(cursor.sheet+1)&&cursor.y+keep>bottom)cursor=next(cursor);
+        }
         for(let i=0;i<lines.length;i++){
-          const line=lines[i];cursor=room(cursor,line.height);
+          const line=lines[i];
+          if(item.kind==="paragraph"&&lines.length>2&&i===lines.length-2&&cursor.y>startY(cursor.sheet)+.01){
+            const keep=spanHeight(i,2);
+            if(keep<=bottom-startY(cursor.sheet+1)&&cursor.y+keep>bottom)cursor=next(cursor);
+          }
+          // 空行是段内明确分隔；分页时不把它当作续页顶端必须保留的空白。
+          if(line.spaceBefore&&cursor.y>startY(cursor.sheet)+.01)cursor=gap(cursor,line.spaceBefore);
+          cursor=room(cursor,line.height);
           if(cursor.y+line.height>bottom)throw layoutError("单行文字超过页面可用高度","text");
           const sheet=await sheetAt(cursor.sheet),w=line.width;
           let dx=centered?Math.max(x,Math.min(x+width-w,(r.x+r.right-w)/2)):right?x+width-w:x;
-          // 只保留有真实多行证据的首行缩进；单行标题不按短字框压窄译文。
-          if(i===0&&!centered&&!right&&!item.block.runInBody&&sourceLines.length>1&&sourceLines.every(line=>validRect(line.rect))){
-            const indent=Math.max(0,sourceLines[0].rect.x-Math.min(...sourceLines.slice(1).map(l=>l.rect.x)));
-            if(indent>0&&w+indent<=width)dx+=indent;
-          }
+          if(i===0)dx+=indent;
           let advance=dx;
           for(const part of line.parts){const m=textMetrics(part.text,part.size);
             await draw(sheet,part.text,advance,cursor.y+line.above+part.shift-part.size*m.ascent,part.size,m.ascent);advance+=setup.measure(part.text,part.size);}
@@ -357,7 +378,7 @@
           const originals=items.filter(i=>i.block.codeRole!=="comment"),comments=items.filter(i=>i.block.codeRole==="comment");
           const original=originals.length?union(originals.map(i=>i.block.rect)):null;
           const caption=comments.length?union(comments.map(i=>i.block.rect)):null;
-          const sourceRects=items.map(i=>i.block.rect),lineRect=union(sourceRects),size=median(items.map(i=>i.block.height))*k;
+          const sourceRects=items.map(i=>i.block.rect),lineRect=union(sourceRects),style=typography.styles.code,size=style.size*k;
           const commentX=caption?x+(caption.x-region.x)*k:x+width;
           const commentWidth=x+width-commentX,pieces=[];
           if(comments.length){
@@ -367,7 +388,7 @@
               const wrapped=P.wrapText(value,size,commentWidth,setup.measure);
               checkText(value,wrapped);
               if(wrapped.some(line=>setup.measure(line,size)>commentWidth+.01))throw layoutError("代码注释超出列宽","code");
-              pieces.push({items:comments,lines:wrapped,lead:size*metrics.lineHeight,ascent:metrics.ascent});
+              pieces.push({items:comments,lines:wrapped,lead:size*Math.max(style.lineHeight,commonMetrics.lineHeight),ascent:metrics.ascent});
             }else pieces.push({items:comments,rect:caption,source:true,height:(caption.bottom-caption.y)*k});
           }
           const sourceHeight=original?(original.bottom-original.y)*k:0;
@@ -409,7 +430,7 @@
         if(node.items.some(item=>!translated(item)&&!drawable(clean(item.text)))){
           note("表格含未完成且缺少字体的内容，本表保留原文");return asset(node,cursor,x,width,grid.rect);
         }
-        const size=median(node.items.map(item=>item.block.height)),metrics=textMetrics(node.items.map(item=>clean(item.text)).join(" "),size),lead=size*Math.max(1.2,metrics.lineHeight),pad=size*.35;
+        const style=typography.styles.table,size=style.size,metrics=textMetrics(node.items.map(item=>clean(item.text)).join(" "),size),lead=size*Math.max(style.lineHeight,commonMetrics.lineHeight,metrics.lineHeight),pad=size*.35;
         const xs=[0],sum=grid.widths.reduce((a,b)=>a+b,0);
         if(!(sum>0)||grid.widths.some(w=>!(w>0&&Number.isFinite(w))))throw layoutError("表格列宽无效","table");
         for(const fraction of grid.widths)xs.push(xs.at(-1)+width*fraction/sum);
@@ -495,7 +516,7 @@
           }
           cursor=await asset({...node,items:sourceItems},cursor,x,width,region,{protectAll:true});
           if(canCrop&&validRect(region)){stats.figures++;if(sourceItems.length)note("图形及图内标注整体保留，图注按译文重排");}
-          for(const item of outside){cursor=gap(cursor,item.block.height*.35);cursor=translated(item)?await text(item,cursor,x,width):await asset({items:[item]},cursor,x,width,item.block.rect);}
+          for(const item of outside){cursor=gap(cursor,typography.styles.caption.before);cursor=translated(item)?await text({...item,kind:"caption"},cursor,x,width):await asset({items:[item]},cursor,x,width,item.block.rect);}
           return cursor;
         }
         if(node.inline||node.joinedHeading){
@@ -505,7 +526,7 @@
             const parts=sorted.map(item=>item.block.role==="text"?clean(item.text):item.block.rawText||item.block.text),value=parts.join(node.joinedHeading?" ":"");
             if(drawable(value)){
               // 合并展示节点后，旧结果中的范围不能继续按第一个块的偏移解释。
-              const firstSize=median(texts.map(item=>sizes.get(item.id)||item.block.height)),inline=[];let offset=0;
+              const firstSize=typography.resolve({...texts[0],kind:node.kind}).size,inline=[];let offset=0;
               sorted.forEach((item,index)=>{
                 const source=item.result?.inline;
                 if(Array.isArray(source)&&item.text===parts[index])for(const span of source)inline.push({...span,start:span.start+offset,end:span.end+offset,
@@ -513,20 +534,35 @@
                 offset+=parts[index].length+(node.joinedHeading?1:0);
               });
               const first=texts[0],safe={...first,text:value,kind:node.kind,keepAfter,reflowIds:node.items.map(item=>item.id),
-                result:{...first.result,text:value,inline},reflowSize:firstSize,block:{...first.block,height:firstSize,rect:node.sourceRegion,lines:[]}};
+                result:{...first.result,text:value,inline},block:{...first.block,height:firstSize,rect:node.sourceRegion,lines:[]}};
               cursor=await text(safe,cursor,x,width);for(const item of node.items)count(item);return cursor;
             }
           }
           return asset(node,cursor,x,width);
         }
+        let previousItem=null;
         for(const item of node.items){
+          if(previousItem&&cursor.y>startY(cursor.sheet)+.01)
+            cursor=gap(cursor,Math.max(typography.resolve(previousItem).after,typography.resolve(item).before));
           if(translated(item))cursor=await text({...item,keepAfter},cursor,x,width);
           else cursor=await asset({items:[item]},cursor,x,width,item.block.rect);
+          previousItem=item;
         }
         return cursor;
       }
-      const firstLine=tree=>tree.kind==="node"?Math.max(em,...tree.node.items.map(item=>sizes.get(item.id)||item.block.height))*1.25:
+      const firstLine=tree=>tree.kind==="node"?Math.max(em,...tree.node.items.map(item=>typography.resolve(item).size))*Math.max(1.5,commonMetrics.lineHeight):
         tree.children?.length?firstLine(tree.children[0]):em*1.25;
+      const edgeNode=(tree,last=false)=>tree.kind==="node"?tree.node:
+        tree.kind==="stack"&&tree.children.length?edgeNode(last?tree.children.at(-1):tree.children[0],last):null;
+      const paragraphGap=(previous,next)=>{
+        const a=edgeNode(previous,true),b=edgeNode(next);
+        if(!a||!b||a.flow||a.grid||a.visual||b.flow||b.grid||b.visual)return 0;
+        if(!a.items.some(translated)||!b.items.some(translated))return 0;
+        // 正文与脚注区之间的原始分隔不能作为普通段距压缩掉。
+        if(a.kind!==b.kind&&[a.kind,b.kind].includes("footnote"))return 0;
+        const left=a.items.at(-1),right=b.items[0];
+        return left&&right?Math.max(typography.resolve({...left,kind:a.kind}).after,typography.resolve({...right,kind:b.kind}).before):0;
+      };
       async function layout(tree,cursor,x,width,keepAfter=0){
         budget();if(tree.kind==="node"){
           // 先排版并暂存绘制命令；失败只回滚本区域，不能留下半段文字再叠一层原图。
@@ -559,8 +595,15 @@
         let previous=null;
         for(let index=0;index<tree.children.length;index++){
           const child=tree.children[index],following=tree.children[index+1];
-          if(previous&&child.rect&&previous.rect)cursor=gap(cursor,Math.max(0,child.rect.y-previous.rect.bottom));
-          const followingSpace=following?Math.max(0,(following.rect?.y||0)-(child.rect?.bottom||0))+firstLine(following):keepAfter;
+          if(previous&&child.rect&&previous.rect){
+            const semantic=paragraphGap(previous,child),sourceGap=Math.max(0,child.rect.y-previous.rect.bottom);
+            // 文字改用样式间距，仅保留有限的章节留白；图形、代码等仍保留来源区域间距。
+            const spacing=semantic?Math.max(semantic,Math.min(sourceGap,em*1.5)):sourceGap;
+            if(cursor.y>startY(cursor.sheet)+.01)cursor=gap(cursor,spacing);
+          }
+          const followingGap=following?paragraphGap(child,following):0;
+          const originalGap=following?Math.max(0,(following.rect?.y||0)-(child.rect?.bottom||0)):0;
+          const followingSpace=following?(followingGap?Math.max(followingGap,Math.min(originalGap,em*1.5)):originalGap)+firstLine(following):keepAfter;
           cursor=await layout(child,cursor,x,width,followingSpace);previous=child;
         }
         return cursor;
@@ -602,11 +645,11 @@
       if(deferred.size){
         supplemental=true;top=margin;bottom=H-margin;
         let cursor={sheet:sheets.length,y:top};
-        const size=Math.min(em,(W-margin*2)/4,(H-margin*2)/4);
+        const size=typography.bodySize;
         retain("部分成功译文在补充译文页展示，原区域请对照保留的源页");
         for(const item of rows.filter(item=>deferred.has(item.id)&&!counted.has(item.id))){
           currentRegion={kind:"supplement",items:[item],outputLane:{x:margin,right:W-margin}};
-          const safe={...item,kind:"paragraph",reflowSize:size,plainReflow:true,block:{...item.block,height:size,lines:[],
+          const safe={...item,kind:"paragraph",plainReflow:true,block:{...item.block,flow:null,table:null,codeRole:null,height:size,lines:[],
             rect:{x:margin,y:top,right:W-margin,bottom:top+size}}};
           cursor=await text(safe,cursor,margin,W-margin*2);cursor=gap(cursor,size*.5);
         }
